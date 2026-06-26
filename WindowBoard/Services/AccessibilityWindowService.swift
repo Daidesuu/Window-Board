@@ -185,11 +185,15 @@ final class AccessibilityWindowService {
     @discardableResult
     func activateApplication(pid: pid_t) -> Bool {
         if let application = NSRunningApplication(processIdentifier: pid) {
-            application.activate()
-            return true
+            return activateApplication(application)
         }
 
         return false
+    }
+
+    @discardableResult
+    func activateApplication(_ application: NSRunningApplication) -> Bool {
+        application.activate(options: [.activateAllWindows])
     }
 
     func openApplication(at bundleURL: URL) {
@@ -199,6 +203,10 @@ final class AccessibilityWindowService {
     }
 
     func openDocument(for window: WindowInfo) -> Bool {
+        guard !SavedWindowReference.isVisualStudioCode(bundleIdentifier: window.bundleIdentifier) else {
+            return false
+        }
+
         guard let documentURL = window.documentURL else {
             return false
         }
@@ -220,12 +228,28 @@ final class AccessibilityWindowService {
             return
         }
 
-        if let bundleURL = window.bundleURL {
-            openApplication(at: bundleURL)
-            return
+        _ = activateOrOpenApplication(for: window)
+    }
+
+    @discardableResult
+    func activateOrOpenApplication(for window: WindowInfo) -> Bool {
+        var didActivateOrOpen = false
+
+        if activateApplication(pid: window.pid) {
+            didActivateOrOpen = true
         }
 
-        activateApplication(pid: window.pid)
+        if let bundleIdentifier = window.bundleIdentifier,
+           let application = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
+            didActivateOrOpen = activateApplication(application) || didActivateOrOpen
+        }
+
+        if let bundleURL = window.bundleURL {
+            openApplication(at: bundleURL)
+            didActivateOrOpen = true
+        }
+
+        return didActivateOrOpen
     }
 
     @discardableResult
@@ -247,6 +271,54 @@ final class AccessibilityWindowService {
             configuration: configuration
         )
         return true
+    }
+
+    @discardableResult
+    func openSavedWindowReference(_ reference: SavedWindowReference) -> Bool {
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+
+        if reference.isVisualStudioCode {
+            return false
+        }
+
+        if let documentURL = reference.documentURL {
+            if let bundleURL = reference.bundleURL {
+                NSWorkspace.shared.open([documentURL], withApplicationAt: bundleURL, configuration: configuration)
+            } else {
+                NSWorkspace.shared.open(documentURL, configuration: configuration)
+            }
+            return true
+        }
+
+        guard reference.bundleIdentifier == "com.apple.Terminal",
+              let bundleURL = reference.bundleURL else {
+            return false
+        }
+
+        NSWorkspace.shared.open(
+            [FileManager.default.homeDirectoryForCurrentUser],
+            withApplicationAt: bundleURL,
+            configuration: configuration
+        )
+        return true
+    }
+
+    @discardableResult
+    func activateSavedApplication(_ reference: SavedWindowReference) -> Bool {
+        var didActivateOrOpen = false
+
+        if let bundleIdentifier = reference.bundleIdentifier,
+           let application = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
+            didActivateOrOpen = activateApplication(application)
+        }
+
+        if let bundleURL = reference.bundleURL {
+            openApplication(at: bundleURL)
+            didActivateOrOpen = true
+        }
+
+        return didActivateOrOpen
     }
 
     func focusWindow(_ window: WindowInfo) {

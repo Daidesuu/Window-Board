@@ -18,6 +18,11 @@
 		1A0000010000000000000009 /* AutoFrontMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000019 /* AutoFrontMode.swift */; };
 		1A000001000000000000000A /* BoardClickAction.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001A /* BoardClickAction.swift */; };
 		1A000001000000000000000B /* BoardClickObserver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001B /* BoardClickObserver.swift */; };
+		1A000001000000000000000C /* SavedWorkspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001C /* SavedWorkspace.swift */; };
+		1A000001000000000000000D /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001D /* WorkspaceStore.swift */; };
+		1A000001000000000000000E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001E /* SettingsView.swift */; };
+		1A000001000000000000000F /* WindowBoardAppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001F /* WindowBoardAppState.swift */; };
+		1A0000010000000000000022 /* StatusMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000021 /* StatusMenuView.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -33,6 +38,11 @@
 		1A0000010000000000000019 /* AutoFrontMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AutoFrontMode.swift; sourceTree = "<group>"; };
 		1A000001000000000000001A /* BoardClickAction.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardClickAction.swift; sourceTree = "<group>"; };
 		1A000001000000000000001B /* BoardClickObserver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardClickObserver.swift; sourceTree = "<group>"; };
+		1A000001000000000000001C /* SavedWorkspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SavedWorkspace.swift; sourceTree = "<group>"; };
+		1A000001000000000000001D /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceStore.swift; sourceTree = "<group>"; };
+		1A000001000000000000001E /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		1A000001000000000000001F /* WindowBoardAppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardAppState.swift; sourceTree = "<group>"; };
+		1A0000010000000000000021 /* StatusMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -63,6 +73,7 @@
 				1A0000010000000000000033 /* App */,
 				1A0000010000000000000034 /* Views */,
 				1A0000010000000000000035 /* Models */,
+				1A0000010000000000000038 /* Stores */,
 				1A0000010000000000000036 /* Services */,
 				1A0000010000000000000037 /* Support */,
 			);
@@ -81,6 +92,7 @@
 			isa = PBXGroup;
 			children = (
 				1A0000010000000000000011 /* WindowBoardApp.swift */,
+				1A000001000000000000001F /* WindowBoardAppState.swift */,
 			);
 			path = App;
 			sourceTree = "<group>";
@@ -89,6 +101,8 @@
 			isa = PBXGroup;
 			children = (
 				1A0000010000000000000012 /* ContentView.swift */,
+				1A000001000000000000001E /* SettingsView.swift */,
+				1A0000010000000000000021 /* StatusMenuView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -101,8 +115,17 @@
 				1A0000010000000000000018 /* PositionUpdateMode.swift */,
 				1A0000010000000000000019 /* AutoFrontMode.swift */,
 				1A000001000000000000001A /* BoardClickAction.swift */,
+				1A000001000000000000001C /* SavedWorkspace.swift */,
 			);
 			path = Models;
+			sourceTree = "<group>";
+		};
+		1A0000010000000000000038 /* Stores */ = {
+			isa = PBXGroup;
+			children = (
+				1A000001000000000000001D /* WorkspaceStore.swift */,
+			);
+			path = Stores;
 			sourceTree = "<group>";
 		};
 		1A0000010000000000000036 /* Services */ = {
@@ -205,6 +228,11 @@
 				1A0000010000000000000009 /* AutoFrontMode.swift in Sources */,
 				1A000001000000000000000A /* BoardClickAction.swift in Sources */,
 				1A000001000000000000000B /* BoardClickObserver.swift in Sources */,
+				1A000001000000000000000C /* SavedWorkspace.swift in Sources */,
+				1A000001000000000000000D /* WorkspaceStore.swift in Sources */,
+				1A000001000000000000000E /* SettingsView.swift in Sources */,
+				1A000001000000000000000F /* WindowBoardAppState.swift in Sources */,
+				1A0000010000000000000022 /* StatusMenuView.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

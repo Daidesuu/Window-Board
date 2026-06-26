@@ -26,6 +26,7 @@ struct WindowInfo: Identifiable {
 struct AttachedWindow: Identifiable {
     let attachmentID: UUID
     var window: WindowInfo
+    var savedReference: SavedWindowReference?
     var lastBoardOrigin: CGPoint
     var lastWindowOrigin: CGPoint
     var lastAppliedOrigin: CGPoint?
@@ -34,6 +35,7 @@ struct AttachedWindow: Identifiable {
     init(
         attachmentID: UUID = UUID(),
         window: WindowInfo,
+        savedReference: SavedWindowReference? = nil,
         lastBoardOrigin: CGPoint,
         lastWindowOrigin: CGPoint,
         lastAppliedOrigin: CGPoint?,
@@ -41,6 +43,7 @@ struct AttachedWindow: Identifiable {
     ) {
         self.attachmentID = attachmentID
         self.window = window
+        self.savedReference = savedReference
         self.lastBoardOrigin = lastBoardOrigin
         self.lastWindowOrigin = lastWindowOrigin
         self.lastAppliedOrigin = lastAppliedOrigin

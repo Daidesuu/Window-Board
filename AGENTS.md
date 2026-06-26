@@ -24,6 +24,8 @@
 - `Follow Mode: None` means attached windows remain selected but do not follow board movement.
 - `Open / Reconnect` should reopen the app/document when possible and reconnect to a matching new AX window.
 - `Minimize Unattached` is best-effort and may not affect system, special, full-screen, cross-Space, or permission-limited windows.
+- Workspace switch minimization should classify against a freshly read window list, not only the cached UI list.
+- VS Code windows should not be protected by broad same-application ambiguity fallback; only the concretely matched attached window should be protected from minimize.
 
 ## Safety
 - Do not use destructive git commands unless explicitly requested.
