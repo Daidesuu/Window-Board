@@ -223,6 +223,7 @@ struct ContentView: View {
                         appState.mainWindow = window
                         boardMotion.currentOrigin = window.frame.origin
                         applyBoardWindowLevel(to: window)
+                        loadActiveWorkspaceFromAppStateIfNeeded()
                     },
                     onOriginChanged: handleBoardOriginChanged
                 )
@@ -259,6 +260,14 @@ struct ContentView: View {
         }
         .onChange(of: activeWorkspaceID) { _, newValue in
             appState.activeWorkspaceID = newValue
+        }
+        .onChange(of: appState.activeWorkspaceID) { _, _ in
+            loadActiveWorkspaceFromAppStateIfNeeded()
+        }
+        .onChange(of: appState.isLoadingWorkspaceFromStatusItem) { _, isLoading in
+            if !isLoading {
+                loadActiveWorkspaceFromAppStateIfNeeded()
+            }
         }
         .onChange(of: attachedWindows.count) { _, _ in
             syncStatusMenuState()
@@ -566,6 +575,9 @@ struct ContentView: View {
             bringBoardWindowToFront()
             loadWorkspace(id: workspaceID)
 
+        case let .loadWorkspaceFromStatusItem(workspaceID):
+            loadWorkspace(id: workspaceID, restoreSavedOrigin: true, shouldBringBoardToFrontAfterLoad: false)
+
         case .bringAttachedToFront:
             bringAllAttachedWindowsToFront()
 
@@ -578,11 +590,29 @@ struct ContentView: View {
     }
 
     private func syncStatusMenuState() {
-        appState.activeWorkspaceID = activeWorkspaceID
         appState.hasAttachedWindows = !attachedWindows.isEmpty
         appState.hasMinimizedWindows = !minimizedWindows.isEmpty
         appState.isMinimizingUnattached = isMinimizingUnattached
         appState.isRestoringMinimized = isRestoringMinimized
+        if let activeWorkspaceID {
+            appState.rememberLoadedWindowIDs(for: activeWorkspaceID, attachedWindows: attachedWindows)
+        }
+    }
+
+    private func loadActiveWorkspaceFromAppStateIfNeeded() {
+        guard let appActiveWorkspaceID = appState.activeWorkspaceID,
+              appActiveWorkspaceID != activeWorkspaceID,
+              !isLoadingWorkspace,
+              !appState.isLoadingWorkspaceFromStatusItem,
+              boardWindow != nil else {
+            return
+        }
+
+        loadWorkspace(
+            id: appActiveWorkspaceID,
+            restoreSavedOrigin: true,
+            shouldBringBoardToFrontAfterLoad: false
+        )
     }
 
     private func refreshTrustAndWindows() {
@@ -788,7 +818,11 @@ struct ContentView: View {
         loadSelectedWorkspace()
     }
 
-    private func loadWorkspace(id workspaceID: SavedWorkspace.ID) {
+    private func loadWorkspace(
+        id workspaceID: SavedWorkspace.ID,
+        restoreSavedOrigin: Bool = false,
+        shouldBringBoardToFrontAfterLoad: Bool = true
+    ) {
         guard let workspace = workspaceStore.workspaces.first(where: { $0.id == workspaceID }),
               boardWindow != nil,
               !isLoadingWorkspace else {
@@ -798,21 +832,23 @@ struct ContentView: View {
         }
 
         selectedWorkspaceID = workspaceID
-        activeWorkspaceID = workspaceID
-        appState.activeWorkspaceID = workspaceID
         workspaceName = workspace.name
-        loadWorkspace(workspace)
+        loadWorkspace(
+            workspace,
+            restoreSavedOrigin: restoreSavedOrigin,
+            shouldBringBoardToFrontAfterLoad: shouldBringBoardToFrontAfterLoad
+        )
     }
 
     @discardableResult
-    private func persistActiveWorkspaceState() -> SavedWorkspace? {
-        guard let activeWorkspaceID,
+    private func persistActiveWorkspaceState(id workspaceID: SavedWorkspace.ID? = nil) -> SavedWorkspace? {
+        guard let workspaceID = workspaceID ?? activeWorkspaceID,
               !attachedWindows.isEmpty,
               let references = currentWorkspaceReferences() else {
             return nil
         }
 
-        return workspaceStore.updateWorkspace(id: activeWorkspaceID, windows: references)
+        return workspaceStore.updateWorkspace(id: workspaceID, windows: references)
     }
 
     private func loadSelectedWorkspace() {
@@ -825,24 +861,38 @@ struct ContentView: View {
         loadWorkspace(workspace, boardOrigin: boardOrigin)
     }
 
-    private func loadWorkspace(_ workspace: SavedWorkspace) {
+    private func loadWorkspace(
+        _ workspace: SavedWorkspace,
+        restoreSavedOrigin: Bool = false,
+        shouldBringBoardToFrontAfterLoad: Bool = true
+    ) {
         guard let boardOrigin = boardMotion.currentOrigin,
               !isLoadingWorkspace else {
             return
         }
 
-        loadWorkspace(workspace, boardOrigin: boardOrigin)
+        loadWorkspace(
+            workspace,
+            boardOrigin: boardOrigin,
+            restoreSavedOrigin: restoreSavedOrigin,
+            shouldBringBoardToFrontAfterLoad: shouldBringBoardToFrontAfterLoad
+        )
     }
 
-    private func loadWorkspace(_ workspace: SavedWorkspace, boardOrigin: CGPoint) {
+    private func loadWorkspace(
+        _ workspace: SavedWorkspace,
+        boardOrigin: CGPoint,
+        restoreSavedOrigin: Bool = false,
+        shouldBringBoardToFrontAfterLoad: Bool = true
+    ) {
         guard !isLoadingWorkspace else {
             return
         }
 
-        persistActiveWorkspaceState()
+        let previousWorkspaceID = activeWorkspaceID
+        persistActiveWorkspaceState(id: previousWorkspaceID)
 
-        let shouldRestoreSavedOrigin = followMode == .none
-        appState.activeWorkspaceID = workspace.id
+        let shouldRestoreSavedOrigin = restoreSavedOrigin || followMode == .none
         isLoadingWorkspace = true
         statusMessage = "Loading \(workspace.name)..."
 
@@ -980,6 +1030,7 @@ struct ContentView: View {
                 activeWorkspaceID = workspace.id
                 selectedWorkspaceID = workspace.id
                 workspaceName = workspace.name
+                appState.rememberLoadedWindowIDs(for: workspace.id, attachedWindows: resolvedAttachedWindows)
 
                 statusMessage = workspaceLoadStatus(
                     loadedCount: resolvedAttachedWindows.count,
@@ -990,7 +1041,9 @@ struct ContentView: View {
                 )
 
                 if autoFrontMode == .off {
-                    bringBoardWindowToFront()
+                    if shouldBringBoardToFrontAfterLoad {
+                        bringBoardWindowToFront()
+                    }
                 } else {
                     bringAllAttachedWindowsToFront(updateStatus: false)
                 }

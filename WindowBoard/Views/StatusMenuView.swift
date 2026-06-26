@@ -17,14 +17,8 @@ struct StatusMenuView: View {
                 Text("No Saved Workspaces")
             } else {
                 ForEach(workspaceStore.workspaces) { workspace in
-                    Button {
-                        showMainWindow()
-                        appState.send(.loadWorkspace(workspace.id))
-                    } label: {
-                        Label(
-                            workspace.displayName,
-                            systemImage: appState.activeWorkspaceID == workspace.id ? "checkmark" : ""
-                        )
+                    Button(workspaceMenuTitle(for: workspace)) {
+                        appState.loadWorkspaceFromStatusItem(id: workspace.id)
                     }
                 }
             }
@@ -66,5 +60,10 @@ struct StatusMenuView: View {
         if !appState.focusMainWindowIfAvailable() {
             openWindow(id: "main")
         }
+    }
+
+    private func workspaceMenuTitle(for workspace: SavedWorkspace) -> String {
+        let prefix = appState.activeWorkspaceID == workspace.id ? "✓ " : "   "
+        return prefix + workspace.displayName
     }
 }

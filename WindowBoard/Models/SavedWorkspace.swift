@@ -47,6 +47,14 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
         !isVisualStudioCode && (documentURL != nil || bundleIdentifier == "com.apple.Terminal")
     }
 
+    var savedOrigin: CGPoint? {
+        guard let originX, let originY else {
+            return nil
+        }
+
+        return CGPoint(x: originX, y: originY)
+    }
+
     func targetOrigin(from boardOrigin: CGPoint) -> CGPoint {
         CGPoint(x: boardOrigin.x + offsetX, y: boardOrigin.y + offsetY)
     }
