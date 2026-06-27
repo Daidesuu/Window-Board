@@ -145,6 +145,35 @@ final class AccessibilityWindowService {
         }
     }
 
+    func size(of window: WindowInfo) throws -> CGSize {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(window.axWindow, kAXSizeAttribute as CFString, &value)
+        guard error == .success else {
+            throw WindowBoardAXError.operationFailed("Read window size", error)
+        }
+        guard let axValue = value, CFGetTypeID(axValue) == AXValueGetTypeID() else {
+            throw WindowBoardAXError.missingSize
+        }
+
+        var size = CGSize.zero
+        guard AXValueGetValue(axValue as! AXValue, .cgSize, &size) else {
+            throw WindowBoardAXError.missingSize
+        }
+        return size
+    }
+
+    func setSize(_ size: CGSize, for window: WindowInfo) throws {
+        var mutableSize = CGSize(width: round(size.width), height: round(size.height))
+        guard let value = AXValueCreate(.cgSize, &mutableSize) else {
+            throw WindowBoardAXError.missingSize
+        }
+
+        let error = AXUIElementSetAttributeValue(window.axWindow, kAXSizeAttribute as CFString, value)
+        guard error == .success else {
+            throw WindowBoardAXError.operationFailed("Resize window", error)
+        }
+    }
+
     func isMinimized(_ window: WindowInfo) -> Bool {
         var value: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(window.axWindow, kAXMinimizedAttribute as CFString, &value)
@@ -278,11 +307,7 @@ final class AccessibilityWindowService {
         let configuration = NSWorkspace.OpenConfiguration()
         configuration.activates = true
 
-        if reference.isVisualStudioCode {
-            return false
-        }
-
-        if let documentURL = reference.documentURL {
+        if !reference.isVisualStudioCode, let documentURL = reference.documentURL {
             if let bundleURL = reference.bundleURL {
                 NSWorkspace.shared.open([documentURL], withApplicationAt: bundleURL, configuration: configuration)
             } else {
@@ -291,17 +316,33 @@ final class AccessibilityWindowService {
             return true
         }
 
-        guard reference.bundleIdentifier == "com.apple.Terminal",
-              let bundleURL = reference.bundleURL else {
-            return false
+        if reference.bundleIdentifier == "com.apple.Terminal",
+           let bundleURL = reference.bundleURL {
+            NSWorkspace.shared.open(
+                [FileManager.default.homeDirectoryForCurrentUser],
+                withApplicationAt: bundleURL,
+                configuration: configuration
+            )
+            return true
         }
 
-        NSWorkspace.shared.open(
-            [FileManager.default.homeDirectoryForCurrentUser],
-            withApplicationAt: bundleURL,
-            configuration: configuration
-        )
-        return true
+        if let bundleURL = reference.bundleURL {
+            openApplication(at: bundleURL)
+            return true
+        }
+
+        if let bundleIdentifier = reference.bundleIdentifier {
+            if let application = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleIdentifier }) {
+                return activateApplication(application)
+            }
+
+            if let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+                openApplication(at: applicationURL)
+                return true
+            }
+        }
+
+        return false
     }
 
     @discardableResult
@@ -331,6 +372,10 @@ final class AccessibilityWindowService {
             return false
         }
 
+        if minimizedAttribute(from: window) == true {
+            return true
+        }
+
         var positionValue: CFTypeRef?
         let positionError = AXUIElementCopyAttributeValue(window, kAXPositionAttribute as CFString, &positionValue)
         guard positionError == .success else {
@@ -344,6 +389,16 @@ final class AccessibilityWindowService {
         }
 
         return true
+    }
+
+    private func minimizedAttribute(from element: AXUIElement) -> Bool? {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(element, kAXMinimizedAttribute as CFString, &value)
+        guard error == .success else {
+            return nil
+        }
+
+        return value as? Bool
     }
 
     private func windows(for application: NSRunningApplication, appName: String) -> [WindowInfo] {

@@ -18,7 +18,12 @@ struct StatusMenuView: View {
             } else {
                 ForEach(workspaceStore.workspaces) { workspace in
                     Button(workspaceMenuTitle(for: workspace)) {
-                        appState.loadWorkspaceFromStatusItem(id: workspace.id)
+                        appState.session.switchWorkspace(
+                            id: workspace.id,
+                            boardOrigin: nil,
+                            source: .statusItem,
+                            followMode: appState.followMode
+                        )
                     }
                 }
             }
@@ -63,7 +68,7 @@ struct StatusMenuView: View {
     }
 
     private func workspaceMenuTitle(for workspace: SavedWorkspace) -> String {
-        let prefix = appState.activeWorkspaceID == workspace.id ? "✓ " : "   "
+        let prefix = appState.session.activeWorkspaceID == workspace.id ? "✓ " : "   "
         return prefix + workspace.displayName
     }
 }

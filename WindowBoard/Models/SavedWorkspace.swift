@@ -26,6 +26,8 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
     var offsetY: CGFloat
     var originX: CGFloat?
     var originY: CGFloat?
+    var width: CGFloat?
+    var height: CGFloat?
 
     var bundleURL: URL? {
         bundleURLString.flatMap(URL.init(string:))
@@ -44,7 +46,7 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
     }
 
     var canRestoreWindow: Bool {
-        !isVisualStudioCode && (documentURL != nil || bundleIdentifier == "com.apple.Terminal")
+        documentURL != nil || bundleURL != nil || bundleIdentifier != nil
     }
 
     var savedOrigin: CGPoint? {
@@ -53,6 +55,14 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
         }
 
         return CGPoint(x: originX, y: originY)
+    }
+
+    var savedSize: CGSize? {
+        guard let width, let height, width > 0, height > 0 else {
+            return nil
+        }
+
+        return CGSize(width: width, height: height)
     }
 
     func targetOrigin(from boardOrigin: CGPoint) -> CGPoint {
@@ -67,12 +77,18 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
         return targetOrigin(from: boardOrigin)
     }
 
-    static func make(from attachedWindow: AttachedWindow, boardOrigin: CGPoint) -> SavedWindowReference {
+    static func make(
+        from attachedWindow: AttachedWindow,
+        boardOrigin: CGPoint,
+        size: CGSize? = nil
+    ) -> SavedWindowReference {
         if var savedReference = attachedWindow.savedReference {
             savedReference.offsetX = attachedWindow.lastWindowOrigin.x - boardOrigin.x
             savedReference.offsetY = attachedWindow.lastWindowOrigin.y - boardOrigin.y
             savedReference.originX = attachedWindow.lastWindowOrigin.x
             savedReference.originY = attachedWindow.lastWindowOrigin.y
+            savedReference.width = size?.width
+            savedReference.height = size?.height
             return savedReference
         }
 
@@ -89,7 +105,9 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
             offsetX: attachedWindow.lastWindowOrigin.x - boardOrigin.x,
             offsetY: attachedWindow.lastWindowOrigin.y - boardOrigin.y,
             originX: attachedWindow.lastWindowOrigin.x,
-            originY: attachedWindow.lastWindowOrigin.y
+            originY: attachedWindow.lastWindowOrigin.y,
+            width: size?.width,
+            height: size?.height
         )
     }
 

@@ -24,7 +24,7 @@ final class WindowBoardStatusItemController: NSObject {
     }
 
     private func observeStateChanges() {
-        appState.$activeWorkspaceID
+        appState.session.$activeWorkspaceID
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.rebuildMenu()
@@ -38,22 +38,22 @@ final class WindowBoardStatusItemController: NSObject {
             }
             .store(in: &cancellables)
 
-        appState.$hasAttachedWindows
-            .combineLatest(appState.$hasMinimizedWindows, appState.$isMinimizingUnattached, appState.$isRestoringMinimized)
+        appState.session.$attachedWindows
+            .combineLatest(appState.session.$minimizedWindows, appState.session.$isMinimizingUnattached, appState.session.$isRestoringMinimized)
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.rebuildMenu()
             }
             .store(in: &cancellables)
 
-        appState.$statusItemMessage
+        appState.session.$statusMessage
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.rebuildMenu()
             }
             .store(in: &cancellables)
 
-        appState.$isLoadingWorkspaceFromStatusItem
+        appState.session.$isLoadingWorkspace
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
                 self?.rebuildMenu()
@@ -66,7 +66,7 @@ final class WindowBoardStatusItemController: NSObject {
         menu.autoenablesItems = false
 
         let statusItem = NSMenuItem(
-            title: appState.isLoadingWorkspaceFromStatusItem ? "Status: Loading..." : "Status: \(appState.statusItemMessage)",
+            title: appState.session.isLoadingWorkspace ? "Status: Loading..." : "Status: \(appState.session.statusMessage)",
             action: nil,
             keyEquivalent: ""
         )
@@ -89,7 +89,7 @@ final class WindowBoardStatusItemController: NSObject {
             for workspace in appState.workspaceStore.workspaces {
                 let item = menuItem(workspace.displayName, action: #selector(loadWorkspace(_:)))
                 item.representedObject = workspace.id
-                item.state = workspace.id == appState.activeWorkspaceID ? .on : .off
+                item.state = workspace.id == appState.session.activeWorkspaceID ? .on : .off
                 workspacesMenu.addItem(item)
             }
         }
@@ -99,15 +99,15 @@ final class WindowBoardStatusItemController: NSObject {
         menu.addItem(NSMenuItem.separator())
 
         let bringItem = menuItem("Bring Attached To Front", action: #selector(bringAttachedToFront))
-        bringItem.isEnabled = appState.canBringAttachedToFront
+        bringItem.isEnabled = appState.session.canBringAttachedToFront
         menu.addItem(bringItem)
 
         let minimizeItem = menuItem("Minimize Unattached", action: #selector(minimizeUnattached))
-        minimizeItem.isEnabled = appState.canMinimizeUnattached
+        minimizeItem.isEnabled = appState.session.canMinimizeUnattached
         menu.addItem(minimizeItem)
 
         let restoreItem = menuItem("Restore Minimized", action: #selector(restoreMinimized))
-        restoreItem.isEnabled = appState.canRestoreMinimized
+        restoreItem.isEnabled = appState.session.canRestoreMinimized
         menu.addItem(restoreItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -132,7 +132,12 @@ final class WindowBoardStatusItemController: NSObject {
             return
         }
 
-        appState.loadWorkspaceFromStatusItem(id: workspaceID)
+        appState.session.switchWorkspace(
+            id: workspaceID,
+            boardOrigin: nil,
+            source: .statusItem,
+            followMode: appState.followMode
+        )
     }
 
     @objc private func bringAttachedToFront() {
@@ -140,19 +145,11 @@ final class WindowBoardStatusItemController: NSObject {
     }
 
     @objc private func minimizeUnattached() {
-        if appState.hasVisibleMainWindow {
-            appState.send(.minimizeUnattached)
-        } else {
-            appState.minimizeUnattachedFromStatusItem()
-        }
+        appState.session.minimizeUnattachedWindows(knownWindows: [])
     }
 
     @objc private func restoreMinimized() {
-        if appState.hasVisibleMainWindow {
-            appState.send(.restoreMinimized)
-        } else {
-            appState.restoreMinimizedFromStatusItem()
-        }
+        appState.session.restoreMinimizedWindows()
     }
 
     @objc private func openSettings() {
