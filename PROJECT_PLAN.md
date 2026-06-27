@@ -1,5 +1,152 @@
 # Window Board
 
+## 現在の到達点
+
+当初の「ボードを動かすと選択した1つのウインドウが追従する」MVPは完了済みである。
+
+現在の Window Board は、単一ウインドウ追従MVPではなく、複数の外部ウインドウを workspace として保存・復元する macOS window session manager 段階に入っている。
+
+---
+
+## Current Implementation
+
+### 主要機能
+
+- 複数ウインドウの attach / detach
+- `Attach Frontmost Window`
+- Follow Mode
+  - `None`
+  - `Smooth`
+  - `On Release`
+- 位置更新モード
+  - 明示的な `Update Position`
+  - attach時の相対位置維持
+- attached window の前面化
+- WindowBoard の一時的な前面維持
+- `Keep Window Board On Top`
+- workspace の保存 / rename / overwrite / delete / switch
+- workspace の位置保存・復元
+- workspace のウインドウサイズ保存・復元
+- Status Item からの workspace 切り替え
+- Settings 画面
+- `Open / Reconnect`
+- `Minimize Unattached`
+- `Restore Minimized`
+- `Minimize Unattached On Workspace Switch`
+
+---
+
+## Current Architecture
+
+### WindowBoardAppState
+
+アプリ全体の共有オブジェクトと設定値を保持する。
+
+- `WorkspaceStore`
+- `WorkspaceSessionController`
+- Settings 用の `Follow Mode` / `Position Update` / `Auto Front` / `Board Click Action`
+- WindowBoard の `NSWindow` 参照
+- Status Item controller との接続
+
+### WorkspaceSessionController
+
+workspace の実行状態と切り替え処理の中心。
+
+責務：
+
+- active / selected workspace 管理
+- attached window list 管理
+- unavailable / reconnecting 状態管理
+- minimized window 履歴管理
+- workspace 保存・上書き・rename・delete
+- workspace switch
+- `Open / Reconnect`
+- `Minimize Unattached`
+- `Restore Minimized`
+
+main window からの切り替えも Status Item からの切り替えも、同じ controller 経由にする。
+
+### ContentView
+
+WindowBoard ウインドウに依存するUIと操作を担当する。
+
+- board window の位置監視
+- board移動時のfollow処理
+- boardクリック処理
+- WindowBoard の一時前面化
+- main window 上のボタン・一覧・workspace UI
+
+### AccessibilityWindowService
+
+外部ウインドウに対する AX 操作を担当する。
+
+- window list取得
+- position / size取得
+- position / size設定
+- minimize / restore
+- activate / raise
+- saved reference からの best-effort open / reconnect
+
+---
+
+## Workspace Switch Behavior
+
+workspace切り替えは、体感速度と復元安定性を両立するため、段階的に行う。
+
+1. 現在のactive workspaceの位置・サイズを保存する。
+2. 切り替え先workspaceの全attached windowをplaceholderとして即表示する。
+3. キャッシュ済みwindow、fresh window list、open/reconnect pollingの順に候補を探す。
+4. 見つかったwindowからplaceholder行へ即反映する。
+5. 未解決windowには一括でopen/activateを発火する。
+6. `listWindows()` は共有polling loopで読み、未解決reference全部を同じ一覧に照合する。
+7. position / size は必要な場合だけ復元する。
+8. `raise` はwindowごとに即実行せず、可能な範囲で最後にまとめる。
+9. `Minimize Unattached On Workspace Switch` はworkspace表示後に後追いで実行する。
+10. Status Item 経由では WindowBoard ウインドウを開かず、保存済み絶対位置を優先する。
+
+---
+
+## Attached Window Lifecycle
+
+attached window は、閉じられた・minimizeされた・stale AX elementになった場合でも、原則としてattached listから消さない。
+
+状態：
+
+- available
+- reconnecting
+- unavailable
+
+復元方針：
+
+- `windowNumber` / pid / bundle / title / documentURL / saved reference を使ってbest-effortで照合する。
+- exact window復元ができないアプリでは、最低限アプリのactivate/openを試す。
+- minimized window は候補に含め、必要に応じて `AXMinimized = false` を試す。
+- 復元失敗はattached解除ではなく unavailable 状態として表示する。
+
+---
+
+## Current Constraints
+
+- macOSの公開APIでは、他アプリwindowの厳密なz-order保証はできない。
+- Full Screen、別Space、特殊パネル、権限不足のwindowは完全制御できない。
+- AX resize / move / minimize はアプリ側制約で失敗することがある。
+- closed windowの完全復元はアプリ依存であり、同じdocument/windowを必ず開けるとは限らない。
+- `Minimize Unattached` はbest-effortであり、同一アプリ複数windowでは誤判定を避けるため保守的に扱う。
+
+---
+
+## Near-Term Priorities
+
+- workspace switchの安定化
+- stale / minimized / closed window復元の不具合整理
+- UIの整理
+- 古い未使用load経路の削除
+- Status Item と main window の挙動差の解消
+- AX操作のさらなる軽量化
+- workspace仕様の固定
+
+---
+
 ## 概要
 
 Window Board は、macOS 上で複数のアプリケーションウインドウをグループ化し、一つの作業単位として管理するためのユーティリティアプリである。
