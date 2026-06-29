@@ -8,6 +8,46 @@ struct SavedWorkspace: Codable, Identifiable, Equatable {
     var createdAt: Date
     var updatedAt: Date
     var windows: [SavedWindowReference]
+    var isDefault: Bool
+
+    init(
+        id: UUID,
+        name: String,
+        statusItemSymbolName: String?,
+        createdAt: Date,
+        updatedAt: Date,
+        windows: [SavedWindowReference],
+        isDefault: Bool = false
+    ) {
+        self.id = id
+        self.name = name
+        self.statusItemSymbolName = statusItemSymbolName
+        self.createdAt = createdAt
+        self.updatedAt = updatedAt
+        self.windows = windows
+        self.isDefault = isDefault
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case name
+        case statusItemSymbolName
+        case createdAt
+        case updatedAt
+        case windows
+        case isDefault
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(UUID.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        statusItemSymbolName = try container.decodeIfPresent(String.self, forKey: .statusItemSymbolName)
+        createdAt = try container.decode(Date.self, forKey: .createdAt)
+        updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+        windows = try container.decode([SavedWindowReference].self, forKey: .windows)
+        isDefault = try container.decodeIfPresent(Bool.self, forKey: .isDefault) ?? false
+    }
 
     var displayName: String {
         "\(name) - \(windows.count) \(windows.count == 1 ? "window" : "windows")"

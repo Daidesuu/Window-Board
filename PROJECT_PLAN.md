@@ -132,7 +132,9 @@ attached window は、閉じられた・minimizeされた・stale AX elementに�
 ## Current Constraints
 
 - macOSの公開APIでは、他アプリwindowの厳密なz-order保証はできない。
-- Full Screen、別Space、特殊パネル、権限不足のwindowは完全制御できない。
+- Full Screen window と別Space上のwindowは、workspaceの確実な復元・移動対象としては対応できなかった。
+- macOSの公開APIでは、他アプリの既存windowを現在のSpaceへ強制移動したり、Full Screen用SpaceをWindowBoard側で安定制御したりできない。
+- 特殊パネル、権限不足のwindowは完全制御できない。
 - AX resize / move / minimize はアプリ側制約で失敗することがある。
 - closed windowの完全復元はアプリ依存であり、同じdocument/windowを必ず開けるとは限らない。
 - `Minimize Unattached` はbest-effortであり、同一アプリ複数windowでは誤判定を避けるため保守的に扱う。

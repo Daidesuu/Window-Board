@@ -33,6 +33,7 @@ private struct AttachedWindowSnapshotResult {
     let id: AttachedWindow.ID
     let origin: CGPoint?
     let size: CGSize?
+    let isMinimized: Bool
 }
 
 private func bestReplacementWindow(for originalWindow: WindowInfo, in candidates: [WindowInfo]) -> WindowInfo? {
@@ -170,6 +171,7 @@ struct ContentView: View {
     @State private var lastExternalApplication: NSRunningApplication?
     @State private var attachedWindowFailureCounts: [AttachedWindow.ID: Int] = [:]
     @State private var activePositionReadIDs: Set<AttachedWindow.ID> = []
+    @State private var minimizedAttachedWindowIDs: Set<AttachedWindow.ID> = []
     @State private var workspaceStatusTextInput = ""
 
     init(appState: WindowBoardAppState) {
@@ -179,26 +181,17 @@ struct ContentView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            header
-
+        Group {
             if isTrusted {
-                windowPicker
-                boardAlwaysOnTopToggle
-                workspaceSection
-                attachedSection
-                actionRow
-                Text(session.statusMessage)
-                    .font(.footnote)
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                NavigationSplitView {
+                    workspaceSidebar
+                } detail: {
+                    workspaceDetail
+                }
             } else {
-                permissionView
+                permissionRoot
             }
-
-            Spacer(minLength: 0)
         }
-        .padding(22)
         .background(
             ZStack {
                 BoardClickObserver(onClick: handleBoardSelected)
@@ -215,6 +208,49 @@ struct ContentView: View {
                 .frame(width: 0, height: 0)
             }
         )
+        .toolbar {
+            ToolbarItemGroup {
+                Button {
+                    refreshWindowsAsync()
+                } label: {
+                    Label("Refresh", systemImage: "arrow.clockwise")
+                }
+                .help("Refresh window list")
+                .disabled(!isTrusted || isLoadingWindows)
+
+                Button {
+                    attachFrontmostWindow()
+                } label: {
+                    Label("Attach Window", systemImage: "plus.rectangle.on.rectangle")
+                }
+                .help("Attach the frontmost window to this workspace")
+                .disabled(!isTrusted || lastExternalApplication == nil || boardWindow == nil)
+
+                Button {
+                    bringAllAttachedWindowsToFront()
+                } label: {
+                    Label("Show Attached", systemImage: "rectangle.on.rectangle")
+                }
+                .help("Bring attached windows to the front")
+                .disabled(!isTrusted || session.attachedWindows.isEmpty)
+
+                Button {
+                    minimizeUnattachedWindows()
+                } label: {
+                    Label("Minimize Others", systemImage: "minus.square")
+                }
+                .help("Minimize windows not in this workspace")
+                .disabled(!isTrusted || session.isMinimizingUnattached || session.isRestoringMinimized || windows.isEmpty)
+
+                Button {
+                    restoreMinimizedWindows()
+                } label: {
+                    Label("Restore Windows", systemImage: "arrow.up.square")
+                }
+                .help("Restore windows minimized by WindowBoard")
+                .disabled(!isTrusted || session.isMinimizingUnattached || session.isRestoringMinimized || session.minimizedWindows.isEmpty)
+            }
+        }
         .onAppear {
             refreshTrustAndWindows()
             syncStatusMenuState()
@@ -288,6 +324,96 @@ struct ContentView: View {
         }
     }
 
+    private var workspaceSidebar: some View {
+        WorkspaceSidebarView(
+            workspaces: workspaceStore.workspaces,
+            activeWorkspaceID: session.activeWorkspaceID,
+            selection: $session.selectedWorkspaceID
+        )
+    }
+
+    private var workspaceDetail: some View {
+        WorkspaceDetailView(
+            selectedWorkspace: selectedWorkspace,
+            selectedWindowID: selectedWindowID,
+            windows: windows,
+            attachedWindows: session.attachedWindows,
+            statusMessage: session.statusMessage,
+            isLoadingWindows: isLoadingWindows,
+            isLoadingWorkspace: session.isLoadingWorkspace,
+            isMinimizingUnattached: session.isMinimizingUnattached,
+            isRestoringMinimized: session.isRestoringMinimized,
+            canAttachSelected: selectedWindow != nil && boardWindow != nil,
+            canAttachFrontmost: lastExternalApplication != nil && boardWindow != nil,
+            canSaveWorkspace: !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
+            canOverwriteWorkspace: selectedWorkspace != nil && !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
+            canEditWorkspaceName: selectedWorkspace?.isDefault != true,
+            canRenameWorkspace: selectedWorkspace != nil && selectedWorkspace?.isDefault != true && !trimmedWorkspaceName.isEmpty,
+            canReloadWorkspace: selectedWorkspace != nil && !session.isLoadingWorkspace && boardWindow != nil,
+            canDeleteWorkspace: selectedWorkspace != nil && selectedWorkspace?.isDefault != true && !session.isLoadingWorkspace,
+            canUpdatePositions: !session.attachedWindows.isEmpty && boardWindow != nil,
+            canBringToFront: !session.attachedWindows.isEmpty,
+            canMinimizeUnattached: !session.isMinimizingUnattached && !session.isRestoringMinimized && !windows.isEmpty,
+            canRestoreMinimized: !session.isMinimizingUnattached && !session.isRestoringMinimized && !session.minimizedWindows.isEmpty,
+            canDetachAll: !session.attachedWindows.isEmpty,
+            workspaceName: $session.workspaceName,
+            selectedWindow: $selectedWindowID,
+            workspaceStatusText: $workspaceStatusTextInput,
+            minimizeUnattachedOnSwitch: $shouldMinimizeUnattachedOnWorkspaceSwitch,
+            boardAlwaysOnTop: $isBoardAlwaysOnTop,
+            attachedState: attachedDisplayState(for:),
+            refreshWindows: refreshWindowsAsync,
+            attachSelected: attachSelectedWindow,
+            attachFrontmost: attachFrontmostWindow,
+            saveWorkspace: saveCurrentWorkspace,
+            overwriteWorkspace: overwriteSelectedWorkspace,
+            renameWorkspace: renameSelectedWorkspace,
+            reloadWorkspace: loadSelectedWorkspace,
+            deleteWorkspace: deleteSelectedWorkspace,
+            updateStatusItemIcon: updateSelectedWorkspaceIcon,
+            updateStatusItemText: updateSelectedWorkspaceStatusText,
+            recoverAttached: recoverAttachedWindow,
+            updateAttached: updateAttachedPositionFromMainView(id:),
+            detachAttached: detachWindowFromMainView(id:),
+            updatePositions: updateAttachedPositionsFromMainView,
+            bringToFront: bringAllAttachedWindowsToFrontFromMainView,
+            minimizeUnattached: minimizeUnattachedWindows,
+            restoreMinimized: restoreMinimizedWindows,
+            detachAll: detachAllFromMainView
+        )
+    }
+
+    private func detachAllFromMainView() {
+        detachAll(message: "Detached all windows.")
+    }
+
+    private func updateAttachedPositionFromMainView(id: AttachedWindow.ID) {
+        updateAttachedPosition(for: id)
+    }
+
+    private func detachWindowFromMainView(id: AttachedWindow.ID) {
+        detachWindow(id: id)
+    }
+
+    private func updateAttachedPositionsFromMainView() {
+        updateAttachedPosition()
+    }
+
+    private func bringAllAttachedWindowsToFrontFromMainView() {
+        bringAllAttachedWindowsToFront()
+    }
+
+    private var permissionRoot: some View {
+        Form {
+            Section {
+                permissionView
+            }
+        }
+        .formStyle(.grouped)
+        .padding(24)
+        .frame(maxWidth: 640, maxHeight: .infinity, alignment: .topLeading)
+    }
+
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Window Board")
@@ -324,10 +450,9 @@ struct ContentView: View {
     }
 
     private var windowPicker: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        sectionContainer {
             HStack {
-                Text("Select Window")
-                    .font(.headline)
+                sectionTitle("Window Selection", systemImage: "macwindow")
 
                 Spacer()
 
@@ -341,188 +466,252 @@ struct ContentView: View {
                 .disabled(isLoadingWindows)
             }
 
-            if isLoadingWindows {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Loading windows...")
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-            } else {
-                Picker("Window", selection: $selectedWindowID) {
-                    Text("Choose a window").tag(WindowInfo.ID?.none)
-                    ForEach(windows) { window in
-                        Text(window.displayName).tag(WindowInfo.ID?.some(window.id))
+            VStack(alignment: .leading, spacing: 8) {
+                if isLoadingWindows {
+                    progressRow("Loading windows...")
+                } else {
+                    Picker("Window", selection: $selectedWindowID) {
+                        Text("Choose a window").tag(WindowInfo.ID?.none)
+                        ForEach(windows) { window in
+                            Text(window.displayName).tag(WindowInfo.ID?.some(window.id))
+                        }
                     }
                 }
-            }
 
-            Button("Attach Selected Window") {
-                attachSelectedWindow()
-            }
-            .disabled(selectedWindow == nil || boardWindow == nil)
+                HStack(spacing: 8) {
+                    Button("Attach Selected") {
+                        attachSelectedWindow()
+                    }
+                    .disabled(selectedWindow == nil || boardWindow == nil)
 
-            Button("Attach Frontmost Window") {
-                attachFrontmostWindow()
+                    Button("Attach Window") {
+                        attachFrontmostWindow()
+                    }
+                    .disabled(lastExternalApplication == nil || boardWindow == nil)
+
+                    Spacer()
+                }
             }
-            .disabled(lastExternalApplication == nil || boardWindow == nil)
         }
     }
 
     private var attachedSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Attached")
-                .font(.headline)
+        sectionContainer {
+            HStack {
+                sectionTitle("Attached Windows", systemImage: "rectangle.stack")
+                Spacer()
+                Text("\(session.attachedWindows.count)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+            }
 
             if session.attachedWindows.isEmpty {
                 Text("No windows attached")
                     .foregroundStyle(.secondary)
             } else {
                 VStack(alignment: .leading, spacing: 10) {
-                    ForEach(session.attachedWindows) { attachedWindow in
-                        HStack(spacing: 8) {
-                            VStack(alignment: .leading, spacing: 2) {
-                                Text(attachedWindow.window.displayName)
-                                    .font(.body)
-                                    .lineLimit(2)
-
-                                if isReconnecting(attachedWindow.id) {
-                                    Text("Reconnecting...")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                } else if isUnavailable(attachedWindow.id) {
-                                    Text("Unavailable")
-                                        .font(.caption)
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-
-                            Spacer()
-
-                            Button("Open / Reconnect") {
-                                recoverAttachedWindow(attachedWindow)
-                            }
-
-                            Button("Update") {
-                                updateAttachedPosition(for: attachedWindow.id)
-                            }
-
-                            Button("Detach") {
-                                detachWindow(id: attachedWindow.id)
-                            }
-                        }
+                    ForEach(session.attachedWindows, id: \.id) { attachedWindow in
+                        attachedWindowRow(attachedWindow)
                     }
                 }
             }
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func attachedWindowRow(_ attachedWindow: AttachedWindow) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .top, spacing: 8) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(attachedWindow.window.appName)
+                        .font(.body.weight(.medium))
+                        .lineLimit(1)
+
+                    if !attachedWindow.window.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Text(attachedWindow.window.title)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(2)
+                    }
+                }
+
+                Spacer(minLength: 8)
+
+                attachedStatusBadge(for: attachedWindow)
+            }
+
+            HStack(spacing: 8) {
+                if isUnavailable(attachedWindow.id) || isReconnecting(attachedWindow.id) {
+                    Button("Open / Reconnect") {
+                        recoverAttachedWindow(attachedWindow)
+                    }
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Open / Reconnect") {
+                        recoverAttachedWindow(attachedWindow)
+                    }
+                }
+
+                Button("Update") {
+                    updateAttachedPosition(for: attachedWindow.id)
+                }
+
+                Button("Detach") {
+                    detachWindow(id: attachedWindow.id)
+                }
+
+                Spacer()
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private var workspaceSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text("Workspace")
-                .font(.headline)
-
-            HStack(spacing: 8) {
-                Picker("Saved Workspace", selection: $session.selectedWorkspaceID) {
-                    Text("Choose a workspace").tag(SavedWorkspace.ID?.none)
-                    ForEach(workspaceStore.workspaces) { workspace in
-                        Text(workspace.displayName).tag(SavedWorkspace.ID?.some(workspace.id))
-                    }
+        sectionContainer {
+            HStack {
+                sectionTitle("Current Workspace", systemImage: "rectangle.on.rectangle")
+                Spacer()
+                if let selectedWorkspace {
+                    Text(selectedWorkspace.displayName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
                 }
-                .disabled(session.isLoadingWorkspace || boardWindow == nil)
+            }
 
-                TextField("Name", text: $session.workspaceName)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(minWidth: 120)
-
-                Button("Save") {
-                    saveCurrentWorkspace()
-                }
-                .disabled(session.attachedWindows.isEmpty || boardMotion.currentOrigin == nil)
-
-                Button("Overwrite") {
-                    overwriteSelectedWorkspace()
-                }
-                .disabled(selectedWorkspace == nil || session.attachedWindows.isEmpty || boardMotion.currentOrigin == nil)
-
-                Button("Rename") {
-                    renameSelectedWorkspace()
-                }
-                .disabled(selectedWorkspace == nil || trimmedWorkspaceName.isEmpty)
-
-                Menu {
-                    Section("Symbols") {
-                        ForEach(WorkspaceStatusItemIcon.options) { icon in
-                            Button {
-                                updateSelectedWorkspaceIcon(icon.symbolName)
-                            } label: {
-                                Label(icon.label, systemImage: icon.symbolName)
-                            }
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(spacing: 8) {
+                    Picker("Saved Workspace", selection: $session.selectedWorkspaceID) {
+                        Text("Choose a workspace").tag(SavedWorkspace.ID?.none)
+                        ForEach(workspaceStore.workspaces) { workspace in
+                            Text(workspace.displayName).tag(SavedWorkspace.ID?.some(workspace.id))
                         }
                     }
+                    .disabled(session.isLoadingWorkspace || boardWindow == nil)
 
-                    Section("Emoji") {
-                        ForEach(WorkspaceStatusItemIcon.emojiOptions) { icon in
-                            Button {
-                                updateSelectedWorkspaceIcon(icon.symbolName)
-                            } label: {
-                                Text("\(icon.emoji ?? "") \(icon.label)")
-                            }
-                        }
+                    Button("Reload") {
+                        loadSelectedWorkspace()
                     }
-                } label: {
-                    workspaceIconLabel
+                    .disabled(selectedWorkspace == nil || session.isLoadingWorkspace || boardWindow == nil)
                 }
-                .disabled(selectedWorkspace == nil)
 
-                TextField("Text", text: $workspaceStatusTextInput)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 88)
+                HStack(spacing: 8) {
+                    TextField("Workspace Name", text: $session.workspaceName)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(minWidth: 160)
+
+                    Button("Save") {
+                        saveCurrentWorkspace()
+                    }
+                    .disabled(session.attachedWindows.isEmpty || boardMotion.currentOrigin == nil)
+
+                    Button("Overwrite") {
+                        overwriteSelectedWorkspace()
+                    }
+                    .disabled(selectedWorkspace == nil || session.attachedWindows.isEmpty || boardMotion.currentOrigin == nil)
+
+                    Button("Rename") {
+                        renameSelectedWorkspace()
+                    }
+                    .disabled(selectedWorkspace == nil || trimmedWorkspaceName.isEmpty)
+
+                    Spacer()
+
+                    Button("Delete") {
+                        deleteSelectedWorkspace()
+                    }
+                    .disabled(selectedWorkspace == nil || session.isLoadingWorkspace)
+                }
+            }
+
+            Divider()
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Status Item Display")
+                    .font(.subheadline.weight(.medium))
+
+                HStack(spacing: 8) {
+                    statusItemPreview
+
+                    Spacer()
+
+                    TextField("Text", text: $workspaceStatusTextInput)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 96)
+                        .disabled(selectedWorkspace == nil)
+
+                    Button("Set Text") {
+                        updateSelectedWorkspaceStatusText()
+                    }
                     .disabled(selectedWorkspace == nil)
 
-                Button("Set Text") {
-                    updateSelectedWorkspaceStatusText()
+                    workspaceIconMenu
+                        .disabled(selectedWorkspace == nil)
                 }
-                .disabled(selectedWorkspace == nil)
-
-                Button("Reload") {
-                    loadSelectedWorkspace()
-                }
-                .disabled(selectedWorkspace == nil || session.isLoadingWorkspace || boardWindow == nil)
-
-                Button("Delete") {
-                    deleteSelectedWorkspace()
-                }
-                .disabled(selectedWorkspace == nil || session.isLoadingWorkspace)
             }
 
             if session.isLoadingWorkspace {
-                HStack(spacing: 8) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("Loading workspace...")
-                        .foregroundStyle(.secondary)
-                }
+                progressRow("Loading workspace...")
             }
 
             Toggle("Minimize Unattached On Workspace Switch", isOn: $shouldMinimizeUnattachedOnWorkspaceSwitch)
+                .font(.caption)
         }
     }
 
-    @ViewBuilder
+    private var workspaceIconMenu: some View {
+        Menu {
+            Section("Symbols") {
+                ForEach(WorkspaceStatusItemIcon.options) { icon in
+                    Button {
+                        updateSelectedWorkspaceIcon(icon.symbolName)
+                    } label: {
+                        Label(icon.label, systemImage: icon.symbolName)
+                    }
+                }
+            }
+
+            Section("Emoji") {
+                ForEach(WorkspaceStatusItemIcon.emojiOptions) { icon in
+                    Button {
+                        updateSelectedWorkspaceIcon(icon.symbolName)
+                    } label: {
+                        Text("\(icon.emoji ?? "") \(icon.label)")
+                    }
+                }
+            }
+        } label: {
+            workspaceIconLabel
+        }
+    }
+
+    private var statusItemPreview: some View {
+        HStack(spacing: 6) {
+            if let title = WorkspaceStatusItemIcon.title(from: selectedWorkspace?.statusItemSymbolName) {
+                Text(title)
+                    .font(.caption.weight(.semibold))
+                    .lineLimit(1)
+            } else {
+                Image(systemName: selectedWorkspace?.statusItemSymbolName ?? WorkspaceStatusItemIcon.defaultSymbolName)
+                    .font(.body)
+            }
+
+            Text("Current")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(.quaternary)
+        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+    }
+
     private var workspaceIconLabel: some View {
-        if let title = WorkspaceStatusItemIcon.title(from: selectedWorkspace?.statusItemSymbolName) {
-            Text("\(title) \(WorkspaceStatusItemIcon.label(for: selectedWorkspace?.statusItemSymbolName))")
-        } else {
-            Label(
-                WorkspaceStatusItemIcon.label(for: selectedWorkspace?.statusItemSymbolName),
-                systemImage: selectedWorkspace?.statusItemSymbolName ?? WorkspaceStatusItemIcon.defaultSymbolName
-            )
+        Group {
+            if let title = WorkspaceStatusItemIcon.title(from: selectedWorkspace?.statusItemSymbolName) {
+                Text("\(title) Display")
+            } else {
+                Label("Icon", systemImage: selectedWorkspace?.statusItemSymbolName ?? WorkspaceStatusItemIcon.defaultSymbolName)
+            }
         }
     }
 
@@ -531,32 +720,122 @@ struct ContentView: View {
     }
 
     private var actionRow: some View {
-        HStack {
-            Button("Update Position") {
-                updateAttachedPosition()
+        sectionContainer {
+            HStack {
+                sectionTitle("Actions", systemImage: "bolt")
+                Spacer()
             }
-            .disabled(session.attachedWindows.isEmpty || boardWindow == nil)
 
-            Button("Bring To Front") {
-                bringAllAttachedWindowsToFront()
-            }
-            .disabled(session.attachedWindows.isEmpty)
+            HStack {
+                Button("Update Position") {
+                    updateAttachedPosition()
+                }
+                .disabled(session.attachedWindows.isEmpty || boardWindow == nil)
 
-            Button("Minimize Unattached") {
-                minimizeUnattachedWindows()
-            }
-            .disabled(session.isMinimizingUnattached || session.isRestoringMinimized || windows.isEmpty)
+                Button("Show Attached") {
+                    bringAllAttachedWindowsToFront()
+                }
+                .disabled(session.attachedWindows.isEmpty)
 
-            Button("Restore Minimized") {
-                restoreMinimizedWindows()
-            }
-            .disabled(session.isMinimizingUnattached || session.isRestoringMinimized || session.minimizedWindows.isEmpty)
+                Button("Minimize Others") {
+                    minimizeUnattachedWindows()
+                }
+                .disabled(session.isMinimizingUnattached || session.isRestoringMinimized || windows.isEmpty)
 
-            Button("Detach All") {
-                detachAll(message: "Detached all windows.")
+                Button("Restore Windows") {
+                    restoreMinimizedWindows()
+                }
+                .disabled(session.isMinimizingUnattached || session.isRestoringMinimized || session.minimizedWindows.isEmpty)
+
+                Spacer()
+
+                Button("Detach All") {
+                    detachAll(message: "Detached all windows.")
+                }
+                .disabled(session.attachedWindows.isEmpty)
             }
-            .disabled(session.attachedWindows.isEmpty)
         }
+    }
+
+    private var statusFooter: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if session.isLoadingWorkspace {
+                progressRow("Restoring windows and reconnecting as needed...")
+            } else if session.isMinimizingUnattached {
+                progressRow("Minimizing unattached windows...")
+            } else if session.isRestoringMinimized {
+                progressRow("Restoring minimized windows...")
+            }
+
+            Text(session.statusMessage)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private func sectionContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            content()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(12)
+        .background(.regularMaterial)
+        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
+    }
+
+    private func sectionTitle(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.headline)
+    }
+
+    private func progressRow(_ title: String) -> some View {
+        HStack(spacing: 8) {
+            ProgressView()
+                .controlSize(.small)
+            Text(title)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private func attachedStatusBadge(for attachedWindow: AttachedWindow) -> some View {
+        if isReconnecting(attachedWindow.id) {
+            statusBadge("Reconnecting", systemImage: "arrow.triangle.2.circlepath")
+        } else if isUnavailable(attachedWindow.id) {
+            statusBadge("Unavailable", systemImage: "exclamationmark.triangle")
+        } else if isMinimized(attachedWindow.id) {
+            statusBadge("Minimized", systemImage: "minus.square")
+        } else {
+            statusBadge("Available", systemImage: "checkmark.circle")
+        }
+    }
+
+    private func attachedDisplayState(for attachedWindow: AttachedWindow) -> AttachedWindowDisplayState {
+        if isReconnecting(attachedWindow.id) {
+            return .reconnecting
+        }
+
+        if isUnavailable(attachedWindow.id) {
+            return .unavailable
+        }
+
+        if isMinimized(attachedWindow.id) {
+            return .minimized
+        }
+
+        return .available
+    }
+
+    private func statusBadge(_ title: String, systemImage: String) -> some View {
+        Label(title, systemImage: systemImage)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.quaternary)
+            .clipShape(Capsule())
     }
 
     private var selectedWindow: WindowInfo? {
@@ -755,11 +1034,16 @@ struct ContentView: View {
                 lastAppliedOrigin: targetOrigin,
                 pendingReleaseOrigin: nil
             )
+            let wasAlreadyAttached = session.attachedWindows.contains {
+                isSameAttachedWindow($0.window, as: window)
+            }
             session.attachedWindows.removeAll { isSameAttachedWindow($0.window, as: window) }
             clearAttachedWindowAccessFailure(for: attachedWindow.id)
             markAttachedWindowAvailable(attachedWindow.id)
             session.attachedWindows.insert(attachedWindow, at: session.attachedWindows.startIndex)
-            session.statusMessage = "Attached \(window.displayName)."
+            session.statusMessage = wasAlreadyAttached
+                ? "Already attached. Updated \(window.displayName)."
+                : "Attached \(window.displayName)."
             bringAllAttachedWindowsToFront(updateStatus: false)
         } catch {
             session.statusMessage = "Could not attach selected window. \(error.localizedDescription)"
@@ -846,7 +1130,7 @@ struct ContentView: View {
                     if shouldBringBoardToFrontAfterLoad && shouldBringBoardToFront {
                         bringBoardWindowToFront()
                     }
-                } else {
+                } else if !shouldMinimizeUnattachedOnWorkspaceSwitch {
                     bringAllAttachedWindowsToFront(updateStatus: false)
                 }
 
@@ -863,6 +1147,14 @@ struct ContentView: View {
 
                 bringBoardWindowToFront()
                 endTemporaryBoardWorkspaceFronting(revision: workspaceFrontingRevision)
+            },
+            minimizeAfterSwitchCompletion: {
+                guard shouldMinimizeUnattachedOnWorkspaceSwitch,
+                      shouldBringBoardToFrontAfterLoad else {
+                    return
+                }
+
+                bringBoardWindowToFront()
             }
         )
     }
@@ -1154,10 +1446,12 @@ struct ContentView: View {
             return attachedWindows.map { attachedWindow -> AttachedWindowSnapshotResult in
                 let origin = try? service.position(of: attachedWindow.window)
                 let size = origin == nil ? nil : try? service.size(of: attachedWindow.window)
+                let isMinimized = service.isMinimized(attachedWindow.window)
                 return AttachedWindowSnapshotResult(
                     id: attachedWindow.id,
                     origin: origin,
-                    size: size
+                    size: size,
+                    isMinimized: isMinimized
                 )
             }
         }.value
@@ -1172,6 +1466,15 @@ struct ContentView: View {
 
             if let size = result.size {
                 sizeByAttachmentID[result.id] = size
+            }
+
+            if result.isMinimized {
+                minimizedAttachedWindowIDs.insert(result.id)
+                clearAttachedWindowAccessFailure(for: result.id)
+                markAttachedWindowAvailable(result.id)
+                continue
+            } else {
+                minimizedAttachedWindowIDs.remove(result.id)
             }
 
             if let origin = result.origin {
@@ -1666,6 +1969,10 @@ struct ContentView: View {
         session.reconnectingAttachedWindowIDs.contains(id)
     }
 
+    private func isMinimized(_ id: AttachedWindow.ID) -> Bool {
+        minimizedAttachedWindowIDs.contains(id)
+    }
+
     private func markAttachedWindowAvailable(_ id: AttachedWindow.ID) {
         session.unavailableAttachedWindowIDs.remove(id)
         session.reconnectingAttachedWindowIDs.remove(id)
@@ -1675,16 +1982,54 @@ struct ContentView: View {
         let attachmentID = attachedWindow.id
         let originalWindow = attachedWindow.window
         let savedReference = attachedWindow.savedReference
+        let shouldTryMinimizedRestore = isMinimized(attachmentID)
 
-        guard !isReconnecting(attachmentID) else {
+        guard !isReconnecting(attachmentID) || shouldTryMinimizedRestore else {
             return
         }
 
-        session.reconnectingAttachedWindowIDs.insert(attachmentID)
-        session.statusMessage = "Checking \(originalWindow.appName)..."
+        if shouldTryMinimizedRestore {
+            session.statusMessage = "Restoring \(originalWindow.appName)..."
+        } else {
+            session.reconnectingAttachedWindowIDs.insert(attachmentID)
+            session.statusMessage = "Checking \(originalWindow.appName)..."
+        }
 
         Task.detached(priority: .userInitiated) {
             let service = AccessibilityWindowService()
+            if originalWindow.pid != 0, service.isMinimized(originalWindow) {
+                do {
+                    try service.setMinimized(false, for: originalWindow)
+                    service.activateApplication(pid: originalWindow.pid)
+                    try? await Task.sleep(for: .milliseconds(120))
+                    let restoredPosition = try? service.position(of: originalWindow)
+
+                    await MainActor.run {
+                        guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+                            return
+                        }
+
+                        let boardOrigin = boardMotion.currentOrigin ?? session.attachedWindows[index].lastBoardOrigin
+                        let origin = restoredPosition ?? session.attachedWindows[index].lastWindowOrigin
+                        session.attachedWindows[index].lastBoardOrigin = boardOrigin
+                        session.attachedWindows[index].lastWindowOrigin = origin
+                        session.attachedWindows[index].lastAppliedOrigin = origin
+                        session.attachedWindows[index].pendingReleaseOrigin = nil
+                        minimizedAttachedWindowIDs.remove(attachmentID)
+                        clearAttachedWindowAccessFailure(for: attachmentID)
+                        activePositionReadIDs.remove(attachmentID)
+                        markAttachedWindowAvailable(attachmentID)
+                        session.statusMessage = "Restored \(originalWindow.displayName)."
+                    }
+                    return
+                } catch {
+                    await MainActor.run {
+                        session.reconnectingAttachedWindowIDs.insert(attachmentID)
+                        session.statusMessage = "Checking \(originalWindow.appName)..."
+                    }
+                }
+            }
+
             let livePosition: CGPoint?
             if originalWindow.pid == 0 {
                 livePosition = nil
@@ -1707,10 +2052,19 @@ struct ContentView: View {
                     session.attachedWindows[index].pendingReleaseOrigin = nil
                     clearAttachedWindowAccessFailure(for: attachmentID)
                     activePositionReadIDs.remove(attachmentID)
+                    minimizedAttachedWindowIDs.remove(attachmentID)
                     markAttachedWindowAvailable(attachmentID)
                     session.statusMessage = "\(originalWindow.appName) is already connected."
                 }
                 return
+            }
+
+            if shouldTryMinimizedRestore {
+                await MainActor.run {
+                    minimizedAttachedWindowIDs.remove(attachmentID)
+                    session.reconnectingAttachedWindowIDs.insert(attachmentID)
+                    session.statusMessage = "Checking \(originalWindow.appName)..."
+                }
             }
 
             var replacement: WindowInfo?
@@ -1814,6 +2168,7 @@ struct ContentView: View {
                 session.attachedWindows[index].pendingReleaseOrigin = nil
                 clearAttachedWindowAccessFailure(for: attachmentID)
                 activePositionReadIDs.remove(attachmentID)
+                minimizedAttachedWindowIDs.remove(attachmentID)
                 markAttachedWindowAvailable(attachmentID)
                 appendRestoredWindows(resolvedWindows)
                 session.statusMessage = "Reconnected \(replacement.displayName)."
@@ -1837,6 +2192,7 @@ struct ContentView: View {
         session.detachWindow(id: id, boardOrigin: boardMotion.currentOrigin)
         clearAttachedWindowAccessFailure(for: id)
         activePositionReadIDs.remove(id)
+        minimizedAttachedWindowIDs.remove(id)
         if session.attachedWindows.isEmpty {
             boardMotion.pendingReleaseOrigin = nil
             pendingAutoFront = false
@@ -1853,6 +2209,7 @@ struct ContentView: View {
         frontingRevision += 1
         attachedWindowFailureCounts.removeAll()
         activePositionReadIDs.removeAll()
+        minimizedAttachedWindowIDs.removeAll()
         boardMotion.pendingReleaseOrigin = nil
         pendingAutoFront = false
     }

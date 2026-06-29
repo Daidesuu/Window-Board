@@ -90,7 +90,8 @@ Workspace switching is designed to show the target workspace quickly and then fi
 Window Board depends on public macOS Accessibility APIs, so behavior is best-effort.
 
 - Exact z-order cannot be fully guaranteed.
-- Full-screen windows, windows on another Space, system panels, and special app windows may not be controllable.
+- Full-screen windows and windows on another Space are not supported as reliable workspace targets. Window Board cannot move another app's existing window into the current Space or control full-screen app Spaces through public macOS APIs.
+- System panels and special app windows may not be controllable.
 - Some apps do not allow AX resize, move, minimize, restore, or raise.
 - Closed windows cannot always be restored to the exact same document or internal app state.
 - `Minimize Unattached` is conservative to avoid minimizing an attached window by mistake.

@@ -146,12 +146,20 @@ final class WorkspaceSessionController: ObservableObject {
     init(workspaceStore: WorkspaceStore, defaults: UserDefaults = .standard) {
         self.workspaceStore = workspaceStore
         self.defaults = defaults
+        workspaceStore.ensureDefaultWorkspace()
         let storedActiveWorkspaceID = defaults.string(forKey: "activeWorkspaceID").flatMap(UUID.init(uuidString:))
         activeWorkspaceID = storedActiveWorkspaceID
 
         if let activeWorkspaceID,
-           !workspaceStore.workspaces.contains(where: { $0.id == activeWorkspaceID }) {
-            self.activeWorkspaceID = nil
+           let workspace = workspaceStore.workspaces.first(where: { $0.id == activeWorkspaceID }) {
+            selectedWorkspaceID = workspace.id
+            workspaceName = workspace.name
+        } else if let defaultWorkspace = workspaceStore.defaultWorkspace {
+            activeWorkspaceID = defaultWorkspace.id
+            selectedWorkspaceID = defaultWorkspace.id
+            workspaceName = defaultWorkspace.name
+        } else {
+            activeWorkspaceID = nil
         }
     }
 
@@ -200,7 +208,12 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        let resolvedName = trimmedName.isEmpty ? selectedWorkspace?.name : trimmedName
+        let resolvedName: String?
+        if selectedWorkspace?.isDefault == true {
+            resolvedName = WorkspaceStore.defaultWorkspaceName
+        } else {
+            resolvedName = trimmedName.isEmpty ? selectedWorkspace?.name : trimmedName
+        }
         guard let workspace = workspaceStore.updateWorkspace(
             id: selectedWorkspaceID,
             name: resolvedName,
@@ -218,8 +231,17 @@ final class WorkspaceSessionController: ObservableObject {
     func renameSelectedWorkspace(name: String) {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard let selectedWorkspaceID,
-              !trimmedName.isEmpty,
-              let workspace = workspaceStore.updateWorkspace(id: selectedWorkspaceID, name: trimmedName) else {
+              !trimmedName.isEmpty else {
+            return
+        }
+
+        guard selectedWorkspace?.isDefault != true else {
+            workspaceName = WorkspaceStore.defaultWorkspaceName
+            statusMessage = "Default workspace cannot be renamed."
+            return
+        }
+
+        guard let workspace = workspaceStore.updateWorkspace(id: selectedWorkspaceID, name: trimmedName) else {
             return
         }
 
@@ -232,12 +254,17 @@ final class WorkspaceSessionController: ObservableObject {
             return
         }
 
+        guard selectedWorkspace?.isDefault != true else {
+            statusMessage = "Default workspace cannot be deleted."
+            return
+        }
+
         workspaceStore.deleteWorkspace(id: selectedWorkspaceID)
         if activeWorkspaceID == selectedWorkspaceID {
             activeWorkspaceID = nil
         }
-        self.selectedWorkspaceID = nil
-        workspaceName = ""
+        self.selectedWorkspaceID = workspaceStore.defaultWorkspace?.id
+        workspaceName = workspaceStore.defaultWorkspace?.name ?? ""
         statusMessage = "Deleted workspace."
     }
 
@@ -283,7 +310,8 @@ final class WorkspaceSessionController: ObservableObject {
         windowCache: [WindowInfo]? = nil,
         mergeWindows: @escaping @MainActor ([WindowInfo]) -> Void = { _ in },
         completion: @escaping @MainActor (_ shouldBringBoardToFront: Bool) -> Void = { _ in },
-        deferredWindowApplicationCompletion: @escaping @MainActor () -> Void = {}
+        deferredWindowApplicationCompletion: @escaping @MainActor () -> Void = {},
+        minimizeAfterSwitchCompletion: @escaping @MainActor () -> Void = {}
     ) {
         guard let workspace = workspaceStore.workspaces.first(where: { $0.id == workspaceID }) else {
             statusMessage = "Workspace not found."
@@ -557,7 +585,8 @@ final class WorkspaceSessionController: ObservableObject {
                         windowCache: windowCache,
                         mergeWindows: mergeWindows,
                         completion: completion,
-                        deferredWindowApplicationCompletion: deferredWindowApplicationCompletion
+                        deferredWindowApplicationCompletion: deferredWindowApplicationCompletion,
+                        minimizeAfterSwitchCompletion: minimizeAfterSwitchCompletion
                     )
                 } else {
                     self.pendingWorkspaceID = nil
@@ -584,19 +613,24 @@ final class WorkspaceSessionController: ObservableObject {
                     }
                     windowsToRaise.append(contentsOf: recoveredAttachments.values)
                 }
-                Self.raiseWorkspaceWindows(windowsToRaise, service: service)
+                if !shouldMinimizeAfterSwitch {
+                    Self.raiseWorkspaceWindows(windowsToRaise, service: service)
+                }
                 await MainActor.run {
                     deferredWindowApplicationCompletion()
                 }
             } else {
-                Self.raiseWorkspaceWindows(resolvedAttachedWindows, service: service)
+                if !shouldMinimizeAfterSwitch {
+                    Self.raiseWorkspaceWindows(resolvedAttachedWindows, service: service)
+                }
             }
 
             if shouldMinimizeAfterSwitch {
                 await self.minimizeUnattachedAfterWorkspaceSwitch(
                     keeping: resolvedAttachedWindows,
                     workspaceID: workspace.id,
-                    service: service
+                    service: service,
+                    completion: minimizeAfterSwitchCompletion
                 )
             }
         }
@@ -715,7 +749,8 @@ final class WorkspaceSessionController: ObservableObject {
     private func minimizeUnattachedAfterWorkspaceSwitch(
         keeping attachedWindows: [AttachedWindow],
         workspaceID: SavedWorkspace.ID,
-        service: AccessibilityWindowService
+        service: AccessibilityWindowService,
+        completion: @escaping @MainActor () -> Void
     ) async {
         let shouldStart = await MainActor.run {
             guard self.activeWorkspaceID == workspaceID,
@@ -750,6 +785,7 @@ final class WorkspaceSessionController: ObservableObject {
                 restoredAttachedCount: result.restoredAttachedWindows.count,
                 failedCount: result.failedCount
             )
+            completion()
         }
     }
 
@@ -960,7 +996,7 @@ final class WorkspaceSessionController: ObservableObject {
                     try? service.setMinimized(false, for: window)
                 }
                 applySavedSizeIfNeeded(reference.savedSize, to: window, service: service)
-                let currentOrigin = window.position ?? (try? service.position(of: window))
+                let currentOrigin = try? service.position(of: window)
                 if let currentOrigin, originsMatch(currentOrigin, targetOrigin) {
                     resolvedOrigin = targetOrigin
                 } else {
@@ -1037,7 +1073,7 @@ final class WorkspaceSessionController: ObservableObject {
                     to: attachedWindow.window,
                     service: service
                 )
-                let currentOrigin = attachedWindow.window.position ?? (try? service.position(of: attachedWindow.window))
+                let currentOrigin = try? service.position(of: attachedWindow.window)
                 if let currentOrigin, originsMatch(currentOrigin, attachedWindow.lastWindowOrigin) {
                     appliedWindows.append(attachedWindow)
                     continue

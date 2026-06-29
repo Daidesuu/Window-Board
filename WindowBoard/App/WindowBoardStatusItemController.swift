@@ -135,10 +135,11 @@ final class WindowBoardStatusItemController: NSObject {
 
     private var activeWorkspace: SavedWorkspace? {
         guard let activeWorkspaceID = appState.session.activeWorkspaceID else {
-            return nil
+            return appState.workspaceStore.defaultWorkspace
         }
 
         return appState.workspaceStore.workspaces.first { $0.id == activeWorkspaceID }
+            ?? appState.workspaceStore.defaultWorkspace
     }
 
     private func menuItem(_ title: String, action: Selector?) -> NSMenuItem {

@@ -25,6 +25,7 @@
 		1A0000010000000000000022 /* StatusMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000021 /* StatusMenuView.swift */; };
 		1A0000010000000000000024 /* WindowBoardStatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000023 /* WindowBoardStatusItemController.swift */; };
 		1A0000010000000000000026 /* WorkspaceSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000025 /* WorkspaceSessionController.swift */; };
+		1A0000010000000000000028 /* WindowBoardMainViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000027 /* WindowBoardMainViews.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -47,6 +48,7 @@
 		1A0000010000000000000021 /* StatusMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuView.swift; sourceTree = "<group>"; };
 		1A0000010000000000000023 /* WindowBoardStatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardStatusItemController.swift; sourceTree = "<group>"; };
 		1A0000010000000000000025 /* WorkspaceSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionController.swift; sourceTree = "<group>"; };
+		1A0000010000000000000027 /* WindowBoardMainViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardMainViews.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -107,6 +109,7 @@
 			isa = PBXGroup;
 			children = (
 				1A0000010000000000000012 /* ContentView.swift */,
+				1A0000010000000000000027 /* WindowBoardMainViews.swift */,
 				1A000001000000000000001E /* SettingsView.swift */,
 				1A0000010000000000000021 /* StatusMenuView.swift */,
 			);
@@ -241,6 +244,7 @@
 				1A0000010000000000000022 /* StatusMenuView.swift in Sources */,
 				1A0000010000000000000024 /* WindowBoardStatusItemController.swift in Sources */,
 				1A0000010000000000000026 /* WorkspaceSessionController.swift in Sources */,
+				1A0000010000000000000028 /* WindowBoardMainViews.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
