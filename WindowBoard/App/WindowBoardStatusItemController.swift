@@ -18,9 +18,8 @@ final class WindowBoardStatusItemController: NSObject {
     }
 
     private func configureStatusItem() {
-        statusItem.button?.image = NSImage(systemSymbolName: "rectangle.on.rectangle", accessibilityDescription: "WindowBoard")
-        statusItem.button?.title = ""
         statusItem.menu = menu
+        updateStatusItemImage()
     }
 
     private func observeStateChanges() {
@@ -62,6 +61,8 @@ final class WindowBoardStatusItemController: NSObject {
     }
 
     private func rebuildMenu() {
+        updateStatusItemImage()
+
         menu.removeAllItems()
         menu.autoenablesItems = false
 
@@ -115,6 +116,29 @@ final class WindowBoardStatusItemController: NSObject {
         menu.addItem(menuItem("Quit WindowBoard", action: #selector(quit)))
 
         statusItem.menu = menu
+    }
+
+    private func updateStatusItemImage() {
+        let symbolName = activeWorkspace?.statusItemSymbolName ?? WorkspaceStatusItemIcon.defaultSymbolName
+        if let title = WorkspaceStatusItemIcon.title(from: symbolName) {
+            statusItem.button?.image = nil
+            statusItem.button?.title = title
+            return
+        }
+
+        let image = NSImage(systemSymbolName: symbolName, accessibilityDescription: "WindowBoard")
+            ?? NSImage(systemSymbolName: WorkspaceStatusItemIcon.defaultSymbolName, accessibilityDescription: "WindowBoard")
+        image?.isTemplate = true
+        statusItem.button?.image = image
+        statusItem.button?.title = ""
+    }
+
+    private var activeWorkspace: SavedWorkspace? {
+        guard let activeWorkspaceID = appState.session.activeWorkspaceID else {
+            return nil
+        }
+
+        return appState.workspaceStore.workspaces.first { $0.id == activeWorkspaceID }
     }
 
     private func menuItem(_ title: String, action: Selector?) -> NSMenuItem {

@@ -256,6 +256,25 @@ final class WorkspaceSessionController: ObservableObject {
         return workspace
     }
 
+    func persistActiveWorkspaceSnapshot(sizeByAttachmentID: [AttachedWindow.ID: CGSize] = [:]) -> SavedWorkspace? {
+        guard let activeWorkspaceID,
+              !attachedWindows.isEmpty else {
+            return nil
+        }
+
+        let references = attachedWindows.map {
+            SavedWindowReference.makePreservingOffset(
+                from: $0,
+                size: sizeByAttachmentID[$0.id]
+            )
+        }
+        let workspace = workspaceStore.updateWorkspace(id: activeWorkspaceID, windows: references)
+        if let workspace {
+            rememberLoadedWindowIDs(for: workspace.id, attachedWindows: attachedWindows)
+        }
+        return workspace
+    }
+
     func switchWorkspace(
         id workspaceID: SavedWorkspace.ID,
         boardOrigin: CGPoint?,
@@ -854,16 +873,24 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     private func currentWorkspaceReferences(boardOrigin: CGPoint?) -> [SavedWindowReference]? {
-        guard let boardOrigin else {
-            return nil
-        }
-
         let service = AccessibilityWindowService()
-        return attachedWindows.map {
-            SavedWindowReference.make(
-                from: $0,
+        return attachedWindows.map { attachedWindow in
+            var snapshot = attachedWindow
+            if let currentOrigin = try? service.position(of: attachedWindow.window) {
+                snapshot.lastWindowOrigin = currentOrigin
+            }
+            let size = try? service.size(of: snapshot.window)
+            guard let boardOrigin else {
+                return SavedWindowReference.makePreservingOffset(
+                    from: snapshot,
+                    size: size
+                )
+            }
+
+            return SavedWindowReference.make(
+                from: snapshot,
                 boardOrigin: boardOrigin,
-                size: try? service.size(of: $0.window)
+                size: size
             )
         }
     }

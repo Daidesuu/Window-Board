@@ -16,6 +16,7 @@ final class WorkspaceStore: ObservableObject {
         let workspace = SavedWorkspace(
             id: UUID(),
             name: name,
+            statusItemSymbolName: nil,
             createdAt: now,
             updatedAt: now,
             windows: windows
@@ -38,6 +39,18 @@ final class WorkspaceStore: ObservableObject {
             workspaces[index].windows = windows
         }
 
+        workspaces[index].updatedAt = Date()
+        let workspace = workspaces[index]
+        persist()
+        return workspace
+    }
+
+    func updateWorkspaceIcon(id: SavedWorkspace.ID, statusItemSymbolName: String?) -> SavedWorkspace? {
+        guard let index = workspaces.firstIndex(where: { $0.id == id }) else {
+            return nil
+        }
+
+        workspaces[index].statusItemSymbolName = statusItemSymbolName
         workspaces[index].updatedAt = Date()
         let workspace = workspaces[index]
         persist()

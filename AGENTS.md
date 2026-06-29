@@ -35,6 +35,9 @@
 - Workspace switch recovery should fire open/activate requests for unresolved windows as a group, then use a shared polling loop rather than per-window polling loops.
 - During workspace fronting, WindowBoard may temporarily use `.floating` regardless of the persistent `Keep Window Board On Top` setting, then restore the configured level.
 - Workspace layout saves and restores both window position and optional window size. Size restore is best-effort and should not detach windows on failure.
+- Status Item workspace switches should save the active workspace first without opening the WindowBoard window, preserving existing relative offsets and updating saved absolute positions where possible.
+- Attached window position snapshots should stay low-frequency, run AX reads off the main thread, and persist only meaningful changes.
+- Workspace-specific Status Item display may be an SF Symbol, emoji, or short text value saved on the workspace.
 - `setPosition`, `setSize`, minimize/restore, and fronting operations should skip no-op work where possible and run off the main thread.
 
 ## Safety

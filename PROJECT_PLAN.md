@@ -28,6 +28,7 @@
 - workspace の位置保存・復元
 - workspace のウインドウサイズ保存・復元
 - Status Item からの workspace 切り替え
+- workspaceごとのStatus Item表示（SF Symbol / emoji / short text）
 - Settings 画面
 - `Open / Reconnect`
 - `Minimize Unattached`
@@ -103,6 +104,7 @@ workspace切り替えは、体感速度と復元安定性を両立するため�
 8. `raise` はwindowごとに即実行せず、可能な範囲で最後にまとめる。
 9. `Minimize Unattached On Workspace Switch` はworkspace表示後に後追いで実行する。
 10. Status Item 経由では WindowBoard ウインドウを開かず、保存済み絶対位置を優先する。
+11. Status Item 経由でも切り替え直前にactive workspaceを保存する。この場合、既存の相対offsetは維持し、保存済み絶対位置を更新する。
 
 ---
 
@@ -122,6 +124,8 @@ attached window は、閉じられた・minimizeされた・stale AX elementに�
 - exact window復元ができないアプリでは、最低限アプリのactivate/openを試す。
 - minimized window は候補に含め、必要に応じて `AXMinimized = false` を試す。
 - 復元失敗はattached解除ではなく unavailable 状態として表示する。
+- attached windowがある間は低頻度snapshotで位置を更新し、閉じられたwindowの最後に近い位置をworkspaceへ保持する。
+- snapshotは完全な「閉じる瞬間」保証ではなく、AX負荷を抑えたbest-effortである。
 
 ---
 
@@ -140,8 +144,7 @@ attached window は、閉じられた・minimizeされた・stale AX elementに�
 - workspace switchの安定化
 - stale / minimized / closed window復元の不具合整理
 - UIの整理
-- 古い未使用load経路の削除
-- Status Item と main window の挙動差の解消
+- Status Item と main window の挙動差の継続的な検証
 - AX操作のさらなる軽量化
 - workspace仕様の固定
 

@@ -4,12 +4,101 @@ import Foundation
 struct SavedWorkspace: Codable, Identifiable, Equatable {
     let id: UUID
     var name: String
+    var statusItemSymbolName: String?
     var createdAt: Date
     var updatedAt: Date
     var windows: [SavedWindowReference]
 
     var displayName: String {
-        "\(name) (\(windows.count))"
+        "\(name) - \(windows.count) \(windows.count == 1 ? "window" : "windows")"
+    }
+}
+
+struct WorkspaceStatusItemIcon: Identifiable, Equatable {
+    let symbolName: String
+    let label: String
+
+    var id: String {
+        symbolName
+    }
+
+    static let defaultSymbolName = "rectangle.on.rectangle"
+    static let emojiPrefix = "emoji:"
+    static let textPrefix = "text:"
+
+    static let options: [WorkspaceStatusItemIcon] = [
+        WorkspaceStatusItemIcon(symbolName: defaultSymbolName, label: "Default"),
+        WorkspaceStatusItemIcon(symbolName: "square.grid.2x2", label: "Grid"),
+        WorkspaceStatusItemIcon(symbolName: "macwindow", label: "Window"),
+        WorkspaceStatusItemIcon(symbolName: "doc.text", label: "Document"),
+        WorkspaceStatusItemIcon(symbolName: "terminal", label: "Terminal"),
+        WorkspaceStatusItemIcon(symbolName: "globe", label: "Web"),
+        WorkspaceStatusItemIcon(symbolName: "briefcase", label: "Work"),
+        WorkspaceStatusItemIcon(symbolName: "folder", label: "Folder"),
+        WorkspaceStatusItemIcon(symbolName: "star", label: "Star")
+    ]
+
+    static let emojiOptions: [WorkspaceStatusItemIcon] = [
+        WorkspaceStatusItemIcon(symbolName: "emoji:💼", label: "Briefcase"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:📁", label: "Folder"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:💻", label: "Laptop"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:🌐", label: "Web"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:📝", label: "Notes"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:⭐️", label: "Star"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:🚀", label: "Rocket"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:🔧", label: "Tools"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:🎨", label: "Design"),
+        WorkspaceStatusItemIcon(symbolName: "emoji:📊", label: "Chart")
+    ]
+
+    var isEmoji: Bool {
+        symbolName.hasPrefix(Self.emojiPrefix)
+    }
+
+    var emoji: String? {
+        guard isEmoji else {
+            return nil
+        }
+
+        return String(symbolName.dropFirst(Self.emojiPrefix.count))
+    }
+
+    static func emoji(from symbolName: String?) -> String? {
+        guard let symbolName,
+              symbolName.hasPrefix(emojiPrefix) else {
+            return nil
+        }
+
+        return String(symbolName.dropFirst(emojiPrefix.count))
+    }
+
+    static func text(from symbolName: String?) -> String? {
+        guard let symbolName,
+              symbolName.hasPrefix(textPrefix) else {
+            return nil
+        }
+
+        return String(symbolName.dropFirst(textPrefix.count))
+    }
+
+    static func title(from symbolName: String?) -> String? {
+        emoji(from: symbolName) ?? text(from: symbolName)
+    }
+
+    static func label(for symbolName: String?) -> String {
+        guard let symbolName else {
+            return "Default"
+        }
+
+        if let option = options.first(where: { $0.symbolName == symbolName }) {
+            return option.label
+        }
+
+        if let option = emojiOptions.first(where: { $0.symbolName == symbolName }) {
+            return option.label
+        }
+
+        return title(from: symbolName) ?? symbolName
     }
 }
 
@@ -108,6 +197,27 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
             originY: attachedWindow.lastWindowOrigin.y,
             width: size?.width,
             height: size?.height
+        )
+    }
+
+    static func makePreservingOffset(
+        from attachedWindow: AttachedWindow,
+        size: CGSize? = nil
+    ) -> SavedWindowReference {
+        if var savedReference = attachedWindow.savedReference {
+            savedReference.originX = attachedWindow.lastWindowOrigin.x
+            savedReference.originY = attachedWindow.lastWindowOrigin.y
+            if let size {
+                savedReference.width = size.width
+                savedReference.height = size.height
+            }
+            return savedReference
+        }
+
+        return make(
+            from: attachedWindow,
+            boardOrigin: attachedWindow.lastBoardOrigin,
+            size: size
         )
     }
 
