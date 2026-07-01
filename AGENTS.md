@@ -30,6 +30,7 @@
 - `Minimize Unattached` is best-effort and may not affect system, special, full-screen, cross-Space, or permission-limited windows.
 - Full-screen windows and windows on another Space are not reliable workspace targets. Do not present them as supported; public macOS APIs cannot reliably move another app's existing window into the current Space or control full-screen app Spaces.
 - `Minimize Unattached On Workspace Switch` runs after the workspace switch has been shown; do not make workspace loading wait for all minimize operations.
+- `Restore Missing Windows On Workspace Switch` controls whether workspace switching automatically opens/activates missing windows. Keep the default off; `Find or Reopen` remains the explicit recovery path.
 - VS Code windows should not be protected by broad same-application ambiguity fallback; only the concretely matched attached window should be protected from minimize.
 - Workspace switching should keep attached windows selected even when they are closed, stale, minimized, or temporarily unavailable.
 - Workspace switching uses placeholder attached windows first, then replaces each row as matching live AX windows are found.

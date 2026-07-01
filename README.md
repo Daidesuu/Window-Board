@@ -16,6 +16,7 @@ Instead of embedding other apps' windows, Window Board keeps normal macOS window
 - Bring attached windows to front
 - Minimize unattached windows and restore minimized windows
 - Optional minimize-unattached behavior on workspace switch
+- Optional restore-missing behavior on workspace switch
 - macOS Status Item for workspace switching and common actions
 - Per-workspace Status Item display using an SF Symbol, emoji, or short text
 - Settings window for behavior options
@@ -73,6 +74,7 @@ Workspace switching is designed to show the target workspace quickly and then fi
 - Minimized windows are included in matching and restored where possible.
 - Position and size restoration skip no-op updates when values are already close enough.
 - `Minimize Unattached On Workspace Switch` runs after the workspace is shown.
+- `Restore Missing Windows On Workspace Switch` controls whether missing windows are automatically opened/activated during switching. When off, missing windows stay attached as unavailable until `Find or Reopen` is used.
 - Status Item workspace switches save the previous workspace without opening the Window Board window.
 - Attached window positions are snapshotted at low frequency so recently moved windows can be restored after close/reconnect where possible.
 

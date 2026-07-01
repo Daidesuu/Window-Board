@@ -160,6 +160,7 @@ struct ContentView: View {
     @State private var isLoadingWindows = false
     @AppStorage("boardAlwaysOnTop") private var isBoardAlwaysOnTop = false
     @AppStorage("minimizeUnattachedOnWorkspaceSwitch") private var shouldMinimizeUnattachedOnWorkspaceSwitch = false
+    @AppStorage("restoreMissingWindowsOnWorkspaceSwitch") private var shouldRestoreMissingWindowsOnWorkspaceSwitch = false
     @State private var pendingAutoFront = false
     @State private var lastBoardClickFrontDate = Date.distantPast
     @State private var boardSelectionTask: Task<Void, Never>?
@@ -200,6 +201,7 @@ struct ContentView: View {
                         boardWindow = window
                         appState.mainWindow = window
                         boardMotion.currentOrigin = window.frame.origin
+                        configureBoardWindowTransparency(window)
                         applyBoardWindowLevel(to: window)
                         loadActiveWorkspaceFromAppStateIfNeeded()
                     },
@@ -223,15 +225,15 @@ struct ContentView: View {
                 } label: {
                     Label("Attach Window", systemImage: "plus.rectangle.on.rectangle")
                 }
-                .help("Attach the frontmost window to this workspace")
+                .help("Pin the frontmost window to this board")
                 .disabled(!isTrusted || lastExternalApplication == nil || boardWindow == nil)
 
                 Button {
                     bringAllAttachedWindowsToFront()
                 } label: {
-                    Label("Show Attached", systemImage: "rectangle.on.rectangle")
+                    Label("Focus Board", systemImage: "scope")
                 }
-                .help("Bring attached windows to the front")
+                .help("Bring this board's pinned windows to the front")
                 .disabled(!isTrusted || session.attachedWindows.isEmpty)
 
                 Button {
@@ -245,7 +247,7 @@ struct ContentView: View {
                 Button {
                     restoreMinimizedWindows()
                 } label: {
-                    Label("Restore Windows", systemImage: "arrow.up.square")
+                    Label("Restore Windows", systemImage: "arrow.counterclockwise")
                 }
                 .help("Restore windows minimized by WindowBoard")
                 .disabled(!isTrusted || session.isMinimizingUnattached || session.isRestoringMinimized || session.minimizedWindows.isEmpty)
@@ -360,6 +362,7 @@ struct ContentView: View {
             selectedWindow: $selectedWindowID,
             workspaceStatusText: $workspaceStatusTextInput,
             minimizeUnattachedOnSwitch: $shouldMinimizeUnattachedOnWorkspaceSwitch,
+            restoreMissingWindowsOnSwitch: $shouldRestoreMissingWindowsOnWorkspaceSwitch,
             boardAlwaysOnTop: $isBoardAlwaysOnTop,
             attachedState: attachedDisplayState(for:),
             refreshWindows: refreshWindowsAsync,
@@ -375,6 +378,7 @@ struct ContentView: View {
             recoverAttached: recoverAttachedWindow,
             updateAttached: updateAttachedPositionFromMainView(id:),
             detachAttached: detachWindowFromMainView(id:),
+            bringForwardAttached: { bringAttachedWindowToFrontFromMainView($0) },
             updatePositions: updateAttachedPositionsFromMainView,
             bringToFront: bringAllAttachedWindowsToFrontFromMainView,
             minimizeUnattached: minimizeUnattachedWindows,
@@ -385,6 +389,15 @@ struct ContentView: View {
 
     private func detachAllFromMainView() {
         detachAll(message: "Detached all windows.")
+    }
+
+    private func bringAttachedWindowToFrontFromMainView(_ attachedWindow: AttachedWindow) {
+        guard !isUnavailable(attachedWindow.id) else {
+            session.statusMessage = "\(attachedWindow.window.appName) is not available."
+            return
+        }
+
+        bringAttachedWindowsToFrontSmoothly([attachedWindow], updateStatus: true)
     }
 
     private func updateAttachedPositionFromMainView(id: AttachedWindow.ID) {
@@ -1917,6 +1930,20 @@ struct ContentView: View {
     private func applyBoardWindowLevel(to window: NSWindow? = nil) {
         let targetWindow = window ?? boardWindow
         targetWindow?.level = isBoardAlwaysOnTop ? .floating : .normal
+    }
+
+    private func configureBoardWindowTransparency(_ window: NSWindow) {
+        window.isOpaque = false
+        let baseBackgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
+        window.backgroundColor = baseBackgroundColor
+        window.titlebarAppearsTransparent = true
+        window.titleVisibility = .hidden
+        window.toolbarStyle = .unified
+        window.toolbar?.showsBaselineSeparator = false
+        window.styleMask.insert(.fullSizeContentView)
+        window.hasShadow = true
+        window.contentView?.wantsLayer = true
+        window.contentView?.layer?.backgroundColor = baseBackgroundColor.cgColor
     }
 
     private func scheduleBoardSelectedAction() {

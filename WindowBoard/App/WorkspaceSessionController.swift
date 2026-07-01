@@ -142,6 +142,7 @@ final class WorkspaceSessionController: ObservableObject {
     private var pendingWorkspaceID: SavedWorkspace.ID?
     private let defaults: UserDefaults
     private let minimizeUnattachedOnWorkspaceSwitchKey = "minimizeUnattachedOnWorkspaceSwitch"
+    private let restoreMissingWindowsOnWorkspaceSwitchKey = "restoreMissingWindowsOnWorkspaceSwitch"
 
     init(workspaceStore: WorkspaceStore, defaults: UserDefaults = .standard) {
         self.workspaceStore = workspaceStore
@@ -337,6 +338,7 @@ final class WorkspaceSessionController: ObservableObject {
         let effectiveBoardOrigin = boardOrigin ?? .zero
         let targetLoadedWindowIDs = loadedWindowIDsByWorkspaceID[workspaceID] ?? [:]
         let shouldMinimizeAfterSwitch = defaults.bool(forKey: minimizeUnattachedOnWorkspaceSwitchKey)
+        let shouldRestoreMissingWindows = defaults.bool(forKey: restoreMissingWindowsOnWorkspaceSwitchKey)
         let shouldDeferWindowApplication = windowCache != nil
         let plannedAttachedWindows = Self.placeholderAttachedWindows(
             for: workspace.windows,
@@ -450,7 +452,7 @@ final class WorkspaceSessionController: ObservableObject {
                 unresolvedReferences = stillUnresolved
             }
 
-            if !unresolvedReferences.isEmpty {
+            if shouldRestoreMissingWindows, !unresolvedReferences.isEmpty {
                 for reference in unresolvedReferences {
                     if reference.canRestoreWindow {
                         if service.openSavedWindowReference(reference) {

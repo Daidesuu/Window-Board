@@ -34,6 +34,7 @@
 - `Minimize Unattached`
 - `Restore Minimized`
 - `Minimize Unattached On Workspace Switch`
+- `Restore Missing Windows On Workspace Switch`
 
 ---
 
@@ -98,8 +99,8 @@ workspace切り替えは、体感速度と復元安定性を両立するため�
 2. 切り替え先workspaceの全attached windowをplaceholderとして即表示する。
 3. キャッシュ済みwindow、fresh window list、open/reconnect pollingの順に候補を探す。
 4. 見つかったwindowからplaceholder行へ即反映する。
-5. 未解決windowには一括でopen/activateを発火する。
-6. `listWindows()` は共有polling loopで読み、未解決reference全部を同じ一覧に照合する。
+5. `Restore Missing Windows On Workspace Switch` がonの場合だけ、未解決windowに一括でopen/activateを発火する。offの場合、未解決windowはattached listに残したままunavailableとして扱う。
+6. 自動復元がonの場合、`listWindows()` は共有polling loopで読み、未解決reference全部を同じ一覧に照合する。
 7. position / size は必要な場合だけ復元する。
 8. `raise` はwindowごとに即実行せず、可能な範囲で最後にまとめる。
 9. `Minimize Unattached On Workspace Switch` はworkspace表示後に後追いで実行する。
