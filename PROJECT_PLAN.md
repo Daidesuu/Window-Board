@@ -1,508 +1,165 @@
-# Window Board
+# Window Board Project Plan
 
-## 現在の到達点
+## Current Status
 
-当初の「ボードを動かすと選択した1つのウインドウが追従する」MVPは完了済みである。
+The original MVP is complete:
 
-現在の Window Board は、単一ウインドウ追従MVPではなく、複数の外部ウインドウを workspace として保存・復元する macOS window session manager 段階に入っている。
+- A Window Board window can act as a board.
+- A selected external window can be attached.
+- Attached windows can follow board movement depending on Follow Mode.
 
----
+The project is now in the post-MVP workspace/session manager phase. The app manages multiple external windows as reusable workspaces, with saved layout, Status Item switching, recovery, minimize/restore, and a card-board UI.
+
+## Current Product Direction
+
+Window Board is a macOS utility for grouping independent external application windows into a reusable working board.
+
+It does not embed other apps' windows. External windows remain normal macOS windows and are controlled best-effort through Accessibility APIs.
+
+The current user model is:
+
+```text
+Workspace / Board
+ ├─ pinned Safari window
+ ├─ pinned Terminal window
+ ├─ pinned Finder window
+ └─ Add Window card
+```
+
+The main UI should make the current workspace feel like a board of pinned windows, not a technical list of AX window references.
 
 ## Current Implementation
 
-### 主要機能
+### Main Capabilities
 
-- 複数ウインドウの attach / detach
-- `Attach Frontmost Window`
-- Follow Mode
-  - `None`
-  - `Smooth`
-  - `On Release`
-- 位置更新モード
-  - 明示的な `Update Position`
-  - attach時の相対位置維持
-- attached window の前面化
-- WindowBoard の一時的な前面維持
-- `Keep Window Board On Top`
-- workspace の保存 / rename / overwrite / delete / switch
-- workspace の位置保存・復元
-- workspace のウインドウサイズ保存・復元
-- Status Item からの workspace 切り替え
-- workspaceごとのStatus Item表示（SF Symbol / emoji / short text）
-- Settings 画面
-- `Open / Reconnect`
-- `Minimize Unattached`
-- `Restore Minimized`
+- Multiple attached windows per workspace
+- `Attach Window` / frontmost window attach
+- Explicit window picker attach path
+- Follow Mode: `None`, `Smooth`, `On Release`
+- Position Update behavior
+- Workspace save, create, rename, overwrite, delete, and switch
+- Default workspace fallback
+- Position and optional size save/restore
+- Closed, stale, or minimized attached windows remain selected as recoverable state
+- `Find or Reopen` best-effort recovery
+- `Minimize Others` and `Restore Windows`
 - `Minimize Unattached On Workspace Switch`
 - `Restore Missing Windows On Workspace Switch`
+- Status Item workspace switching and common actions
+- Per-workspace Status Item display using SF Symbol, emoji, or short text
+- Settings window for non-workspace behavior options
 
----
+### Main UI
 
-## Current Architecture
+The main window uses `NavigationSplitView`:
 
-### WindowBoardAppState
+- Sidebar: workspace list and `New Workspace`
+- Detail: board header, pinned window card grid, secondary controls, status footer
+- Toolbar: `Refresh`, `Attach Window`, `Focus Board`, `Minimize Others`, `Restore Windows`
 
-アプリ全体の共有オブジェクトと設定値を保持する。
+Pinned windows are shown as app-tinted vertical cards with state-specific actions:
+
+- `Available`: `Bring Forward`
+- `Minimized`: `Restore Window`
+- `Unavailable`: `Find or Reopen`
+- `Reconnecting`: disabled `Finding...`
+
+The trailing Add card is the primary quick path for adding the frontmost external window.
+
+## Architecture
+
+### `WindowBoardAppState`
+
+Shared app-level state:
 
 - `WorkspaceStore`
 - `WorkspaceSessionController`
-- Settings 用の `Follow Mode` / `Position Update` / `Auto Front` / `Board Click Action`
-- WindowBoard の `NSWindow` 参照
-- Status Item controller との接続
+- shared settings
+- main `NSWindow` reference
+- Status Item controller wiring
 
-### WorkspaceSessionController
+### `WorkspaceSessionController`
 
-workspace の実行状態と切り替え処理の中心。
+The central workspace/session controller.
 
-責務：
+Responsibilities:
 
-- active / selected workspace 管理
-- attached window list 管理
-- unavailable / reconnecting 状態管理
-- minimized window 履歴管理
-- workspace 保存・上書き・rename・delete
-- workspace switch
-- `Open / Reconnect`
-- `Minimize Unattached`
-- `Restore Minimized`
+- active and selected workspace state
+- attached window list
+- unavailable and reconnecting state
+- minimized window history
+- workspace save/create/overwrite/rename/delete/switch
+- layout restoration
+- missing window recovery
+- minimize/restore operations
+- Status Item and main-window workspace switch shared path
 
-main window からの切り替えも Status Item からの切り替えも、同じ controller 経由にする。
+Workspace switching must stay centralized here. Main window and Status Item callers should pass context such as board origin and cached windows instead of implementing separate switch logic.
 
-### ContentView
+### `ContentView`
 
-WindowBoard ウインドウに依存するUIと操作を担当する。
+Main-window behavior layer:
 
-- board window の位置監視
-- board移動時のfollow処理
-- boardクリック処理
-- WindowBoard の一時前面化
-- main window 上のボタン・一覧・workspace UI
+- Accessibility permission gate
+- `NavigationSplitView` composition
+- board window observation
+- board transparency/chrome setup
+- board movement and follow behavior
+- frontmost app tracking
+- attach actions
+- status item commands
+- card animation state
 
-### AccessibilityWindowService
+### `WindowBoardMainViews`
 
-外部ウインドウに対する AX 操作を担当する。
+SwiftUI composition for the card-board UI:
 
-- window list取得
-- position / size取得
-- position / size設定
-- minimize / restore
-- activate / raise
-- saved reference からの best-effort open / reconnect
+- workspace sidebar
+- board summary header
+- pinned window card grid
+- Add Window card
+- workspace settings disclosure controls
+- status footer
 
----
+### `AccessibilityWindowService`
+
+AX service for external windows:
+
+- window discovery
+- position and size reads/writes
+- minimize and restore
+- app activate and window raise
+- best-effort open/reconnect from saved references
 
 ## Workspace Switch Behavior
 
-workspace切り替えは、体感速度と復元安定性を両立するため、段階的に行う。
+Workspace switching is optimized for fast UI feedback first, then background AX work.
 
-1. 現在のactive workspaceの位置・サイズを保存する。
-2. 切り替え先workspaceの全attached windowをplaceholderとして即表示する。
-3. キャッシュ済みwindow、fresh window list、open/reconnect pollingの順に候補を探す。
-4. 見つかったwindowからplaceholder行へ即反映する。
-5. `Restore Missing Windows On Workspace Switch` がonの場合だけ、未解決windowに一括でopen/activateを発火する。offの場合、未解決windowはattached listに残したままunavailableとして扱う。
-6. 自動復元がonの場合、`listWindows()` は共有polling loopで読み、未解決reference全部を同じ一覧に照合する。
-7. position / size は必要な場合だけ復元する。
-8. `raise` はwindowごとに即実行せず、可能な範囲で最後にまとめる。
-9. `Minimize Unattached On Workspace Switch` はworkspace表示後に後追いで実行する。
-10. Status Item 経由では WindowBoard ウインドウを開かず、保存済み絶対位置を優先する。
-11. Status Item 経由でも切り替え直前にactive workspaceを保存する。この場合、既存の相対offsetは維持し、保存済み絶対位置を更新する。
+1. Save the active workspace state before switching.
+2. Show placeholder attached windows immediately.
+3. Resolve live windows from cached IDs and available window candidates.
+4. Apply found windows back into the attached list as they are resolved.
+5. Restore position and size where possible, skipping no-op updates.
+6. If `Restore Missing Windows On Workspace Switch` is on, open/activate unresolved windows and poll as a group.
+7. If it is off, keep unresolved windows attached as unavailable.
+8. If `Minimize Unattached On Workspace Switch` is on, run minimize after the workspace is shown.
+9. Automatic switch-time minimize reuses known candidate windows instead of always re-listing all windows.
+10. Status Item switching uses the same controller path and should not open the Window Board window.
 
----
+## Constraints
 
-## Attached Window Lifecycle
-
-attached window は、閉じられた・minimizeされた・stale AX elementになった場合でも、原則としてattached listから消さない。
-
-状態：
-
-- available
-- reconnecting
-- unavailable
-
-復元方針：
-
-- `windowNumber` / pid / bundle / title / documentURL / saved reference を使ってbest-effortで照合する。
-- exact window復元ができないアプリでは、最低限アプリのactivate/openを試す。
-- minimized window は候補に含め、必要に応じて `AXMinimized = false` を試す。
-- 復元失敗はattached解除ではなく unavailable 状態として表示する。
-- attached windowがある間は低頻度snapshotで位置を更新し、閉じられたwindowの最後に近い位置をworkspaceへ保持する。
-- snapshotは完全な「閉じる瞬間」保証ではなく、AX負荷を抑えたbest-effortである。
-
----
-
-## Current Constraints
-
-- macOSの公開APIでは、他アプリwindowの厳密なz-order保証はできない。
-- Full Screen window と別Space上のwindowは、workspaceの確実な復元・移動対象としては対応できなかった。
-- macOSの公開APIでは、他アプリの既存windowを現在のSpaceへ強制移動したり、Full Screen用SpaceをWindowBoard側で安定制御したりできない。
-- 特殊パネル、権限不足のwindowは完全制御できない。
-- AX resize / move / minimize はアプリ側制約で失敗することがある。
-- closed windowの完全復元はアプリ依存であり、同じdocument/windowを必ず開けるとは限らない。
-- `Minimize Unattached` はbest-effortであり、同一アプリ複数windowでは誤判定を避けるため保守的に扱う。
-
----
+- macOS public APIs do not provide reliable strict z-order control for other apps' windows.
+- Full-screen windows and windows on another Space are not reliable workspace targets.
+- Window Board cannot force another app's existing window into the current Space through public APIs.
+- System panels, special windows, and permission-limited windows may not be controllable.
+- AX resize, move, minimize, restore, or raise may fail depending on the app.
+- Closed windows cannot always be restored to the exact same document or internal state.
+- `Minimize Others` is conservative to avoid minimizing attached windows by mistake.
 
 ## Near-Term Priorities
 
-- workspace switchの安定化
-- stale / minimized / closed window復元の不具合整理
-- UIの整理
-- Status Item と main window の挙動差の継続的な検証
-- AX操作のさらなる軽量化
-- workspace仕様の固定
-
----
-
-## 概要
-
-Window Board は、macOS 上で複数のアプリケーションウインドウをグループ化し、一つの作業単位として管理するためのユーティリティアプリである。
-
-一般的なウインドウマネージャが「整列」「リサイズ」「ショートカット移動」を主目的とするのに対し、Window Board は「複数のウインドウをまとめて扱う」ことを目的とする。
-
-例えば、
-
-- Safari（資料）
-- PDF（教科書）
-- Notes（メモ）
-
-を一つの作業セットとして扱い、まとめて移動・管理できるようにする。
-
----
-
-# コンセプト
-
-ウインドウを直接埋め込むのではなく、ボードウインドウを基準として対象ウインドウを追従させる。
-
-```text
-Board
- ├─ Safari
- ├─ Terminal
- └─ Finder
-```
-
-ユーザーからは「ボードにウインドウが貼り付いている」ように見えるが、実際には独立したウインドウとして存在する。
-
----
-
-# MVP（最小実装）
-
-## 目標
-
-「ボードを動かすと選択した1つのウインドウが追従する」
-
-これを安定して実現する。
-
----
-
-## MVP機能一覧
-
-### 1. ボードウインドウ
-
-- Window Board用のウインドウを表示
-- ドラッグ可能
-
-### 2. ウインドウ一覧取得
-
-現在開いているアプリのウインドウ一覧を取得する。
-
-例：
-
-```text
-Safari
-Terminal
-Finder
-Chrome
-```
-
-### 3. ウインドウ選択
-
-一覧から対象ウインドウを1つ選択する。
-
-### 4. 相対位置保存
-
-選択時にボードとの相対位置を保存する。
-
-```text
-offsetX = targetX - boardX
-offsetY = targetY - boardY
-```
-
-### 5. 追従移動
-
-ボード移動時に対象ウインドウも移動する。
-
-```text
-targetX = boardX + offsetX
-targetY = boardY + offsetY
-```
-
-### 6. 前面化
-
-ボード移動後に対象ウインドウを前面化する。
-
----
-
-# UI案
-
-## MVP
-
-```text
-Window Board
-
-[ Select Window ]
-
-Attached:
-Safari
-
-[ Bring To Front ]
-[ Detach ]
-```
-
----
-
-# 使用技術
-
-## 言語
-
-- Swift
-
-## UI
-
-- SwiftUI
-- AppKit
-
-## ウインドウ制御
-
-- Accessibility API
-- AXUIElement
-
----
-
-# 必要権限
-
-## アクセシビリティ権限
-
-対象ウインドウの取得・移動のために必要。
-
-確認項目：
-
-```swift
-AXIsProcessTrusted()
-```
-
-権限がない場合は設定画面へ誘導する。
-
----
-
-# アーキテクチャ
-
-## Board Window
-
-アプリのメインウインドウ。
-
-責務：
-
-- UI表示
-- ドラッグ操作
-- ウインドウ管理
-
-## Attached Window
-
-追従対象ウインドウ。
-
-保持する情報：
-
-```swift
-struct AttachedWindow {
-    let axWindow: AXUIElement
-    let pid: pid_t
-    var offset: CGPoint
-}
-```
-
-## Window Tracker
-
-対象ウインドウの位置更新を担当。
-
----
-
-# MVP対象外
-
-以下は後回しとする。
-
-- 複数ウインドウ対応
-- レイアウト保存
-- Workspace保存
-- ScreenCaptureKit
-- リサイズ同期
-- 自動吸着
-- ショートカット
-- 常時最前面化
-
----
-
-# 将来実装したい機能
-
-## 1. 複数ウインドウ対応
-
-```text
-Board
- ├ Safari
- ├ Terminal
- ├ Xcode
- └ Chrome
-```
-
-複数ウインドウを同時に追従させる。
-
----
-
-## 2. Workspace
-
-作業環境を保存する。
-
-例：
-
-### Study
-
-```text
-Safari
-PDF
-Notes
-```
-
-### Development
-
-```text
-Xcode
-Terminal
-Browser
-```
-
-ワンクリックで復元できるようにする。
-
----
-
-## 3. レイアウト保存
-
-各ウインドウの配置を記録する。
-
-例：
-
-```text
-左側     PDF
-右上     Notes
-右下     Safari
-```
-
----
-
-## 4. 一括前面化
-
-登録された全ウインドウを前面に戻す。
-
----
-
-## 5. リサイズ同期
-
-ボードサイズ変更時に対象ウインドウもリサイズする。
-
----
-
-## 6. 自動吸着
-
-ウインドウがボード付近に来たら自動登録する。
-
----
-
-## 7. ショートカット対応
-
-例：
-
-```text
-⌘⌥B
-```
-
-でボードを表示。
-
----
-
-## 8. ボードの複数作成
-
-例：
-
-```text
-Study Board
-Development Board
-Research Board
-```
-
-を同時管理する。
-
----
-
-## 9. ScreenCaptureKit連携
-
-対象ウインドウのプレビューを表示する。
-
-用途：
-
-- ミニマップ
-- サムネイル表示
-- 状態確認
-
----
-
-## 10. スナップ機能
-
-ボード内のレイアウトに沿って自動整列する。
-
----
-
-## 11. クラウド同期
-
-将来的に設定を同期する。
-
-候補：
-
-- iCloud
-- CloudKit
-
----
-
-# 制約
-
-## 可能
-
-- ウインドウ移動
-- ウインドウ位置取得
-- ウインドウサイズ変更
-- 前面化
-- グループ管理
-
-## 不可能または困難
-
-- 他アプリのウインドウ埋め込み
-- 他アプリの window.level 変更
-- 完全な常時最前面固定
-- フルスクリーンウインドウの安定制御
-
----
-
-# 長期ビジョン
-
-Window Board を単なるウインドウ管理ツールではなく、
-
-「作業空間（Workspace）そのものを管理するプラットフォーム」
-
-へ発展させる。
-
-最終的には、
-
-- 作業セット保存
-- ワンクリック復元
-- 複数ボード管理
-- レイアウト管理
-- プレビュー表示
-
-を統合した、macOS向けのウインドウグループマネージャを目指す。
+- Continue reducing AX work on hot paths.
+- Keep workspace switching behavior consistent between main window and Status Item.
+- Simplify dense `Workspace Settings` UI.
+- Validate minimize/recovery behavior with common multi-window apps.
+- Keep documentation aligned with the card-board UI and workspace/session architecture.

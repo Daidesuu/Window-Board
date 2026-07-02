@@ -7,19 +7,20 @@ Instead of embedding other apps' windows, Window Board keeps normal macOS window
 ## Features
 
 - Attach multiple external app windows
-- Attach the frontmost external window
+- Attach the frontmost external window from the toolbar or Add Window card
 - Move attached windows with the Window Board window
 - Follow modes: `None`, `Smooth`, and `On Release`
-- Save, rename, overwrite, delete, and switch workspaces
+- Default workspace plus saved workspace creation, rename, overwrite, delete, and switch
 - Restore saved window positions and sizes
 - Reconnect closed, minimized, or stale attached windows where possible
-- Bring attached windows to front
-- Minimize unattached windows and restore minimized windows
+- Bring pinned windows forward with `Focus Board`
+- Minimize other windows and restore windows minimized by WindowBoard
 - Optional minimize-unattached behavior on workspace switch
 - Optional restore-missing behavior on workspace switch
 - macOS Status Item for workspace switching and common actions
 - Per-workspace Status Item display using an SF Symbol, emoji, or short text
 - Settings window for behavior options
+- Card-board UI with app-tinted pinned window cards
 
 ## Requirements
 
@@ -59,10 +60,27 @@ dist/WindowBoard.app
 
 1. Launch Window Board.
 2. Grant Accessibility permission when prompted.
-3. Select a window from the list or use `Attach Frontmost Window`.
-4. Move the Window Board window to move attached windows, depending on Follow Mode.
-5. Save the attached set as a workspace.
-6. Switch workspaces from the main window or the macOS menu bar Status Item.
+3. Use the Add Window card or toolbar `Attach Window` to pin the frontmost external window.
+4. Use the explicit window picker in `Add Window` when you need to choose from a list.
+5. Move the Window Board window to move attached windows, depending on Follow Mode.
+6. Save or overwrite the current board as a workspace.
+7. Switch workspaces from the main window sidebar or the macOS menu bar Status Item.
+
+## Main UI
+
+The main window is a workspace board:
+
+- Sidebar: workspace list, active workspace indicator, Status Item glyph, and `New Workspace`.
+- Board header: current workspace name, pinned count, attention count, `Recover Missing`, and `Restore Layout`.
+- Board grid: pinned windows as app-tinted cards plus a trailing Add Window card.
+- Status footer: current loading/minimize/restore feedback.
+
+Pinned window card states:
+
+- `Available`: `Bring Forward`
+- `Minimized`: `Restore Window`
+- `Unavailable`: `Find or Reopen`
+- `Reconnecting`: disabled `Finding...`
 
 ## Workspace Behavior
 
@@ -74,6 +92,7 @@ Workspace switching is designed to show the target workspace quickly and then fi
 - Minimized windows are included in matching and restored where possible.
 - Position and size restoration skip no-op updates when values are already close enough.
 - `Minimize Unattached On Workspace Switch` runs after the workspace is shown.
+- Switch-time minimize reuses known candidate windows where possible instead of always re-listing all windows.
 - `Restore Missing Windows On Workspace Switch` controls whether missing windows are automatically opened/activated during switching. When off, missing windows stay attached as unavailable until `Find or Reopen` is used.
 - Status Item workspace switches save the previous workspace without opening the Window Board window.
 - Attached window positions are snapshotted at low frequency so recently moved windows can be restored after close/reconnect where possible.
@@ -82,7 +101,8 @@ Workspace switching is designed to show the target workspace quickly and then fi
 
 - `WindowBoardAppState`: app-wide shared state and settings
 - `WorkspaceSessionController`: workspace/session state, switching, reconnect, minimize/restore
-- `ContentView`: main Window Board UI and board-window-dependent behavior
+- `ContentView`: main window composition, board-window-dependent behavior, and command routing
+- `WindowBoardMainViews`: card-board UI views and workspace controls
 - `AccessibilityWindowService`: AX window discovery and operations
 - `WorkspaceStore`: saved workspace persistence
 - `WindowBoardStatusItemController`: macOS menu bar Status Item

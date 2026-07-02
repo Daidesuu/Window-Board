@@ -1,6 +1,6 @@
 # WindowBoard Current UI Layout Summary
 
-WindowBoard is a macOS SwiftUI app. The current main window uses a `NavigationSplitView`.
+WindowBoard is a macOS SwiftUI app. The current main window uses a `NavigationSplitView`, but the detail area is no longer a table/list inspector. The active design direction is a card-board UI where pinned external windows are shown as app-tinted vertical cards.
 
 ## Root
 
@@ -13,11 +13,13 @@ NavigationSplitView {
 .toolbar {
     Refresh
     Attach Window
-    Show Attached
+    Focus Board
     Minimize Others
     Restore Windows
 }
 ```
+
+When Accessibility permission is missing, the split view is replaced by the permission screen.
 
 ## Sidebar: `WorkspaceSidebarView`
 
@@ -26,23 +28,25 @@ Purpose:
 - Shows saved workspaces.
 - Shows which workspace is active.
 - Displays each workspace's Status Item glyph/icon and window count.
+- Provides a bottom `New Workspace` action.
 
 Structure:
 
 ```swift
-List(selection: $selectedWorkspaceID) {
-    Section("Workspaces") {
-        ForEach(workspaces) { workspace in
-            WorkspaceSidebarRow(
-                workspace: workspace,
-                isActive: workspace.id == activeWorkspaceID
-            )
-            .tag(workspace.id)
+VStack {
+    List(selection: $selectedWorkspaceID) {
+        Section("Workspaces") {
+            ForEach(workspaces) { workspace in
+                WorkspaceSidebarRow(...)
+            }
         }
     }
+    .listStyle(.sidebar)
+
+    Divider()
+
+    Button("New Workspace", systemImage: "plus")
 }
-.listStyle(.sidebar)
-.navigationTitle("Window Board")
 ```
 
 Each row shows:
@@ -54,78 +58,79 @@ Each row shows:
 
 ## Detail: `WorkspaceDetailView`
 
-The detail area is vertically stacked.
+The detail area is vertically structured:
 
 ```swift
 VStack(spacing: 0) {
-    WorkspaceSummaryHeader(...)
+    BoardSummaryHeader(...)
     Divider()
 
-    AttachedWindowsHeader(...)
-    AttachedWindowsListView(...)
-        .frame(maxHeight: .infinity)
+    ScrollView {
+        PinnedWindowCardGrid(...)
+        secondaryControls
+    }
 
     Divider()
-
-    secondaryControls
-        .frame(maxHeight: 300)
-
-    Divider()
-
     StatusFeedbackView(...)
 }
 ```
 
-## Detail Header: `WorkspaceSummaryHeader`
+The board content is constrained to a readable max width and scrolls vertically when the window is small.
+
+## Board Header: `BoardSummaryHeader`
 
 Purpose:
 
-- Shows current selected workspace summary.
-- Shows workspace status item preview.
-- Shows attached window count.
-- Provides `Reload`.
+- Shows the selected workspace as the current board.
+- Shows the workspace Status Item preview.
+- Shows pinned count, attention count, and last saved time.
+- Provides board-level recovery and layout restore actions.
 
-Contains:
+Main actions:
 
-- `StatusItemPreview`
-- Workspace display name
-- Attached count
-- `Reload` button
+- `Recover Missing`
+- `Restore Layout`
 
-## Main List: `AttachedWindowsListView`
+The title fallback is `No Board Selected`, but normal app state should select `Default` or another workspace.
 
-Purpose:
+## Main Board: `PinnedWindowCardGrid`
 
-- Shows attached windows for the selected workspace.
-- Uses `List`.
-
-Empty state:
-
-- Shows `No windows attached`
-- Shows `Attach Window` button
-
-Row layout:
+The main board is a responsive adaptive grid:
 
 ```swift
-HStack {
-    Image(systemName: "macwindow")
-
-    VStack {
-        Text(appName)
-        Text(windowTitle)
-    }
-
-    Spacer()
-
-    StatusBadge(...)
-    recoveryButtonIfNeeded
-    Menu("...") {
-        Save Layout
-        Find Window Again
-        Remove from Workspace
-    }
-}
+LazyVGrid(
+    columns: [GridItem(.adaptive(minimum: 200, maximum: 240), spacing: 18)]
+)
 ```
+
+Behavior:
+
+- Attached windows are rendered as `PinnedWindowCard`.
+- A trailing `AddPinnedWindowCard` is always shown.
+- If there are no pinned windows, the Add card becomes the empty-state call to action.
+- New cards animate in through the Add card path.
+- Detached cards animate out before removal.
+- Workspace switches can apply staggered card entrance motion.
+
+## Pinned Window Cards
+
+Each card uses a fixed base ratio:
+
+```text
+220 width x 308 height
+```
+
+The card scales to its grid column width.
+
+Card hierarchy:
+
+- Top: app name and `...` menu
+- Upper body: large app icon in an app-tinted field
+- Lower body:
+  - window title
+  - state badge
+  - short state explanation
+  - primary action button
 
 States:
 
@@ -134,29 +139,44 @@ States:
 - `Unavailable`
 - `Reconnecting`
 
-Recovery button:
+Primary action by state:
 
-- `Minimized` -> `Restore Window`
-- `Unavailable` -> `Find or Reopen`
-- `Reconnecting` -> disabled `Finding...`
-- `Available` -> no recovery button
+- `Available`: `Bring Forward`
+- `Minimized`: `Restore Window`
+- `Unavailable`: `Find or Reopen`
+- `Reconnecting`: disabled `Finding...`
+
+Secondary card actions are in the menu:
+
+- `Save Layout`
+- `Find Window Again`
+- `Detach from Board`
+
+## Add Window Card
+
+The Add card is the final grid item.
+
+Behavior:
+
+- Uses the same ratio as pinned cards.
+- Calls the Add-card attach path.
+- Appends the frontmost external window to the end of the board.
+- Empty state label is `Pin Frontmost Window`.
+- Non-empty state label is `Add Window`.
+- If a new card was just added, the next Add card quietly fades/slides back in.
 
 ## Secondary Controls
 
-The lower detail area is a `Form` with disclosure groups.
+Below the card grid, a grouped `Form` still provides lower-frequency controls:
 
 ```swift
 Form {
-    Section {
-        DisclosureGroup("Add Window") {
-            WindowSelectionView(...)
-        }
+    DisclosureGroup("Add Window") {
+        WindowSelectionView(...)
     }
 
-    Section {
-        DisclosureGroup("Workspace Settings") {
-            WorkspaceSettingsControls(...)
-        }
+    DisclosureGroup("Workspace Settings") {
+        WorkspaceSettingsControls(...)
     }
 }
 .formStyle(.grouped)
@@ -171,48 +191,32 @@ Contains:
 - `Attach Selected`
 - `Attach Window`
 
-```swift
-Picker("Window", selection: $selectedWindowID) {
-    Text("Choose a window")
-    ForEach(windows) { window in
-        Text(window.displayName)
-    }
-}
-
-Button("Refresh")
-Button("Attach Selected")
-Button("Attach Window")
-```
+This is the explicit-list attach path. The card-based Add Window path is the primary quick path.
 
 ### Workspace Settings
 
-Currently contains several different concerns in one area:
+Contains:
 
-1. Workspace
-   - Workspace name text field
-   - `Save`
-   - `Overwrite`
-   - `Rename`
-2. Status Item Display
-   - Status item preview
-   - Text field for custom status item text
-   - `Set Text`
-   - icon menu for SF Symbols / emoji
-3. Switch Behavior
-   - `Minimize Unattached On Workspace Switch`
-   - `Restore Missing Windows On Workspace Switch`
-   - `Keep Window Board On Top`
-4. Danger Zone
-   - `Delete Workspace`
-   - `Remove All Windows`
+- Workspace name editing
+- `Save`
+- `Overwrite`
+- `Rename`
+- Status Item Display preview, text, and icon menu
+- `Minimize Unattached On Workspace Switch`
+- `Restore Missing Windows On Workspace Switch`
+- `Keep Window Board On Top`
+- `Delete Workspace`
+- `Remove All Windows`
+
+This area is still dense and remains a likely future UI cleanup target.
 
 ## Status Footer
 
-Always visible at bottom of detail.
+Always visible at the bottom of the detail area.
 
 Shows:
 
-- Progress state when loading/minimizing/restoring
+- Progress state while loading, minimizing, or restoring
 - `session.statusMessage`
 
 Examples:
@@ -232,39 +236,35 @@ Items:
   - help: `Refresh window list`
 - `Attach Window`
   - icon: `plus.rectangle.on.rectangle`
-  - help: `Attach the frontmost window to this workspace`
-- `Show Attached`
-  - icon: `rectangle.on.rectangle`
-  - help: `Bring attached windows to the front`
+  - help: `Pin the frontmost window to this board`
+- `Focus Board`
+  - icon: `scope`
+  - help: `Bring this board's pinned windows to the front`
 - `Minimize Others`
   - icon: `minus.square`
   - help: `Minimize windows not in this workspace`
 - `Restore Windows`
-  - icon: `arrow.up.square`
-  - help: `Restore windows minimized by WindowBoard`
+  - icon: `arrow.counterclockwise`
 
 ## Settings Window
 
-The macOS Settings scene currently contains behavior settings such as:
+The macOS Settings scene contains behavior settings that are not workspace-specific:
 
 - Follow Mode
 - Position Update
 - Auto Front
 - Board Click Action
 
-Some behavior options are still in the main window:
+The main window still owns workspace-specific or frequently toggled options:
 
 - Keep Window Board On Top
 - Minimize Unattached On Workspace Switch
 - Restore Missing Windows On Workspace Switch
 
-## Current UI Issues
+## Current UI Notes
 
-The current UI is functional but still has some information architecture issues:
-
-1. `Workspace Settings` contains too many unrelated concerns.
-2. Frequent actions and low-frequency behavior settings are close together.
-3. Toolbar actions and detail actions partially overlap.
-4. `Switch Behavior` options are probably closer to Settings than day-to-day workspace editing.
-5. Dangerous actions like `Delete Workspace` and `Remove All Windows` are inside the same disclosure group as normal workspace editing.
-6. The lower `secondaryControls` area can feel dense when expanded.
+- The active UI direction is a card-board layout, not the older `AttachedWindowsListView` list layout.
+- Some older list/inspector helper views still exist in source, but they are not the primary main-window composition.
+- `Workspace Settings` remains the densest part of the UI.
+- The Add-card path and explicit picker path intentionally coexist.
+- Card animation should stay modest and respect Reduce Motion.

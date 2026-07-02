@@ -2,6 +2,14 @@ import AppKit
 import ApplicationServices
 import Combine
 import Foundation
+import OSLog
+
+#if DEBUG
+private let workspaceSessionLogger = Logger(
+    subsystem: Bundle.main.bundleIdentifier ?? "WindowBoard",
+    category: "WorkspaceSession"
+)
+#endif
 
 enum WorkspaceSwitchSource {
     case mainWindow
@@ -201,6 +209,20 @@ final class WorkspaceSessionController: ObservableObject {
         statusMessage = "Saved \(workspace.displayName)."
     }
 
+    func createWorkspace(boardOrigin: CGPoint?) {
+        persistActiveWorkspaceState(boardOrigin: boardOrigin)
+
+        let workspace = workspaceStore.saveWorkspace(name: nextWorkspaceName(), windows: [])
+        selectedWorkspaceID = workspace.id
+        activeWorkspaceID = workspace.id
+        workspaceName = workspace.name
+        attachedWindows = []
+        unavailableAttachedWindowIDs.removeAll()
+        reconnectingAttachedWindowIDs.removeAll()
+        loadedWindowIDsByWorkspaceID[workspace.id] = [:]
+        statusMessage = "Created \(workspace.displayName)."
+    }
+
     func overwriteSelectedWorkspace(name: String, boardOrigin: CGPoint?) {
         guard let selectedWorkspaceID,
               !attachedWindows.isEmpty,
@@ -248,6 +270,17 @@ final class WorkspaceSessionController: ObservableObject {
 
         workspaceName = workspace.name
         statusMessage = "Renamed workspace to \(workspace.name)."
+    }
+
+    private func nextWorkspaceName() -> String {
+        let existingNames = Set(workspaceStore.workspaces.map(\.name))
+        var index = workspaceStore.workspaces.count + 1
+
+        while existingNames.contains("Workspace \(index)") {
+            index += 1
+        }
+
+        return "Workspace \(index)"
     }
 
     func deleteSelectedWorkspace() {
@@ -409,7 +442,9 @@ final class WorkspaceSessionController: ObservableObject {
             }
 
             if windowCache == nil || !unresolvedReferences.isEmpty {
+                let listWindowsStart = Date()
                 availableWindows = service.listWindows()
+                Self.logDuration("workspace listWindows", since: listWindowsStart)
             }
 
             if !unresolvedReferences.isEmpty {
@@ -554,6 +589,8 @@ final class WorkspaceSessionController: ObservableObject {
             let resolvedRestoredCount = restoredCount
             let resolvedActivatedOnlyCount = activatedOnlyCount
             let resolvedMissedCount = missedCount
+            var minimizeCandidateWindows = Self.mergeWindows(resolvedAvailableWindows, into: windowCache ?? [])
+            var minimizeUnavailableAttachmentIDs = resolvedUnavailableAttachmentIDs
 
             await MainActor.run {
                 self.attachedWindows = resolvedAttachedWindows
@@ -596,16 +633,20 @@ final class WorkspaceSessionController: ObservableObject {
             }
 
             if shouldDeferWindowApplication {
+                let applyPositionsStart = Date()
                 let applicationResult = Self.applyWorkspaceWindowPositions(resolvedAttachedWindows, service: service)
+                Self.logDuration("applyWorkspaceWindowPositions", since: applyPositionsStart)
                 var windowsToRaise = applicationResult.appliedWindows
                 let failedAttachments = applicationResult.failedAttachments
-                if !failedAttachments.isEmpty {
+                if shouldRestoreMissingWindows, !failedAttachments.isEmpty {
+                    let recoveryStart = Date()
                     let recoveredAttachments = await Self.recoverDeferredAttachments(
                         failedAttachments,
                         boardOrigin: effectiveBoardOrigin,
                         useSavedOrigin: shouldRestoreSavedOrigin,
                         service: service
                     )
+                    Self.logDuration("recoverDeferredAttachments", since: recoveryStart)
                     await MainActor.run {
                         self.applyDeferredRecovery(
                             recoveredAttachments,
@@ -614,6 +655,22 @@ final class WorkspaceSessionController: ObservableObject {
                         )
                     }
                     windowsToRaise.append(contentsOf: recoveredAttachments.values)
+                    let unrecoveredAttachmentIDs = Set(failedAttachments.map(\.id))
+                        .subtracting(Set(recoveredAttachments.keys))
+                    minimizeUnavailableAttachmentIDs.formUnion(unrecoveredAttachmentIDs)
+                    minimizeCandidateWindows = Self.mergeWindows(
+                        recoveredAttachments.values.map(\.window),
+                        into: minimizeCandidateWindows
+                    )
+                } else if !failedAttachments.isEmpty {
+                    minimizeUnavailableAttachmentIDs.formUnion(failedAttachments.map(\.id))
+                    await MainActor.run {
+                        self.applyDeferredRecovery(
+                            [:],
+                            failedAttachments: failedAttachments,
+                            workspaceID: workspace.id
+                        )
+                    }
                 }
                 if !shouldMinimizeAfterSwitch {
                     Self.raiseWorkspaceWindows(windowsToRaise, service: service)
@@ -630,6 +687,8 @@ final class WorkspaceSessionController: ObservableObject {
             if shouldMinimizeAfterSwitch {
                 await self.minimizeUnattachedAfterWorkspaceSwitch(
                     keeping: resolvedAttachedWindows,
+                    candidateWindows: minimizeCandidateWindows,
+                    unavailableAttachmentIDs: minimizeUnavailableAttachmentIDs,
                     workspaceID: workspace.id,
                     service: service,
                     completion: minimizeAfterSwitchCompletion
@@ -750,6 +809,8 @@ final class WorkspaceSessionController: ObservableObject {
 
     private func minimizeUnattachedAfterWorkspaceSwitch(
         keeping attachedWindows: [AttachedWindow],
+        candidateWindows: [WindowInfo],
+        unavailableAttachmentIDs: Set<AttachedWindow.ID>,
         workspaceID: SavedWorkspace.ID,
         service: AccessibilityWindowService,
         completion: @escaping @MainActor () -> Void
@@ -770,7 +831,14 @@ final class WorkspaceSessionController: ObservableObject {
             return
         }
 
-        let result = Self.minimizeUnattachedWindows(keeping: attachedWindows, service: service)
+        let minimizeStart = Date()
+        let result = Self.minimizeUnattachedWindows(
+            keeping: attachedWindows,
+            candidateWindows: candidateWindows,
+            unavailableAttachmentIDs: unavailableAttachmentIDs,
+            service: service
+        )
+        Self.logDuration("minimizeUnattachedAfterWorkspaceSwitch", since: minimizeStart)
 
         await MainActor.run {
             guard self.activeWorkspaceID == workspaceID else {
@@ -1231,10 +1299,13 @@ final class WorkspaceSessionController: ObservableObject {
 
     private static func minimizeUnattachedWindows(
         keeping attachedWindows: [AttachedWindow],
+        candidateWindows: [WindowInfo],
+        unavailableAttachmentIDs: Set<AttachedWindow.ID>,
         service: AccessibilityWindowService
     ) -> SessionMinimizeWindowsResult {
         let snapshots = attachedWindows.map {
-            SessionAttachedWindowSnapshot(
+            let isUnavailable = $0.window.pid == 0 || unavailableAttachmentIDs.contains($0.id)
+            return SessionAttachedWindowSnapshot(
                 windowID: $0.window.id,
                 appName: $0.window.appName,
                 title: $0.window.title,
@@ -1244,12 +1315,12 @@ final class WorkspaceSessionController: ObservableObject {
                 windowNumber: $0.window.windowNumber,
                 origin: $0.lastWindowOrigin,
                 window: $0.window,
-                isUnavailable: false,
+                isUnavailable: isUnavailable,
                 isReconnecting: false,
                 protectsSameApplicationFromMinimize: shouldProtectSameApplicationFromMinimize($0.window)
             )
         }
-        let windowsToMinimize = service.listWindows().filter {
+        let windowsToMinimize = candidateWindows.filter {
             shouldMinimizeWindow($0, attachedSnapshots: snapshots)
         }
         return minimizeWindows(windowsToMinimize, attachedSnapshots: snapshots, service: service)
@@ -1348,6 +1419,10 @@ final class WorkspaceSessionController: ObservableObject {
         attachedSnapshots: [SessionAttachedWindowSnapshot]
     ) -> Bool {
         attachedSnapshots.contains { snapshot in
+            guard !snapshot.isUnavailable, !snapshot.isReconnecting else {
+                return false
+            }
+
             guard isSameApplication(window, snapshot: snapshot) else {
                 return false
             }
@@ -1469,5 +1544,12 @@ final class WorkspaceSessionController: ObservableObject {
         return mergedWindows.sorted {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
+    }
+
+    private static func logDuration(_ operation: String, since startDate: Date) {
+        #if DEBUG
+        let elapsedMilliseconds = Date().timeIntervalSince(startDate) * 1_000
+        workspaceSessionLogger.debug("\(operation, privacy: .public) took \(elapsedMilliseconds, format: .fixed(precision: 1), privacy: .public) ms")
+        #endif
     }
 }

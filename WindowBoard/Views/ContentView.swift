@@ -36,6 +36,11 @@ private struct AttachedWindowSnapshotResult {
     let isMinimized: Bool
 }
 
+private enum AttachedWindowInsertion {
+    case start
+    case end
+}
+
 private func bestReplacementWindow(for originalWindow: WindowInfo, in candidates: [WindowInfo]) -> WindowInfo? {
     let appCandidates = candidates.filter { candidate in
         if let originalBundleIdentifier = originalWindow.bundleIdentifier,
@@ -174,6 +179,10 @@ struct ContentView: View {
     @State private var activePositionReadIDs: Set<AttachedWindow.ID> = []
     @State private var minimizedAttachedWindowIDs: Set<AttachedWindow.ID> = []
     @State private var workspaceStatusTextInput = ""
+    @State private var recentlyAddedAttachedWindowID: AttachedWindow.ID?
+    @State private var workspaceCardTransitionToken: UUID?
+    @State private var detachingAttachedWindowIDs: Set<AttachedWindow.ID> = []
+    @State private var detachAnimationTasks: [AttachedWindow.ID: Task<Void, Never>] = [:]
 
     init(appState: WindowBoardAppState) {
         _appState = ObservedObject(initialValue: appState)
@@ -330,6 +339,7 @@ struct ContentView: View {
         WorkspaceSidebarView(
             workspaces: workspaceStore.workspaces,
             activeWorkspaceID: session.activeWorkspaceID,
+            createWorkspace: createWorkspace,
             selection: $session.selectedWorkspaceID
         )
     }
@@ -368,6 +378,11 @@ struct ContentView: View {
             refreshWindows: refreshWindowsAsync,
             attachSelected: attachSelectedWindow,
             attachFrontmost: attachFrontmostWindow,
+            attachFromAddCard: attachFrontmostWindowFromAddCard,
+            recentlyAddedWindowID: recentlyAddedAttachedWindowID,
+            clearRecentlyAddedWindowID: { recentlyAddedAttachedWindowID = nil },
+            workspaceTransitionToken: workspaceCardTransitionToken,
+            detachingAttachedWindowIDs: detachingAttachedWindowIDs,
             saveWorkspace: saveCurrentWorkspace,
             overwriteWorkspace: overwriteSelectedWorkspace,
             renameWorkspace: renameSelectedWorkspace,
@@ -388,6 +403,7 @@ struct ContentView: View {
     }
 
     private func detachAllFromMainView() {
+        cancelDetachAnimations()
         detachAll(message: "Detached all windows.")
     }
 
@@ -405,7 +421,36 @@ struct ContentView: View {
     }
 
     private func detachWindowFromMainView(id: AttachedWindow.ID) {
-        detachWindow(id: id)
+        detachWindowFromCard(id: id)
+    }
+
+    private func detachWindowFromCard(id: AttachedWindow.ID) {
+        guard session.attachedWindows.contains(where: { $0.id == id }),
+              !detachingAttachedWindowIDs.contains(id) else {
+            return
+        }
+
+        detachAnimationTasks[id]?.cancel()
+        detachingAttachedWindowIDs.insert(id)
+
+        detachAnimationTasks[id] = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(260))
+            guard !Task.isCancelled else {
+                return
+            }
+
+            detachWindow(id: id)
+            detachingAttachedWindowIDs.remove(id)
+            detachAnimationTasks[id] = nil
+        }
+    }
+
+    private func cancelDetachAnimations() {
+        for task in detachAnimationTasks.values {
+            task.cancel()
+        }
+        detachAnimationTasks.removeAll()
+        detachingAttachedWindowIDs.removeAll()
     }
 
     private func updateAttachedPositionsFromMainView() {
@@ -1037,7 +1082,36 @@ struct ContentView: View {
         attachWindow(frontmostWindow, boardOrigin: boardOrigin)
     }
 
-    private func attachWindow(_ window: WindowInfo, boardOrigin: CGPoint) {
+    private func attachFrontmostWindowFromAddCard() {
+        cancelScheduledBoardSelectedAction()
+
+        guard let lastExternalApplication,
+              let boardOrigin = boardMotion.currentOrigin else {
+            recentlyAddedAttachedWindowID = nil
+            session.statusMessage = "Activate another app window first."
+            return
+        }
+
+        guard let frontmostWindow = service.frontmostWindow(for: lastExternalApplication) else {
+            recentlyAddedAttachedWindowID = nil
+            session.statusMessage = "No attachable frontmost window found for \(lastExternalApplication.localizedName ?? "the selected app")."
+            return
+        }
+
+        attachWindow(
+            frontmostWindow,
+            boardOrigin: boardOrigin,
+            insertion: .end,
+            markRecentlyAdded: true
+        )
+    }
+
+    private func attachWindow(
+        _ window: WindowInfo,
+        boardOrigin: CGPoint,
+        insertion: AttachedWindowInsertion = .start,
+        markRecentlyAdded: Bool = false
+    ) {
         do {
             let targetOrigin = try service.position(of: window)
             let attachedWindow = AttachedWindow(
@@ -1053,18 +1127,38 @@ struct ContentView: View {
             session.attachedWindows.removeAll { isSameAttachedWindow($0.window, as: window) }
             clearAttachedWindowAccessFailure(for: attachedWindow.id)
             markAttachedWindowAvailable(attachedWindow.id)
-            session.attachedWindows.insert(attachedWindow, at: session.attachedWindows.startIndex)
+            switch insertion {
+            case .start:
+                session.attachedWindows.insert(attachedWindow, at: session.attachedWindows.startIndex)
+            case .end:
+                session.attachedWindows.append(attachedWindow)
+            }
+            if markRecentlyAdded {
+                recentlyAddedAttachedWindowID = attachedWindow.id
+            }
             session.statusMessage = wasAlreadyAttached
                 ? "Already attached. Updated \(window.displayName)."
                 : "Attached \(window.displayName)."
             bringAllAttachedWindowsToFront(updateStatus: false)
         } catch {
+            if markRecentlyAdded {
+                recentlyAddedAttachedWindowID = nil
+            }
             session.statusMessage = "Could not attach selected window. \(error.localizedDescription)"
         }
     }
 
     private func saveCurrentWorkspace() {
         session.saveCurrentWorkspace(name: session.workspaceName, boardOrigin: boardMotion.currentOrigin)
+    }
+
+    private func createWorkspace() {
+        session.createWorkspace(boardOrigin: boardMotion.currentOrigin)
+        attachedWindowFailureCounts.removeAll()
+        activePositionReadIDs.removeAll()
+        minimizedAttachedWindowIDs.removeAll()
+        workspaceStatusTextInput = ""
+        boardMotion.pendingReleaseOrigin = nil
     }
 
     private func overwriteSelectedWorkspace() {
@@ -1126,6 +1220,8 @@ struct ContentView: View {
         let workspaceFrontingRevision = shouldTemporarilyFrontBoard
             ? beginTemporaryBoardWorkspaceFronting()
             : nil
+        recentlyAddedAttachedWindowID = nil
+        cancelDetachAnimations()
         session.switchWorkspace(
             id: workspaceID,
             boardOrigin: boardMotion.currentOrigin,
@@ -1170,6 +1266,14 @@ struct ContentView: View {
                 bringBoardWindowToFront()
             }
         )
+        let transitionToken = UUID()
+        workspaceCardTransitionToken = transitionToken
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(900))
+            if workspaceCardTransitionToken == transitionToken {
+                workspaceCardTransitionToken = nil
+            }
+        }
     }
 
     private func loadSelectedWorkspace() {
@@ -1934,7 +2038,7 @@ struct ContentView: View {
 
     private func configureBoardWindowTransparency(_ window: NSWindow) {
         window.isOpaque = false
-        let baseBackgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.6)
+        let baseBackgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.74)
         window.backgroundColor = baseBackgroundColor
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
@@ -2220,6 +2324,9 @@ struct ContentView: View {
         clearAttachedWindowAccessFailure(for: id)
         activePositionReadIDs.remove(id)
         minimizedAttachedWindowIDs.remove(id)
+        detachingAttachedWindowIDs.remove(id)
+        detachAnimationTasks[id]?.cancel()
+        detachAnimationTasks[id] = nil
         if session.attachedWindows.isEmpty {
             boardMotion.pendingReleaseOrigin = nil
             pendingAutoFront = false
@@ -2230,6 +2337,7 @@ struct ContentView: View {
     }
 
     private func detachAll(message: String) {
+        cancelDetachAnimations()
         session.detachAll(boardOrigin: boardMotion.currentOrigin, message: message)
         frontingTask?.cancel()
         frontingTask = nil

@@ -6,6 +6,7 @@
 - External window discovery, movement, minimization, focus, and raise behavior use Accessibility APIs through `AXUIElement`.
 - The original single-window MVP is complete. Current work is in the post-MVP workspace/session manager phase.
 - Workspace runtime state is centralized in `WorkspaceSessionController`; keep main-window and Status Item workspace switching on that shared path.
+- The current main UI direction is a card-board layout in `WindowBoardMainViews`, with pinned windows represented as app-tinted cards and a trailing Add Window card. Older list/inspector helpers may still exist but are not the primary composition.
 
 ## Build And Run
 - Prefer `./script/build_and_run.sh` for normal build/run verification.
@@ -30,7 +31,9 @@
 - `Minimize Unattached` is best-effort and may not affect system, special, full-screen, cross-Space, or permission-limited windows.
 - Full-screen windows and windows on another Space are not reliable workspace targets. Do not present them as supported; public macOS APIs cannot reliably move another app's existing window into the current Space or control full-screen app Spaces.
 - `Minimize Unattached On Workspace Switch` runs after the workspace switch has been shown; do not make workspace loading wait for all minimize operations.
+- Switch-time minimize should reuse known window candidates from workspace switching where possible instead of always forcing a fresh full `listWindows()` pass.
 - `Restore Missing Windows On Workspace Switch` controls whether workspace switching automatically opens/activates missing windows. Keep the default off; `Find or Reopen` remains the explicit recovery path.
+- When `Restore Missing Windows On Workspace Switch` is off, do not run automatic open/activate/poll recovery for failed workspace-application windows during switching; keep them attached as unavailable.
 - VS Code windows should not be protected by broad same-application ambiguity fallback; only the concretely matched attached window should be protected from minimize.
 - Workspace switching should keep attached windows selected even when they are closed, stale, minimized, or temporarily unavailable.
 - Workspace switching uses placeholder attached windows first, then replaces each row as matching live AX windows are found.
@@ -41,6 +44,7 @@
 - Attached window position snapshots should stay low-frequency, run AX reads off the main thread, and persist only meaningful changes.
 - Workspace-specific Status Item display may be an SF Symbol, emoji, or short text value saved on the workspace.
 - `setPosition`, `setSize`, minimize/restore, and fronting operations should skip no-op work where possible and run off the main thread.
+- Debug builds may include lightweight `Logger` timing around expensive workspace operations; keep this diagnostic logging low-noise and non-user-facing.
 
 ## Safety
 - Do not use destructive git commands unless explicitly requested.

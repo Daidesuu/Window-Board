@@ -59,27 +59,44 @@ enum AttachedWindowDisplayState: Equatable {
 struct WorkspaceSidebarView: View {
     let workspaces: [SavedWorkspace]
     let activeWorkspaceID: SavedWorkspace.ID?
+    let createWorkspace: () -> Void
     @Binding var selection: SavedWorkspace.ID?
 
     var body: some View {
-        List(selection: $selection) {
-            Section("Workspaces") {
-                if workspaces.isEmpty {
-                    Text("No Saved Workspaces")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(workspaces) { workspace in
-                        WorkspaceSidebarRow(
-                            workspace: workspace,
-                            isActive: workspace.id == activeWorkspaceID
-                        )
-                        .tag(SavedWorkspace.ID?.some(workspace.id))
+        VStack(spacing: 0) {
+            List(selection: $selection) {
+                Section("Workspaces") {
+                    if workspaces.isEmpty {
+                        Text("No Saved Workspaces")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(workspaces) { workspace in
+                            WorkspaceSidebarRow(
+                                workspace: workspace,
+                                isActive: workspace.id == activeWorkspaceID
+                            )
+                            .tag(SavedWorkspace.ID?.some(workspace.id))
+                        }
                     }
                 }
             }
+            .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
+
+            Divider()
+
+            Button(action: createWorkspace) {
+                Label("New Workspace", systemImage: "plus")
+                    .font(.callout)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 14)
+            .padding(.vertical, 10)
+            .help("New Workspace")
         }
-        .listStyle(.sidebar)
-        .scrollContentBackground(.hidden)
         .background {
             Rectangle()
                 .fill(.thinMaterial)
@@ -164,6 +181,11 @@ struct WorkspaceDetailView: View {
     let refreshWindows: () -> Void
     let attachSelected: () -> Void
     let attachFrontmost: () -> Void
+    let attachFromAddCard: () -> Void
+    let recentlyAddedWindowID: AttachedWindow.ID?
+    let clearRecentlyAddedWindowID: () -> Void
+    let workspaceTransitionToken: UUID?
+    let detachingAttachedWindowIDs: Set<AttachedWindow.ID>
     let saveWorkspace: () -> Void
     let overwriteWorkspace: () -> Void
     let renameWorkspace: () -> Void
@@ -198,9 +220,7 @@ struct WorkspaceDetailView: View {
             .padding(.horizontal, 24)
             .padding(.vertical, 14)
             .background {
-                Rectangle()
-                    .fill(.ultraThinMaterial)
-                    .overlay(Color(nsColor: .windowBackgroundColor).opacity(0.015))
+                Color(nsColor: .windowBackgroundColor).opacity(0.22)
             }
 
             Divider()
@@ -237,6 +257,11 @@ struct WorkspaceDetailView: View {
                     stateForWindow: attachedState,
                     canAttachFrontmost: canAttachFrontmost,
                     attachFrontmost: attachFrontmost,
+                    attachFromAddCard: attachFromAddCard,
+                    recentlyAddedWindowID: recentlyAddedWindowID,
+                    clearRecentlyAddedWindowID: clearRecentlyAddedWindowID,
+                    workspaceTransitionToken: workspaceTransitionToken,
+                    detachingAttachedWindowIDs: detachingAttachedWindowIDs,
                     recover: recoverAttached,
                     update: updateAttached,
                     detach: detachAttached,
@@ -649,6 +674,11 @@ private struct PinnedWindowCardGrid: View {
     let stateForWindow: (AttachedWindow) -> AttachedWindowDisplayState
     let canAttachFrontmost: Bool
     let attachFrontmost: () -> Void
+    let attachFromAddCard: () -> Void
+    let recentlyAddedWindowID: AttachedWindow.ID?
+    let clearRecentlyAddedWindowID: () -> Void
+    let workspaceTransitionToken: UUID?
+    let detachingAttachedWindowIDs: Set<AttachedWindow.ID>
     let recover: (AttachedWindow) -> Void
     let update: (AttachedWindow.ID) -> Void
     let detach: (AttachedWindow.ID) -> Void
@@ -663,14 +693,24 @@ private struct PinnedWindowCardGrid: View {
             if attachedWindows.isEmpty {
                 AddPinnedWindowCard(
                     canAttachFrontmost: canAttachFrontmost,
-                    attachFrontmost: attachFrontmost,
-                    isEmptyState: true
+                    attachFrontmost: attachFromAddCard,
+                    isEmptyState: true,
+                    appearanceGeneration: attachedWindows.count,
+                    workspaceTransitionToken: workspaceTransitionToken,
+                    workspaceTransitionIndex: 0
                 )
             } else {
-                ForEach(attachedWindows, id: \.id) { attachedWindow in
+                ForEach(Array(attachedWindows.enumerated()), id: \.element.id) { index, attachedWindow in
+                    let isPinningIn = attachedWindow.id == recentlyAddedWindowID
+                    let isDetaching = detachingAttachedWindowIDs.contains(attachedWindow.id)
                     PinnedWindowCard(
                         attachedWindow: attachedWindow,
                         state: stateForWindow(attachedWindow),
+                        isPinningIn: isPinningIn,
+                        isDetaching: isDetaching,
+                        workspaceTransitionToken: workspaceTransitionToken,
+                        workspaceTransitionIndex: index,
+                        onPinInComplete: isPinningIn ? clearRecentlyAddedWindowID : {},
                         bringForward: { bringForward(attachedWindow) },
                         recover: { recover(attachedWindow) },
                         update: { update(attachedWindow.id) },
@@ -680,74 +720,535 @@ private struct PinnedWindowCardGrid: View {
 
                 AddPinnedWindowCard(
                     canAttachFrontmost: canAttachFrontmost,
-                    attachFrontmost: attachFrontmost,
-                    isEmptyState: false
+                    attachFrontmost: attachFromAddCard,
+                    isEmptyState: false,
+                    appearanceGeneration: attachedWindows.count,
+                    workspaceTransitionToken: workspaceTransitionToken,
+                    workspaceTransitionIndex: attachedWindows.count
                 )
+            }
+        }
+        .animation(
+            .spring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.06),
+            value: attachedWindows.map(\.id)
+        )
+    }
+}
+
+private extension View {
+    func interactiveCardMotion(
+        cornerRadius: CGFloat = 16,
+        isEnabled: Bool = true,
+        highlightOpacity: Double = 0.12
+    ) -> some View {
+        modifier(
+            InteractiveCardMotion(
+                cornerRadius: cornerRadius,
+                isEnabled: isEnabled,
+                highlightOpacity: highlightOpacity
+            )
+        )
+    }
+
+    func cardPinIn(
+        isActive: Bool,
+        onComplete: @escaping () -> Void
+    ) -> some View {
+        modifier(CardPinInModifier(isActive: isActive, onComplete: onComplete))
+    }
+
+    func workspaceCardEntrance(
+        token: UUID?,
+        index: Int,
+        isEnabled: Bool = true
+    ) -> some View {
+        modifier(
+            WorkspaceCardEntranceModifier(
+                token: token,
+                index: index,
+                isEnabled: isEnabled
+            )
+        )
+    }
+
+    func cardDetachExit(isActive: Bool) -> some View {
+        modifier(CardDetachExitModifier(isActive: isActive))
+    }
+}
+
+private struct CardDetachExitModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    let isActive: Bool
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(isActive ? 0 : 1)
+            .scaleEffect(reduceMotion || !isActive ? 1 : 0.96)
+            .offset(y: reduceMotion || !isActive ? 0 : -8)
+            .rotationEffect(.degrees(reduceMotion || !isActive ? 0 : -1.5))
+            .animation(.easeInOut(duration: reduceMotion ? 0.16 : 0.24), value: isActive)
+            .allowsHitTesting(!isActive)
+            .accessibilityHidden(isActive)
+    }
+}
+
+private struct WorkspaceCardEntranceModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visible = true
+    @State private var lastToken: UUID?
+
+    let token: UUID?
+    let index: Int
+    let isEnabled: Bool
+
+    private var delayNanoseconds: UInt64 {
+        UInt64(min(Double(index) * 0.035, 0.18) * 1_000_000_000)
+    }
+
+    private var entranceAnimation: Animation {
+        if reduceMotion {
+            return .easeOut(duration: 0.16)
+        }
+
+        return .spring(response: 0.34, dampingFraction: 0.86, blendDuration: 0.06)
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .opacity(visible ? 1 : 0)
+            .scaleEffect(reduceMotion || visible ? 1 : 0.985)
+            .offset(y: reduceMotion || visible ? 0 : 10)
+            .onAppear {
+                let shouldRunInitialEntrance = lastToken == nil && token != nil
+                lastToken = token
+                if shouldRunInitialEntrance {
+                    scheduleEntrance()
+                }
+            }
+            .onChange(of: token) { _, newToken in
+                runEntranceIfNeeded(for: newToken)
+            }
+    }
+
+    private func runEntranceIfNeeded(for newToken: UUID?) {
+        guard isEnabled,
+              let newToken,
+              newToken != lastToken else {
+            lastToken = newToken
+            return
+        }
+
+        lastToken = newToken
+        scheduleEntrance()
+    }
+
+    private func scheduleEntrance() {
+        guard isEnabled else {
+            visible = true
+            return
+        }
+
+        visible = false
+
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: delayNanoseconds)
+            withAnimation(entranceAnimation) {
+                visible = true
             }
         }
     }
 }
 
+private struct CardPinInModifier: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var visible = true
+    @State private var hasAnimated = false
+
+    let isActive: Bool
+    let onComplete: () -> Void
+
+    func body(content: Content) -> some View {
+        let shouldShowStartState = isActive && !hasAnimated
+        let isVisible = shouldShowStartState ? false : visible
+
+        content
+            .opacity(isVisible ? 1 : 0)
+            .scaleEffect(reduceMotion || isVisible ? 1 : 0.96)
+            .offset(y: reduceMotion || isVisible ? 0 : -8)
+            .rotationEffect(.degrees(reduceMotion || isVisible ? 0 : 1.5))
+            .onAppear(perform: startIfNeeded)
+            .onChange(of: isActive) { _, _ in
+                startIfNeeded()
+            }
+    }
+
+    private func startIfNeeded() {
+        guard isActive, !hasAnimated else {
+            return
+        }
+
+        hasAnimated = true
+        visible = false
+
+        Task { @MainActor in
+            await Task.yield()
+            withAnimation(pinAnimation) {
+                visible = true
+            }
+            try? await Task.sleep(for: .milliseconds(reduceMotion ? 180 : 520))
+            onComplete()
+        }
+    }
+
+    private var pinAnimation: Animation {
+        if reduceMotion {
+            .easeOut(duration: 0.16)
+        } else {
+            .spring(response: 0.30, dampingFraction: 0.86, blendDuration: 0.06)
+        }
+    }
+}
+
+private struct InteractiveCardMotion: ViewModifier {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var normalizedHover: CGPoint = .zero
+    @State private var isHovering = false
+    @State private var cardSize: CGSize = .zero
+
+    let cornerRadius: CGFloat
+    let isEnabled: Bool
+    let highlightOpacity: Double
+
+    private let maxTiltDegrees: CGFloat = 5
+    private let spring = Animation.interactiveSpring(
+        response: 0.28,
+        dampingFraction: 0.82,
+        blendDuration: 0.08
+    )
+
+    private var motionEnabled: Bool {
+        isEnabled && !reduceMotion
+    }
+
+    private var x: CGFloat {
+        motionEnabled ? normalizedHover.x : 0
+    }
+
+    private var y: CGFloat {
+        motionEnabled ? normalizedHover.y : 0
+    }
+
+    private var hoverScale: CGFloat {
+        motionEnabled && isHovering ? 1.018 : 1
+    }
+
+    func body(content: Content) -> some View {
+        content
+            .background {
+                GeometryReader { proxy in
+                    Color.clear
+                        .onAppear {
+                            cardSize = proxy.size
+                        }
+                        .onChange(of: proxy.size) { _, newSize in
+                            cardSize = newSize
+                        }
+                }
+            }
+            .overlay {
+                specularHighlight
+                    .allowsHitTesting(false)
+            }
+            .scaleEffect(hoverScale)
+            .rotation3DEffect(
+                .degrees(-y * maxTiltDegrees),
+                axis: (x: 1, y: 0, z: 0),
+                perspective: 0.55
+            )
+            .rotation3DEffect(
+                .degrees(x * maxTiltDegrees),
+                axis: (x: 0, y: 1, z: 0),
+                perspective: 0.55
+            )
+            .shadow(
+                color: .black.opacity(motionEnabled && isHovering ? 0.12 : 0.04),
+                radius: motionEnabled && isHovering ? 18 : 8,
+                x: x * 7,
+                y: y * 7 + (motionEnabled && isHovering ? 10 : 5)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .onContinuousHover { phase in
+                guard isEnabled else { return }
+
+                switch phase {
+                case .active(let location):
+                    updateHover(at: location)
+                case .ended:
+                    resetHover()
+                }
+            }
+    }
+
+    private var specularHighlight: some View {
+        GeometryReader { proxy in
+            let width = proxy.size.width
+            let height = proxy.size.height
+            let activeOpacity = motionEnabled && isHovering ? highlightOpacity : 0
+
+            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                .fill(
+                    LinearGradient(
+                        stops: [
+                            .init(color: .clear, location: 0.28),
+                            .init(color: .white.opacity(0.48), location: 0.48),
+                            .init(color: .clear, location: 0.68)
+                        ],
+                        startPoint: .topLeading,
+                        endPoint: .bottomTrailing
+                    )
+                )
+                .frame(width: width * 0.76, height: height * 1.45)
+                .rotationEffect(.degrees(18))
+                .offset(
+                    x: width * 0.12 + x * width * 0.22,
+                    y: -height * 0.28 + y * height * 0.16
+                )
+                .opacity(activeOpacity)
+                .blur(radius: 0.35)
+        }
+        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+    }
+
+    private func updateHover(at location: CGPoint) {
+        guard cardSize.width > 0, cardSize.height > 0 else { return }
+
+        let normalizedX = ((location.x / cardSize.width) - 0.5) * 2
+        let normalizedY = ((location.y / cardSize.height) - 0.5) * 2
+        let clamped = CGPoint(
+            x: min(max(normalizedX, -1), 1),
+            y: min(max(normalizedY, -1), 1)
+        )
+
+        withAnimation(spring) {
+            isHovering = true
+            normalizedHover = clamped
+        }
+    }
+
+    private func resetHover() {
+        withAnimation(spring) {
+            isHovering = false
+            normalizedHover = .zero
+        }
+    }
+}
+
 private struct AddPinnedWindowCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     let canAttachFrontmost: Bool
     let attachFrontmost: () -> Void
     let isEmptyState: Bool
+    let appearanceGeneration: Int
+    let workspaceTransitionToken: UUID?
+    let workspaceTransitionIndex: Int
+    @State private var isPresenting = true
+    @State private var lastAppearanceGeneration = 0
+
+    private let baseCardSize = CGSize(width: 220, height: 308)
+    private var presentationOpacity: Double {
+        (canAttachFrontmost ? 1 : 0.55) * (isPresenting ? 1 : 0)
+    }
 
     var body: some View {
-        Button(action: attachFrontmost) {
-            VStack(spacing: 12) {
-                Image(systemName: "plus")
-                    .font(.system(size: 28, weight: .medium))
-                    .foregroundStyle(.secondary)
+        GeometryReader { proxy in
+            let scale = proxy.size.width / baseCardSize.width
 
-                Text(isEmptyState ? "Pin Frontmost Window" : "Add Window")
-                    .font(.callout.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-
-                if isEmptyState {
-                    Text("Attach the frontmost app window to make it part of this board.")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .multilineTextAlignment(.center)
-                        .lineLimit(3)
-                }
+            Button(action: attachFrontmost) {
+                addCardContent
+                    .frame(width: baseCardSize.width, height: baseCardSize.height)
+                    .scaleEffect(scale, anchor: .topLeading)
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
             }
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .buttonStyle(.plain)
+            .disabled(!canAttachFrontmost)
         }
-        .buttonStyle(.plain)
-        .disabled(!canAttachFrontmost)
-        .aspectRatio(220.0 / 308.0, contentMode: .fit)
-        .frame(minHeight: 260)
+        .aspectRatio(baseCardSize.width / baseCardSize.height, contentMode: .fit)
+        .frame(maxWidth: .infinity)
         .background {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
+                .overlay(
+                    RoundedRectangle(cornerRadius: 16, style: .continuous)
+                        .fill(
+                            LinearGradient(
+                                colors: [
+                                    .white.opacity(0.18),
+                                    .white.opacity(0.04),
+                                    .black.opacity(0.025)
+                                ],
+                                startPoint: .top,
+                                endPoint: .bottom
+                            )
+                        )
+                )
         }
-        .overlay(
+        .overlay(addCardSurfaceOverlay)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
+        .shadow(color: .black.opacity(0.08), radius: 22, y: 10)
+        .opacity(presentationOpacity)
+        .scaleEffect(reduceMotion || isPresenting ? 1 : 0.96)
+        .offset(y: reduceMotion || isPresenting ? 0 : 8)
+        .interactiveCardMotion(
+            isEnabled: canAttachFrontmost,
+            highlightOpacity: 0.10
+        )
+        .workspaceCardEntrance(
+            token: workspaceTransitionToken,
+            index: workspaceTransitionIndex
+        )
+        .onAppear {
+            lastAppearanceGeneration = appearanceGeneration
+            if !isEmptyState, appearanceGeneration > 0 {
+                isPresenting = false
+                presentAfterDelay(milliseconds: 150)
+            } else {
+                isPresenting = true
+            }
+        }
+        .onChange(of: appearanceGeneration) { _, newGeneration in
+            animateNewAddCardIfNeeded(newGeneration)
+        }
+    }
+
+    private func animateNewAddCardIfNeeded(_ newGeneration: Int) {
+        guard newGeneration > lastAppearanceGeneration else {
+            lastAppearanceGeneration = newGeneration
+            return
+        }
+
+        lastAppearanceGeneration = newGeneration
+        isPresenting = false
+        presentAfterDelay(milliseconds: 150)
+    }
+
+    private func presentAfterDelay(milliseconds: UInt64) {
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(milliseconds))
+            withAnimation(.easeOut(duration: 0.24)) {
+                isPresenting = true
+            }
+        }
+    }
+
+    private var addCardContent: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "plus")
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 58, height: 58)
+                .background {
+                    Circle()
+                        .fill(Color(nsColor: .windowBackgroundColor).opacity(0.36))
+                        .overlay(
+                            Circle()
+                                .stroke(.white.opacity(0.24), lineWidth: 1)
+                        )
+                }
+                .shadow(color: .black.opacity(0.12), radius: 9, y: 4)
+
+            Text(isEmptyState ? "Pin Frontmost Window" : "Add Window")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            if isEmptyState {
+                Text("Attach the frontmost app window to make it part of this board.")
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .multilineTextAlignment(.center)
+                    .lineLimit(3)
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var addCardSurfaceOverlay: some View {
+        ZStack {
             RoundedRectangle(cornerRadius: 16, style: .continuous)
                 .stroke(
-                    Color(nsColor: .separatorColor).opacity(0.42),
+                    Color(nsColor: .separatorColor).opacity(0.46),
                     style: StrokeStyle(lineWidth: 1, dash: [7, 6])
                 )
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .opacity(canAttachFrontmost ? 1 : 0.55)
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 0.7)
+                .stroke(.white.opacity(0.24), lineWidth: 1)
+                .blendMode(.plusLighter)
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 1.2)
+                .stroke(.black.opacity(0.025), lineWidth: 1)
+        }
     }
 }
 
 private struct PinnedWindowCard: View {
     let attachedWindow: AttachedWindow
     let state: AttachedWindowDisplayState
+    let isPinningIn: Bool
+    let isDetaching: Bool
+    let workspaceTransitionToken: UUID?
+    let workspaceTransitionIndex: Int
+    let onPinInComplete: () -> Void
     let bringForward: () -> Void
     let recover: () -> Void
     let update: () -> Void
     let detach: () -> Void
 
+    private let baseCardSize = CGSize(width: 220, height: 308)
+
     var body: some View {
+        GeometryReader { proxy in
+            let scale = proxy.size.width / baseCardSize.width
+
+            cardContent
+                .frame(width: baseCardSize.width, height: baseCardSize.height)
+                .scaleEffect(scale, anchor: .topLeading)
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+                .clipped()
+        }
+        .aspectRatio(baseCardSize.width / baseCardSize.height, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .background(cardBackground)
+        .overlay(cardSurfaceOverlay)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(state.needsAttention ? 0.16 : 0.12), radius: 11, y: 4)
+        .shadow(color: .black.opacity(state.needsAttention ? 0.10 : 0.08), radius: 24, y: 11)
+        .shadow(color: appAccentColor.opacity(state == .available ? 0.12 : 0.05), radius: 20, y: 9)
+        .interactiveCardMotion(
+            isEnabled: !isPinningIn && !isDetaching,
+            highlightOpacity: state.needsAttention ? 0.08 : 0.12
+        )
+        .cardPinIn(
+            isActive: isPinningIn && !isDetaching,
+            onComplete: onPinInComplete
+        )
+        .workspaceCardEntrance(
+            token: workspaceTransitionToken,
+            index: workspaceTransitionIndex,
+            isEnabled: !isPinningIn && !isDetaching
+        )
+        .cardDetachExit(isActive: isDetaching)
+    }
+
+    private var cardContent: some View {
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: 8) {
                 Text(attachedWindow.window.appName)
-                    .font(.callout.weight(.semibold))
+                    .font(.title3.weight(.semibold))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
                     .truncationMode(.tail)
@@ -757,23 +1258,23 @@ private struct PinnedWindowCard: View {
                 actionsMenu
             }
             .padding(.horizontal, 14)
-            .padding(.top, 12)
-            .padding(.bottom, 9)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
 
             iconField
                 .padding(.horizontal, 16)
 
             Divider()
                 .padding(.horizontal, 16)
-                .padding(.top, 12)
+                .padding(.top, 8)
 
-            VStack(alignment: .leading, spacing: 8) {
+            VStack(alignment: .leading, spacing: 6) {
                 Text(windowSubtitle)
                     .font(.callout.weight(.medium))
                     .foregroundStyle(.primary)
                     .lineLimit(2)
                     .truncationMode(.tail)
-                    .frame(minHeight: 34, alignment: .topLeading)
+                    .frame(minHeight: 30, alignment: .topLeading)
 
                 StatusBadge(state: state)
 
@@ -792,38 +1293,39 @@ private struct PinnedWindowCard: View {
                     .fixedSize(horizontal: true, vertical: false)
             }
             .padding(.horizontal, 16)
-            .padding(.top, 10)
-            .padding(.bottom, 14)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
         }
-        .aspectRatio(220.0 / 308.0, contentMode: .fit)
-        .frame(minHeight: 260)
-        .background(cardBackground)
-        .overlay(
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .stroke(cardStroke, lineWidth: strokeWidth)
-        )
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: .black.opacity(0.065), radius: 14, y: 4)
     }
 
     private var iconField: some View {
-        ZStack {
-            RoundedRectangle(cornerRadius: 16, style: .continuous)
-                .fill(iconFieldBackground)
-                .overlay(
-                    RoundedRectangle(cornerRadius: 16, style: .continuous)
-                        .stroke(iconFieldStroke, lineWidth: 0.8)
-                )
+        GeometryReader { proxy in
+            let iconSize = min(max(proxy.size.width * 0.52, 82), 120)
 
-            AppIconView(
-                appName: attachedWindow.window.appName,
-                bundleURL: attachedWindow.window.bundleURL,
-                bundleIdentifier: attachedWindow.window.bundleIdentifier,
-                size: 88
-            )
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(iconFieldBackground)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(iconFieldStroke, lineWidth: 0.8)
+                    )
+                    .overlay(alignment: .top) {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(.white.opacity(0.34), lineWidth: 1)
+                            .blendMode(.plusLighter)
+                    }
+
+                AppIconView(
+                    appName: attachedWindow.window.appName,
+                    bundleURL: attachedWindow.window.bundleURL,
+                    bundleIdentifier: attachedWindow.window.bundleIdentifier,
+                    size: iconSize,
+                    isElevated: true
+                )
+            }
         }
         .frame(maxWidth: .infinity)
-        .aspectRatio(188.0 / 132.0, contentMode: .fit)
+        .aspectRatio(188.0 / 118.0, contentMode: .fit)
     }
 
     private var actionsMenu: some View {
@@ -867,12 +1369,62 @@ private struct PinnedWindowCard: View {
             .fill(Color(nsColor: .controlBackgroundColor))
             .overlay(
                 RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(state == .unavailable ? Color.red.opacity(0.035) : appAccentColor.opacity(0.055))
+                    .fill(state == .unavailable ? Color.red.opacity(0.085) : appAccentColor.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(0.22),
+                                .white.opacity(0.04),
+                                .black.opacity(0.035)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
             )
     }
 
-    private var iconFieldBackground: Color {
-        state == .unavailable ? Color(nsColor: .controlBackgroundColor).opacity(0.72) : appAccentColor.opacity(0.16)
+    private var cardSurfaceOverlay: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(cardStroke, lineWidth: strokeWidth)
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 0.7)
+                .stroke(.white.opacity(0.30), lineWidth: 1)
+                .blendMode(.plusLighter)
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 1.2)
+                .stroke(.black.opacity(0.035), lineWidth: 1)
+        }
+    }
+
+    private var iconFieldBackground: LinearGradient {
+        if state == .unavailable {
+            return LinearGradient(
+                colors: [
+                    Color(nsColor: .controlBackgroundColor).opacity(0.88),
+                    Color.red.opacity(0.085),
+                    Color(nsColor: .controlBackgroundColor).opacity(0.84)
+                ],
+                startPoint: .topLeading,
+                endPoint: .bottomTrailing
+            )
+        }
+
+        return LinearGradient(
+            colors: [
+                appAccentColor.opacity(0.26),
+                appAccentColor.opacity(0.22),
+                appAccentColor.opacity(0.18)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
     }
 
     private var iconFieldStroke: Color {
@@ -1157,6 +1709,7 @@ private struct AppIconView: View {
     let bundleURL: URL?
     let bundleIdentifier: String?
     var size: CGFloat = 24
+    var isElevated = false
 
     var body: some View {
         Group {
@@ -1171,6 +1724,8 @@ private struct AppIconView: View {
         }
         .frame(width: size, height: size)
         .clipShape(RoundedRectangle(cornerRadius: size * 0.22, style: .continuous))
+        .shadow(color: .black.opacity(isElevated ? 0.18 : 0), radius: isElevated ? 10 : 0, y: isElevated ? 5 : 0)
+        .shadow(color: iconColor.opacity(isElevated ? 0.18 : 0), radius: isElevated ? 18 : 0, y: isElevated ? 8 : 0)
     }
 
     private var iconImage: NSImage? {
