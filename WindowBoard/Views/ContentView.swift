@@ -303,6 +303,10 @@ struct ContentView: View {
         .onChange(of: session.minimizedWindows.count) { _, _ in
             syncStatusMenuState()
         }
+        .onChange(of: session.isLoadingWorkspace) { _, _ in
+            syncStatusMenuState()
+            updateAttachedWindowSnapshotTaskForActivity()
+        }
         .onChange(of: session.isMinimizingUnattached) { _, _ in
             syncStatusMenuState()
             updateAttachedWindowSnapshotTaskForActivity()
@@ -1542,6 +1546,7 @@ struct ContentView: View {
         stopAttachedWindowSnapshotTask()
 
         guard !session.attachedWindows.isEmpty,
+              !session.isLoadingWorkspace,
               !session.isMinimizingUnattached,
               !session.isRestoringMinimized else {
             return
@@ -1564,7 +1569,7 @@ struct ContentView: View {
     }
 
     private func updateAttachedWindowSnapshotTaskForActivity() {
-        if session.isMinimizingUnattached || session.isRestoringMinimized {
+        if session.isLoadingWorkspace || session.isMinimizingUnattached || session.isRestoringMinimized {
             stopAttachedWindowSnapshotTask()
         } else {
             restartAttachedWindowSnapshotTask()

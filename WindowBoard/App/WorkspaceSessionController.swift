@@ -337,6 +337,34 @@ final class WorkspaceSessionController: ObservableObject {
         return workspace
     }
 
+    @discardableResult
+    func persistActiveWorkspaceSnapshotForSwitch(boardOrigin: CGPoint?) -> SavedWorkspace? {
+        guard let activeWorkspaceID else {
+            return nil
+        }
+
+        let references = attachedWindows.map { attachedWindow in
+            let savedSize = attachedWindow.savedReference?.savedSize
+            guard let boardOrigin else {
+                return SavedWindowReference.makePreservingOffset(
+                    from: attachedWindow,
+                    size: savedSize
+                )
+            }
+
+            return SavedWindowReference.make(
+                from: attachedWindow,
+                boardOrigin: boardOrigin,
+                size: savedSize
+            )
+        }
+        let workspace = workspaceStore.updateWorkspace(id: activeWorkspaceID, windows: references)
+        if let workspace {
+            rememberLoadedWindowIDs(for: workspace.id, attachedWindows: attachedWindows)
+        }
+        return workspace
+    }
+
     func switchWorkspace(
         id workspaceID: SavedWorkspace.ID,
         boardOrigin: CGPoint?,
@@ -363,7 +391,7 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         if !attachedWindows.isEmpty {
-            persistActiveWorkspaceState(boardOrigin: boardOrigin)
+            persistActiveWorkspaceSnapshotForSwitch(boardOrigin: boardOrigin)
         }
         selectedWorkspaceID = workspaceID
         workspaceName = workspace.name
@@ -412,11 +440,6 @@ final class WorkspaceSessionController: ObservableObject {
                     in: availableWindows,
                     excluding: usedWindowIDs
                 ) else {
-                    unresolvedReferences.append(reference)
-                    continue
-                }
-
-                if windowCache != nil, !Self.isLiveWindow(replacement, service: service) {
                     unresolvedReferences.append(reference)
                     continue
                 }
@@ -1301,18 +1324,6 @@ final class WorkspaceSessionController: ObservableObject {
             in: candidates,
             excluding: usedWindowIDs
         )
-    }
-
-    private static func isLiveWindow(_ window: WindowInfo, service: AccessibilityWindowService) -> Bool {
-        guard window.pid != 0 else {
-            return false
-        }
-
-        if (try? service.position(of: window)) != nil {
-            return true
-        }
-
-        return service.isMinimized(window)
     }
 
     private static func minimizeUnattachedWindows(
