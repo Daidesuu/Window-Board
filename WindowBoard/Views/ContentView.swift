@@ -194,11 +194,16 @@ struct ContentView: View {
     var body: some View {
         Group {
             if isTrusted {
-                NavigationSplitView {
+                HStack(spacing: 0) {
                     workspaceSidebar
-                } detail: {
+                        .frame(width: 240)
+
+                    Divider()
+
                     workspaceDetail
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 permissionRoot
             }
@@ -2079,7 +2084,7 @@ struct ContentView: View {
         window.titleVisibility = .hidden
         window.toolbarStyle = .unified
         window.toolbar?.showsBaselineSeparator = false
-        window.styleMask.insert(.fullSizeContentView)
+        window.styleMask.remove(.fullSizeContentView)
         window.hasShadow = true
         window.contentView?.wantsLayer = true
         window.contentView?.layer?.backgroundColor = baseBackgroundColor.cgColor

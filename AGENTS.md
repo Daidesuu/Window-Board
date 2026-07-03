@@ -24,6 +24,17 @@
 - Do not split workspace switching logic between the main window and Status Item. Add behavior to `WorkspaceSessionController` first, then have callers pass UI-specific context such as board origin or cached windows.
 - Prefer fast UI updates followed by background AX work. Workspace switches may show placeholder attached windows before every AX operation has finished.
 
+## Sub-Agent Assignment
+- Prefer assigning sub-agents by risk area, not by feature surface. WindowBoard bugs often cross UI, session state, and Accessibility behavior, so each sub-agent should have a clear ownership boundary.
+- Use a **Session / Workspace Agent** for `WorkspaceSessionController`, `WorkspaceStore`, workspace save/load/switch/recovery, and Status Item workspace switching. This agent should own state consistency and should be the only agent making primary changes to workspace switching logic.
+- Use an **AX / Window Operations Agent** for `AccessibilityWindowService`, window movement, minimize/restore, focus/raise, and AppKit/AX limitations. This agent should check that AX calls stay off the main thread and that failures leave windows recoverable rather than detached.
+- Use a **UI / UX Agent** for `ContentView`, `WindowBoardMainViews`, `SettingsView`, labels, toolbar/sidebar/card layout, and state presentation. This agent should avoid changing session semantics unless coordinated with the Session / Workspace Agent.
+- Use a **Performance / Regression Agent** for timing-sensitive workspace switching, snapshot/minimize/restore contention, Status Item vs main-window path comparisons, and build/run verification. This agent should focus on investigation, measurement, and regression review.
+- For workspace switching, save/load, or Status Item behavior, assign **Session / Workspace Agent + Performance / Regression Agent**.
+- For minimize, restore, follow, fronting, or external window movement, assign **AX / Window Operations Agent + Performance / Regression Agent**.
+- For labels, toolbar, layout, settings, or attached row presentation, assign **UI / UX Agent + Session / Workspace Agent**.
+- Do not let multiple agents independently edit `WorkspaceSessionController` for the same task. One Session / Workspace owner should coordinate changes there; other agents should review or propose changes.
+
 ## Current Behavior Expectations
 - Attached list order is user-visible state, but strict macOS z-order guarantees are not reliable with public APIs.
 - `Follow Mode: None` means attached windows remain selected but do not follow board movement.

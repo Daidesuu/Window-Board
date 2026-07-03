@@ -86,21 +86,20 @@ struct WorkspaceSidebarView: View {
             Divider()
 
             Button(action: createWorkspace) {
-                Label("New Workspace", systemImage: "plus")
-                    .font(.callout)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .contentShape(Rectangle())
+                ViewThatFits(in: .horizontal) {
+                    Label("New Workspace", systemImage: "plus")
+                    Label("New", systemImage: "plus")
+                    Image(systemName: "plus")
+                }
+                .font(.callout)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
             .foregroundStyle(.secondary)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
             .help("New Workspace")
-        }
-        .background {
-            Rectangle()
-                .fill(.thinMaterial)
-                .overlay(Color(nsColor: .windowBackgroundColor).opacity(0.08))
         }
         .navigationTitle("Window Board")
     }
@@ -117,23 +116,25 @@ private struct WorkspaceSidebarRow: View {
                 .frame(width: 18)
 
             VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(workspace.name)
-                        .lineLimit(1)
-
-                    if isActive {
-                        Image(systemName: "checkmark.circle.fill")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                }
+                Text(workspace.name)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
 
                 Text("\(workspace.windows.count) \(workspace.windows.count == 1 ? "window" : "windows")")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+
+            if isActive {
+                Image(systemName: "checkmark.circle.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -142,6 +143,8 @@ private struct WorkspaceSidebarRow: View {
             Text(title)
                 .font(.caption.weight(.semibold))
                 .lineLimit(1)
+                .minimumScaleFactor(0.75)
+                .truncationMode(.tail)
         } else {
             Image(systemName: workspace.statusItemSymbolName ?? WorkspaceStatusItemIcon.defaultSymbolName)
         }
@@ -378,15 +381,26 @@ struct WindowSelectionView: View {
             }
         }
 
-        HStack {
-            Button("Refresh", action: refreshWindows)
-                .disabled(isLoading)
-            Button("Attach Selected", action: attachSelected)
-                .disabled(!canAttachSelected)
-            Button("Attach Window", action: attachFrontmost)
-                .disabled(!canAttachFrontmost)
-            Spacer()
+        ViewThatFits(in: .horizontal) {
+            HStack {
+                windowActionButtons
+                Spacer()
+            }
+
+            VStack(alignment: .leading, spacing: 8) {
+                windowActionButtons
+            }
         }
+    }
+
+    @ViewBuilder
+    private var windowActionButtons: some View {
+        Button("Refresh", action: refreshWindows)
+            .disabled(isLoading)
+        Button("Attach Selected", action: attachSelected)
+            .disabled(!canAttachSelected)
+        Button("Attach Window", action: attachFrontmost)
+            .disabled(!canAttachFrontmost)
     }
 }
 
@@ -1296,7 +1310,8 @@ private struct PinnedWindowCard: View {
                     .disabled(state == .reconnecting)
                     .controlSize(.small)
                     .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
+                    .frame(maxWidth: .infinity)
+                    .minimumScaleFactor(0.82)
             }
             .padding(.horizontal, 16)
             .padding(.top, 8)
@@ -2122,14 +2137,15 @@ private struct WorkspaceSettingsControls: View {
                 TextField("Workspace Name", text: workspaceName)
                     .disabled(!canEditWorkspaceName)
 
-                HStack {
-                    Button("Save", action: saveWorkspace)
-                        .disabled(!canSaveWorkspace)
-                    Button("Overwrite", action: overwriteWorkspace)
-                        .disabled(!canOverwriteWorkspace)
-                    Button("Rename", action: renameWorkspace)
-                        .disabled(!canRenameWorkspace)
-                    Spacer()
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        workspaceActionButtons
+                        Spacer()
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        workspaceActionButtons
+                    }
                 }
             }
 
@@ -2139,19 +2155,14 @@ private struct WorkspaceSettingsControls: View {
                 Text("Status Item Display")
                     .font(.subheadline.weight(.medium))
 
-                HStack {
-                    StatusItemPreview(symbolName: selectedWorkspace?.statusItemSymbolName)
-                    Spacer()
-                    TextField("Text", text: workspaceStatusText)
-                        .frame(width: 120)
-                        .disabled(selectedWorkspace == nil)
-                    Button("Set Text", action: updateStatusItemText)
-                        .disabled(selectedWorkspace == nil)
-                    StatusItemIconMenu(
-                        symbolName: selectedWorkspace?.statusItemSymbolName,
-                        selectIcon: updateStatusItemIcon
-                    )
-                    .disabled(selectedWorkspace == nil)
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        statusItemDisplayControls
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        statusItemDisplayControls
+                    }
                 }
             }
 
@@ -2172,16 +2183,52 @@ private struct WorkspaceSettingsControls: View {
                 Text("Danger Zone")
                     .font(.subheadline.weight(.medium))
 
-                HStack {
-                    Button("Delete Workspace", action: deleteWorkspace)
-                        .disabled(!canDeleteWorkspace)
-                    Button("Remove All Windows", action: detachAll)
-                        .disabled(!canDetachAll)
-                    Spacer()
+                ViewThatFits(in: .horizontal) {
+                    HStack {
+                        dangerZoneButtons
+                        Spacer()
+                    }
+
+                    VStack(alignment: .leading, spacing: 8) {
+                        dangerZoneButtons
+                    }
                 }
             }
         }
         .padding(.vertical, 6)
+    }
+
+    @ViewBuilder
+    private var workspaceActionButtons: some View {
+        Button("Save", action: saveWorkspace)
+            .disabled(!canSaveWorkspace)
+        Button("Overwrite", action: overwriteWorkspace)
+            .disabled(!canOverwriteWorkspace)
+        Button("Rename", action: renameWorkspace)
+            .disabled(!canRenameWorkspace)
+    }
+
+    @ViewBuilder
+    private var statusItemDisplayControls: some View {
+        StatusItemPreview(symbolName: selectedWorkspace?.statusItemSymbolName)
+        TextField("Text", text: workspaceStatusText)
+            .frame(minWidth: 80, idealWidth: 120, maxWidth: 160)
+            .disabled(selectedWorkspace == nil)
+        Button("Set Text", action: updateStatusItemText)
+            .disabled(selectedWorkspace == nil)
+        StatusItemIconMenu(
+            symbolName: selectedWorkspace?.statusItemSymbolName,
+            selectIcon: updateStatusItemIcon
+        )
+        .disabled(selectedWorkspace == nil)
+    }
+
+    @ViewBuilder
+    private var dangerZoneButtons: some View {
+        Button("Delete Workspace", action: deleteWorkspace)
+            .disabled(!canDeleteWorkspace)
+        Button("Remove All Windows", action: detachAll)
+            .disabled(!canDetachAll)
     }
 }
 

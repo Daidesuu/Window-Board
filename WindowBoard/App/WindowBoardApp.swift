@@ -19,7 +19,7 @@ struct WindowBoardApp: App {
     var body: some Scene {
         WindowGroup("Window Board", id: "main") {
             ContentView(appState: appState)
-                .frame(minWidth: 720, minHeight: 520)
+                .frame(minWidth: 880, minHeight: 560)
         }
         .windowResizability(.contentMinSize)
 
