@@ -212,6 +212,13 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
         size: CGSize? = nil
     ) -> SavedWindowReference {
         if var savedReference = attachedWindow.savedReference {
+            let window = attachedWindow.window
+            savedReference.displayName = window.displayName
+            savedReference.appName = window.appName
+            savedReference.title = window.title
+            savedReference.bundleIdentifier = window.bundleIdentifier
+            savedReference.bundleURLString = window.bundleURL?.absoluteString
+            savedReference.documentURLString = window.documentURL?.absoluteString
             savedReference.offsetX = attachedWindow.lastWindowOrigin.x - boardOrigin.x
             savedReference.offsetY = attachedWindow.lastWindowOrigin.y - boardOrigin.y
             savedReference.originX = attachedWindow.lastWindowOrigin.x
@@ -245,6 +252,13 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
         size: CGSize? = nil
     ) -> SavedWindowReference {
         if var savedReference = attachedWindow.savedReference {
+            let window = attachedWindow.window
+            savedReference.displayName = window.displayName
+            savedReference.appName = window.appName
+            savedReference.title = window.title
+            savedReference.bundleIdentifier = window.bundleIdentifier
+            savedReference.bundleURLString = window.bundleURL?.absoluteString
+            savedReference.documentURLString = window.documentURL?.absoluteString
             savedReference.originX = attachedWindow.lastWindowOrigin.x
             savedReference.originY = attachedWindow.lastWindowOrigin.y
             if let size {

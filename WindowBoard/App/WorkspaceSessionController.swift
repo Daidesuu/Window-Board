@@ -210,7 +210,9 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     func createWorkspace(boardOrigin: CGPoint?) {
-        persistActiveWorkspaceState(boardOrigin: boardOrigin)
+        if !attachedWindows.isEmpty {
+            persistActiveWorkspaceState(boardOrigin: boardOrigin)
+        }
 
         let workspace = workspaceStore.saveWorkspace(name: nextWorkspaceName(), windows: [])
         selectedWorkspaceID = workspace.id
@@ -305,7 +307,6 @@ final class WorkspaceSessionController: ObservableObject {
     @discardableResult
     func persistActiveWorkspaceState(boardOrigin: CGPoint?) -> SavedWorkspace? {
         guard let activeWorkspaceID,
-              !attachedWindows.isEmpty,
               let references = currentWorkspaceReferences(boardOrigin: boardOrigin) else {
             return nil
         }
@@ -361,7 +362,9 @@ final class WorkspaceSessionController: ObservableObject {
             return
         }
 
-        persistActiveWorkspaceState(boardOrigin: boardOrigin)
+        if !attachedWindows.isEmpty {
+            persistActiveWorkspaceState(boardOrigin: boardOrigin)
+        }
         selectedWorkspaceID = workspaceID
         workspaceName = workspace.name
         isLoadingWorkspace = true
@@ -685,14 +688,23 @@ final class WorkspaceSessionController: ObservableObject {
             }
 
             if shouldMinimizeAfterSwitch {
-                await self.minimizeUnattachedAfterWorkspaceSwitch(
-                    keeping: resolvedAttachedWindows,
-                    candidateWindows: minimizeCandidateWindows,
-                    unavailableAttachmentIDs: minimizeUnavailableAttachmentIDs,
-                    workspaceID: workspace.id,
-                    service: service,
-                    completion: minimizeAfterSwitchCompletion
-                )
+                let attachedWindowsToKeep = resolvedAttachedWindows
+                let candidateWindowsToMinimize = minimizeCandidateWindows
+                let unavailableAttachmentIDsToProtect = minimizeUnavailableAttachmentIDs
+                await MainActor.run {
+                    minimizeAfterSwitchCompletion()
+                }
+                Task.detached(priority: .utility) {
+                    let minimizeService = AccessibilityWindowService()
+                    await self.minimizeUnattachedAfterWorkspaceSwitch(
+                        keeping: attachedWindowsToKeep,
+                        candidateWindows: candidateWindowsToMinimize,
+                        unavailableAttachmentIDs: unavailableAttachmentIDsToProtect,
+                        workspaceID: workspace.id,
+                        service: minimizeService,
+                        completion: {}
+                    )
+                }
             }
         }
     }
@@ -700,6 +712,7 @@ final class WorkspaceSessionController: ObservableObject {
     func minimizeUnattachedWindows(
         knownWindows: [WindowInfo],
         recentWindows: [WindowInfo] = [],
+        refreshWindowList: Bool = false,
         mergeWindows: @escaping @MainActor ([WindowInfo]) -> Void = { _ in },
         removeWindows: @escaping @MainActor (Set<WindowInfo.ID>) -> Void = { _ in }
     ) {
@@ -713,11 +726,14 @@ final class WorkspaceSessionController: ObservableObject {
 
         Task.detached(priority: .userInitiated) {
             let service = AccessibilityWindowService()
-            let allWindows = service.listWindows()
+            let baseWindows = Self.mergeWindows(recentWindows, into: knownWindows)
+            let allWindows = refreshWindowList
+                ? Self.mergeWindows(baseWindows, into: service.listWindows())
+                : baseWindows
             var refreshedAttachedWindows: [AttachedWindow.ID: WindowInfo] = [:]
             var attachedCandidateWindows: [WindowInfo] = []
 
-            for attachedWindow in attachedWindowsToRefresh {
+            for attachedWindow in attachedWindowsToRefresh where refreshWindowList && attachedWindow.window.pid != 0 {
                 guard !Task.isCancelled else { return }
 
                 let candidates = service.windows(matching: attachedWindow.window)
@@ -787,7 +803,9 @@ final class WorkspaceSessionController: ObservableObject {
                     try service.setMinimized(false, for: window)
                     restoredWindows.append(window)
                 } catch {
-                    failedWindows.append(window)
+                    if service.isMinimized(window) {
+                        failedWindows.append(window)
+                    }
                 }
             }
 
@@ -860,18 +878,18 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     func detachWindow(id: AttachedWindow.ID, boardOrigin: CGPoint?) {
-        persistActiveWorkspaceState(boardOrigin: boardOrigin)
         attachedWindows.removeAll { $0.id == id }
         unavailableAttachedWindowIDs.remove(id)
         reconnectingAttachedWindowIDs.remove(id)
+        _ = persistActiveWorkspaceState(boardOrigin: boardOrigin)
         statusMessage = "Detached window."
     }
 
     func detachAll(boardOrigin: CGPoint?, message: String) {
-        persistActiveWorkspaceState(boardOrigin: boardOrigin)
         attachedWindows.removeAll()
         unavailableAttachedWindowIDs.removeAll()
         reconnectingAttachedWindowIDs.removeAll()
+        _ = persistActiveWorkspaceState(boardOrigin: boardOrigin)
         statusMessage = message
     }
 

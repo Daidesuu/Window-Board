@@ -1196,6 +1196,10 @@ private struct AddPinnedWindowCard: View {
 }
 
 private struct PinnedWindowCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isPrimaryActionPressed = false
+    @State private var isPrimaryActionPopping = false
+
     let attachedWindow: AttachedWindow
     let state: AttachedWindowDisplayState
     let isPinningIn: Bool
@@ -1228,6 +1232,8 @@ private struct PinnedWindowCard: View {
         .shadow(color: .black.opacity(state.needsAttention ? 0.16 : 0.12), radius: 11, y: 4)
         .shadow(color: .black.opacity(state.needsAttention ? 0.10 : 0.08), radius: 24, y: 11)
         .shadow(color: appAccentColor.opacity(state == .available ? 0.12 : 0.05), radius: 20, y: 9)
+        .scaleEffect(primaryActionCardScale)
+        .animation(.spring(response: 0.20, dampingFraction: 0.82), value: primaryActionCardScale)
         .interactiveCardMotion(
             isEnabled: !isPinningIn && !isDetaching,
             highlightOpacity: state.needsAttention ? 0.08 : 0.12
@@ -1298,34 +1304,23 @@ private struct PinnedWindowCard: View {
         }
     }
 
+    private var isPrimaryActionEnabled: Bool {
+        state != .reconnecting && !isDetaching
+    }
+
     private var iconField: some View {
-        GeometryReader { proxy in
-            let iconSize = min(max(proxy.size.width * 0.52, 82), 120)
-
-            ZStack {
-                RoundedRectangle(cornerRadius: 16, style: .continuous)
-                    .fill(iconFieldBackground)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(iconFieldStroke, lineWidth: 0.8)
-                    )
-                    .overlay(alignment: .top) {
-                        RoundedRectangle(cornerRadius: 16, style: .continuous)
-                            .stroke(.white.opacity(0.34), lineWidth: 1)
-                            .blendMode(.plusLighter)
-                    }
-
-                AppIconView(
-                    appName: attachedWindow.window.appName,
-                    bundleURL: attachedWindow.window.bundleURL,
-                    bundleIdentifier: attachedWindow.window.bundleIdentifier,
-                    size: iconSize,
-                    isElevated: true
-                )
-            }
-        }
-        .frame(maxWidth: .infinity)
-        .aspectRatio(188.0 / 118.0, contentMode: .fit)
+        IconPrimaryActionField(
+            appName: attachedWindow.window.appName,
+            bundleURL: attachedWindow.window.bundleURL,
+            bundleIdentifier: attachedWindow.window.bundleIdentifier,
+            state: state,
+            background: iconFieldBackground,
+            strokeColor: iconFieldStroke,
+            isEnabled: isPrimaryActionEnabled,
+            onPressChanged: setPrimaryActionPressed,
+            onActionFeedback: runPrimaryActionFeedback,
+            action: primaryAction
+        )
     }
 
     private var actionsMenu: some View {
@@ -1448,6 +1443,18 @@ private struct PinnedWindowCard: View {
         state.needsAttention ? 1.15 : 0.8
     }
 
+    private var primaryActionCardScale: CGFloat {
+        if reduceMotion {
+            1
+        } else if isPrimaryActionPressed {
+            0.992
+        } else if isPrimaryActionPopping {
+            1.012
+        } else {
+            1
+        }
+    }
+
     private var appAccentColor: Color {
         Color(nsColor: AppIconPalette.accentColor(
             appName: attachedWindow.window.appName,
@@ -1475,6 +1482,151 @@ private struct PinnedWindowCard: View {
         } else {
             recover()
         }
+    }
+
+    private func setPrimaryActionPressed(_ isPressed: Bool) {
+        guard isPrimaryActionEnabled else { return }
+        isPrimaryActionPressed = isPressed
+    }
+
+    private func runPrimaryActionFeedback() {
+        guard isPrimaryActionEnabled, !reduceMotion else { return }
+
+        isPrimaryActionPopping = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(115))
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+                isPrimaryActionPopping = false
+            }
+        }
+    }
+}
+
+private struct IconPrimaryActionField: View {
+    @State private var isCursorPushed = false
+
+    let appName: String
+    let bundleURL: URL?
+    let bundleIdentifier: String?
+    let state: AttachedWindowDisplayState
+    let background: LinearGradient
+    let strokeColor: Color
+    let isEnabled: Bool
+    let onPressChanged: (Bool) -> Void
+    let onActionFeedback: () -> Void
+    let action: () -> Void
+
+    var body: some View {
+        Button {
+            triggerAction()
+        } label: {
+            fieldContent
+        }
+        .buttonStyle(
+            IconPrimaryActionButtonStyle(
+                isEnabled: isEnabled,
+                onPressChanged: onPressChanged
+            )
+        )
+        .disabled(!isEnabled)
+        .onHover { hovering in
+            guard isEnabled else { return }
+
+            if hovering, !isCursorPushed {
+                NSCursor.pointingHand.push()
+                isCursorPushed = true
+            } else if !hovering, isCursorPushed {
+                NSCursor.pop()
+                isCursorPushed = false
+            }
+        }
+        .onDisappear {
+            if isCursorPushed {
+                NSCursor.pop()
+                isCursorPushed = false
+            }
+        }
+        .help(primaryActionTitle)
+        .accessibilityLabel(accessibilityLabel)
+        .accessibilityAddTraits(isEnabled ? .isButton : [])
+        .frame(maxWidth: .infinity)
+        .aspectRatio(188.0 / 118.0, contentMode: .fit)
+    }
+
+    private var fieldContent: some View {
+        GeometryReader { proxy in
+            let iconSize = min(max(proxy.size.width * 0.52, 82), 120)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(background)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(strokeColor.opacity(0.82), lineWidth: 0.8)
+                    )
+                    .overlay(alignment: .top) {
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .stroke(.white.opacity(0.34), lineWidth: 1)
+                            .blendMode(.plusLighter)
+                    }
+
+                AppIconView(
+                    appName: appName,
+                    bundleURL: bundleURL,
+                    bundleIdentifier: bundleIdentifier,
+                    size: iconSize,
+                    isElevated: true
+                )
+            }
+        }
+    }
+
+    private func triggerAction() {
+        guard isEnabled else { return }
+
+        action()
+        onActionFeedback()
+    }
+
+    private var primaryActionTitle: String {
+        switch state {
+        case .available:
+            "Bring Forward"
+        case .minimized:
+            "Restore Window"
+        case .unavailable:
+            "Find or Reopen"
+        case .reconnecting:
+            "Finding..."
+        }
+    }
+
+    private var accessibilityLabel: Text {
+        switch state {
+        case .available:
+            Text("Bring \(appName) forward")
+        case .minimized:
+            Text("Restore \(appName) window")
+        case .unavailable:
+            Text("Find or reopen \(appName)")
+        case .reconnecting:
+            Text("Finding \(appName)")
+        }
+    }
+}
+
+private struct IconPrimaryActionButtonStyle: ButtonStyle {
+    let isEnabled: Bool
+    let onPressChanged: (Bool) -> Void
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .onChange(of: configuration.isPressed) { _, isPressed in
+                onPressChanged(isEnabled && isPressed)
+            }
+            .onDisappear {
+                onPressChanged(false)
+            }
     }
 }
 

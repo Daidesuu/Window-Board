@@ -36,19 +36,21 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func updateWorkspace(id: SavedWorkspace.ID, name: String? = nil, windows: [SavedWindowReference]? = nil) -> SavedWorkspace? {
-        guard let index = workspaces.firstIndex(where: { $0.id == id }) else {
+        var updatedWorkspaces = workspaces
+        guard let index = updatedWorkspaces.firstIndex(where: { $0.id == id }) else {
             return nil
         }
 
-        if let name, !workspaces[index].isDefault {
-            workspaces[index].name = name
+        if let name, !updatedWorkspaces[index].isDefault {
+            updatedWorkspaces[index].name = name
         }
 
         if let windows {
-            workspaces[index].windows = windows
+            updatedWorkspaces[index].windows = windows
         }
 
-        workspaces[index].updatedAt = Date()
+        updatedWorkspaces[index].updatedAt = Date()
+        workspaces = updatedWorkspaces
         orderDefaultFirst()
         guard let workspace = workspaces.first(where: { $0.id == id }) else {
             return nil
@@ -58,12 +60,14 @@ final class WorkspaceStore: ObservableObject {
     }
 
     func updateWorkspaceIcon(id: SavedWorkspace.ID, statusItemSymbolName: String?) -> SavedWorkspace? {
-        guard let index = workspaces.firstIndex(where: { $0.id == id }) else {
+        var updatedWorkspaces = workspaces
+        guard let index = updatedWorkspaces.firstIndex(where: { $0.id == id }) else {
             return nil
         }
 
-        workspaces[index].statusItemSymbolName = statusItemSymbolName
-        workspaces[index].updatedAt = Date()
+        updatedWorkspaces[index].statusItemSymbolName = statusItemSymbolName
+        updatedWorkspaces[index].updatedAt = Date()
+        workspaces = updatedWorkspaces
         let workspace = workspaces[index]
         persist()
         return workspace

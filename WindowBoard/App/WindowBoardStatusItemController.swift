@@ -170,7 +170,7 @@ final class WindowBoardStatusItemController: NSObject {
     }
 
     @objc private func minimizeUnattached() {
-        appState.session.minimizeUnattachedWindows(knownWindows: [])
+        appState.session.minimizeUnattachedWindows(knownWindows: [], refreshWindowList: true)
     }
 
     @objc private func restoreMinimized() {

@@ -184,6 +184,10 @@ final class AccessibilityWindowService {
         return value as? Bool ?? false
     }
 
+    func title(of window: WindowInfo) -> String? {
+        stringAttribute(kAXTitleAttribute, from: window.axWindow)
+    }
+
     func setMinimized(_ minimized: Bool, for window: WindowInfo) throws {
         let error = AXUIElementSetAttributeValue(
             window.axWindow,

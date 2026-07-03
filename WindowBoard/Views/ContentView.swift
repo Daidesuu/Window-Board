@@ -31,6 +31,7 @@ private struct AttachedWindowSnapshot {
 
 private struct AttachedWindowSnapshotResult {
     let id: AttachedWindow.ID
+    let title: String?
     let origin: CGPoint?
     let size: CGSize?
     let isMinimized: Bool
@@ -304,9 +305,11 @@ struct ContentView: View {
         }
         .onChange(of: session.isMinimizingUnattached) { _, _ in
             syncStatusMenuState()
+            updateAttachedWindowSnapshotTaskForActivity()
         }
         .onChange(of: session.isRestoringMinimized) { _, _ in
             syncStatusMenuState()
+            updateAttachedWindowSnapshotTaskForActivity()
         }
         .onChange(of: isBoardAlwaysOnTop) { _, _ in
             applyBoardWindowLevel()
@@ -958,9 +961,16 @@ struct ContentView: View {
 
     private func loadActiveWorkspaceFromAppStateIfNeeded() {
         guard let appActiveWorkspaceID = appState.session.activeWorkspaceID,
-              appActiveWorkspaceID != session.activeWorkspaceID,
               !session.isLoadingWorkspace,
               boardWindow != nil else {
+            return
+        }
+
+        let savedWorkspace = workspaceStore.workspaces.first { $0.id == appActiveWorkspaceID }
+        let shouldLoadActiveWorkspace = appActiveWorkspaceID != session.activeWorkspaceID
+            || (session.attachedWindows.isEmpty && savedWorkspace?.windows.isEmpty == false)
+
+        guard shouldLoadActiveWorkspace else {
             return
         }
 
@@ -1136,6 +1146,7 @@ struct ContentView: View {
             if markRecentlyAdded {
                 recentlyAddedAttachedWindowID = attachedWindow.id
             }
+            _ = session.persistActiveWorkspaceState(boardOrigin: boardOrigin)
             session.statusMessage = wasAlreadyAttached
                 ? "Already attached. Updated \(window.displayName)."
                 : "Attached \(window.displayName)."
@@ -1530,7 +1541,9 @@ struct ContentView: View {
     private func restartAttachedWindowSnapshotTask() {
         stopAttachedWindowSnapshotTask()
 
-        guard !session.attachedWindows.isEmpty else {
+        guard !session.attachedWindows.isEmpty,
+              !session.isMinimizingUnattached,
+              !session.isRestoringMinimized else {
             return
         }
 
@@ -1550,6 +1563,14 @@ struct ContentView: View {
         attachedWindowSnapshotTask = nil
     }
 
+    private func updateAttachedWindowSnapshotTaskForActivity() {
+        if session.isMinimizingUnattached || session.isRestoringMinimized {
+            stopAttachedWindowSnapshotTask()
+        } else {
+            restartAttachedWindowSnapshotTask()
+        }
+    }
+
     @MainActor
     private func refreshAttachedWindowSnapshots() async {
         guard !session.attachedWindows.isEmpty else {
@@ -1563,9 +1584,11 @@ struct ContentView: View {
             return attachedWindows.map { attachedWindow -> AttachedWindowSnapshotResult in
                 let origin = try? service.position(of: attachedWindow.window)
                 let size = origin == nil ? nil : try? service.size(of: attachedWindow.window)
+                let title = service.title(of: attachedWindow.window)
                 let isMinimized = service.isMinimized(attachedWindow.window)
                 return AttachedWindowSnapshotResult(
                     id: attachedWindow.id,
+                    title: title,
                     origin: origin,
                     size: size,
                     isMinimized: isMinimized
@@ -1583,6 +1606,12 @@ struct ContentView: View {
 
             if let size = result.size {
                 sizeByAttachmentID[result.id] = size
+            }
+
+            if let title = result.title,
+               title != session.attachedWindows[index].window.title {
+                session.attachedWindows[index].window = session.attachedWindows[index].window.updatingTitle(title)
+                didChange = true
             }
 
             if result.isMinimized {
@@ -1621,6 +1650,7 @@ struct ContentView: View {
         session.minimizeUnattachedWindows(
             knownWindows: windows,
             recentWindows: recentWindows,
+            refreshWindowList: false,
             mergeWindows: { effectiveWindows in
                 windows = effectiveWindows
             },

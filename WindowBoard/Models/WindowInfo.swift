@@ -21,6 +21,21 @@ struct WindowInfo: Identifiable {
 
         return "\(appName) - \(title)"
     }
+
+    func updatingTitle(_ title: String) -> WindowInfo {
+        WindowInfo(
+            id: id,
+            appName: appName,
+            title: title,
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            bundleURL: bundleURL,
+            documentURL: documentURL,
+            axWindow: axWindow,
+            windowNumber: windowNumber,
+            position: position
+        )
+    }
 }
 
 struct AttachedWindow: Identifiable {
