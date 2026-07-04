@@ -30,10 +30,39 @@ struct SettingsView: View {
                     values: AutoFrontMode.allCases
                 )
             }
+
+            Section("Never Minimize Apps") {
+                if appState.neverMinimizeApps.isEmpty {
+                    Text("No apps added.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    ForEach(appState.neverMinimizeApps) { app in
+                        HStack(alignment: .firstTextBaseline, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(app.displayName)
+                                    .font(.body)
+                                Text(app.bundleIdentifier)
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                            }
+
+                            Spacer(minLength: 16)
+
+                            Button("Remove") {
+                                appState.removeNeverMinimizeApp(
+                                    bundleIdentifier: app.bundleIdentifier
+                                )
+                            }
+                            .buttonStyle(.borderless)
+                        }
+                    }
+                }
+            }
         }
         .formStyle(.grouped)
         .padding(20)
-        .frame(width: 420)
+        .frame(width: 460)
     }
 
     private func modePicker<Value: Identifiable & Hashable>(

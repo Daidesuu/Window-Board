@@ -103,6 +103,23 @@ private func bestSavedWorkspaceWindow(
     return appCandidates.first
 }
 
+private func appNamesMatch(_ lhs: String, _ rhs: String) -> Bool {
+    let lhs = lhs.trimmingCharacters(in: .whitespacesAndNewlines)
+    let rhs = rhs.trimmingCharacters(in: .whitespacesAndNewlines)
+
+    guard !lhs.isEmpty, !rhs.isEmpty else {
+        return false
+    }
+
+    if lhs.localizedCaseInsensitiveCompare(rhs) == .orderedSame {
+        return true
+    }
+
+    let lhsLowercased = lhs.localizedLowercase
+    let rhsLowercased = rhs.localizedLowercase
+    return lhsLowercased.contains(rhsLowercased) || rhsLowercased.contains(lhsLowercased)
+}
+
 private func raiseAttachedWindowsOffMainThread(
     _ windows: [AttachedWindow],
     activationSettleNanoseconds: UInt64,
@@ -177,6 +194,8 @@ struct ContentView: View {
     @State private var suppressExternalActivationUntil = Date.distantPast
     @State private var lastExternalApplication: NSRunningApplication?
     @State private var attachedWindowFailureCounts: [AttachedWindow.ID: Int] = [:]
+    @State private var recoveryIssueByAttachmentID: [AttachedWindow.ID: AttachedWindowRecoveryIssue] = [:]
+    @State private var recoveryRevisionByAttachmentID: [AttachedWindow.ID: Int] = [:]
     @State private var activePositionReadIDs: Set<AttachedWindow.ID> = []
     @State private var minimizedAttachedWindowIDs: Set<AttachedWindow.ID> = []
     @State private var workspaceStatusTextInput = ""
@@ -312,6 +331,9 @@ struct ContentView: View {
             syncStatusMenuState()
             updateAttachedWindowSnapshotTaskForActivity()
         }
+        .onChange(of: session.isApplyingWorkspaceWindows) { _, _ in
+            updateAttachedWindowSnapshotTaskForActivity()
+        }
         .onChange(of: session.isMinimizingUnattached) { _, _ in
             syncStatusMenuState()
             updateAttachedWindowSnapshotTaskForActivity()
@@ -387,6 +409,7 @@ struct ContentView: View {
             restoreMissingWindowsOnSwitch: $shouldRestoreMissingWindowsOnWorkspaceSwitch,
             boardAlwaysOnTop: $isBoardAlwaysOnTop,
             attachedState: attachedDisplayState(for:),
+            recoveryIssue: { recoveryIssueByAttachmentID[$0] },
             refreshWindows: refreshWindowsAsync,
             attachSelected: attachSelectedWindow,
             attachFrontmost: attachFrontmostWindow,
@@ -403,9 +426,12 @@ struct ContentView: View {
             updateStatusItemIcon: updateSelectedWorkspaceIcon,
             updateStatusItemText: updateSelectedWorkspaceStatusText,
             recoverAttached: recoverAttachedWindow,
+            useFrontWindowForAttached: useFrontWindowForAttached,
             updateAttached: updateAttachedPositionFromMainView(id:),
             detachAttached: detachWindowFromMainView(id:),
             bringForwardAttached: { bringAttachedWindowToFrontFromMainView($0) },
+            isNeverMinimizedApp: { appState.isNeverMinimized(bundleIdentifier: $0) },
+            addNeverMinimizeApp: addNeverMinimizeApp(for:),
             updatePositions: updateAttachedPositionsFromMainView,
             bringToFront: bringAllAttachedWindowsToFrontFromMainView,
             minimizeUnattached: minimizeUnattachedWindows,
@@ -426,6 +452,19 @@ struct ContentView: View {
         }
 
         bringAttachedWindowsToFrontSmoothly([attachedWindow], updateStatus: true)
+    }
+
+    private func addNeverMinimizeApp(for window: WindowInfo) {
+        guard let bundleIdentifier = window.bundleIdentifier else {
+            session.statusMessage = "This app cannot be added because no bundle identifier is available."
+            return
+        }
+
+        appState.addNeverMinimizeApp(
+            bundleIdentifier: bundleIdentifier,
+            displayName: window.appName
+        )
+        session.statusMessage = "App will not be minimized by WindowBoard."
     }
 
     private func updateAttachedPositionFromMainView(id: AttachedWindow.ID) {
@@ -1145,6 +1184,7 @@ struct ContentView: View {
             }
             session.attachedWindows.removeAll { isSameAttachedWindow($0.window, as: window) }
             clearAttachedWindowAccessFailure(for: attachedWindow.id)
+            recoveryIssueByAttachmentID.removeValue(forKey: attachedWindow.id)
             markAttachedWindowAvailable(attachedWindow.id)
             switch insertion {
             case .start:
@@ -1175,6 +1215,8 @@ struct ContentView: View {
     private func createWorkspace() {
         session.createWorkspace(boardOrigin: boardMotion.currentOrigin)
         attachedWindowFailureCounts.removeAll()
+        recoveryIssueByAttachmentID.removeAll()
+        recoveryRevisionByAttachmentID.removeAll()
         activePositionReadIDs.removeAll()
         minimizedAttachedWindowIDs.removeAll()
         workspaceStatusTextInput = ""
@@ -1253,6 +1295,8 @@ struct ContentView: View {
             },
             completion: { shouldBringBoardToFront in
                 attachedWindowFailureCounts.removeAll()
+                recoveryIssueByAttachmentID.removeAll()
+                recoveryRevisionByAttachmentID.removeAll()
                 activePositionReadIDs.removeAll()
                 boardMotion.pendingReleaseOrigin = nil
                 if autoFrontMode == .off {
@@ -1552,6 +1596,7 @@ struct ContentView: View {
 
         guard !session.attachedWindows.isEmpty,
               !session.isLoadingWorkspace,
+              !session.isApplyingWorkspaceWindows,
               !session.isMinimizingUnattached,
               !session.isRestoringMinimized else {
             return
@@ -1574,7 +1619,10 @@ struct ContentView: View {
     }
 
     private func updateAttachedWindowSnapshotTaskForActivity() {
-        if session.isLoadingWorkspace || session.isMinimizingUnattached || session.isRestoringMinimized {
+        if session.isLoadingWorkspace ||
+            session.isApplyingWorkspaceWindows ||
+            session.isMinimizingUnattached ||
+            session.isRestoringMinimized {
             stopAttachedWindowSnapshotTask()
         } else {
             restartAttachedWindowSnapshotTask()
@@ -1643,7 +1691,15 @@ struct ContentView: View {
                 clearAttachedWindowAccessFailure(for: result.id)
                 markAttachedWindowAvailable(result.id)
             } else {
-                if !isUnavailable(result.id) {
+                if session.attachedWindows[index].window.pid == 0 {
+                    session.unavailableAttachedWindowIDs.insert(result.id)
+                    didChange = true
+                    continue
+                }
+
+                let failureCount = (attachedWindowFailureCounts[result.id] ?? 0) + 1
+                attachedWindowFailureCounts[result.id] = failureCount
+                if failureCount >= 3, !isUnavailable(result.id) {
                     session.unavailableAttachedWindowIDs.insert(result.id)
                     didChange = true
                 }
@@ -2147,6 +2203,13 @@ struct ContentView: View {
     private func markAttachedWindowAvailable(_ id: AttachedWindow.ID) {
         session.unavailableAttachedWindowIDs.remove(id)
         session.reconnectingAttachedWindowIDs.remove(id)
+        recoveryIssueByAttachmentID.removeValue(forKey: id)
+        recoveryRevisionByAttachmentID.removeValue(forKey: id)
+    }
+
+    private func clearAttachedWindowRecoveryActivity(for id: AttachedWindow.ID) {
+        session.reconnectingAttachedWindowIDs.remove(id)
+        activePositionReadIDs.remove(id)
     }
 
     private func recoverAttachedWindow(_ attachedWindow: AttachedWindow) {
@@ -2165,6 +2228,8 @@ struct ContentView: View {
             session.reconnectingAttachedWindowIDs.insert(attachmentID)
             session.statusMessage = "Checking \(originalWindow.appName)..."
         }
+        let recoveryRevision = (recoveryRevisionByAttachmentID[attachmentID] ?? 0) + 1
+        recoveryRevisionByAttachmentID[attachmentID] = recoveryRevision
 
         Task.detached(priority: .userInitiated) {
             let service = AccessibilityWindowService()
@@ -2176,7 +2241,9 @@ struct ContentView: View {
                     let restoredPosition = try? service.position(of: originalWindow)
 
                     await MainActor.run {
-                        guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+                        guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
+                              let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+                            clearAttachedWindowRecoveryActivity(for: attachmentID)
                             return
                         }
 
@@ -2212,7 +2279,9 @@ struct ContentView: View {
                 service.activateApplication(pid: originalWindow.pid)
 
                 await MainActor.run {
-                    guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+                    guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
+                          let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+                        clearAttachedWindowRecoveryActivity(for: attachmentID)
                         return
                     }
 
@@ -2241,12 +2310,14 @@ struct ContentView: View {
             var replacement: WindowInfo?
             var latestWindows: [WindowInfo] = []
             var didReopen = false
-            var didRequestNewWindow = false
             var didActivateApplication = false
             let unavailableError = WindowBoardAXError.operationFailed("Read window position", .invalidUIElement)
 
             for attempt in 0..<40 {
                 if Task.isCancelled {
+                    await MainActor.run {
+                        clearAttachedWindowRecoveryActivity(for: attachmentID)
+                    }
                     return
                 }
 
@@ -2262,18 +2333,21 @@ struct ContentView: View {
                             didActivateApplication = service.activateOrOpenApplication(for: originalWindow)
                         }
                     }
-                }
+                    if didReopen || didActivateApplication {
+                        let issue: AttachedWindowRecoveryIssue = didReopen
+                            ? .openedButNotMatched
+                            : .activatedButNotMatched
+                        let recoveryStatusMessage = didReopen
+                            ? "App opened. Looking for a matching window..."
+                            : "App activated. Looking for a matching window..."
+                        await MainActor.run {
+                            guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
+                                  session.attachedWindows.contains(where: { $0.id == attachmentID }) else {
+                                return
+                            }
 
-                if attempt == 8 {
-                    if let savedReference {
-                        didRequestNewWindow = service.openSavedWindowReference(savedReference)
-                        if !didRequestNewWindow {
-                            didActivateApplication = service.activateSavedApplication(savedReference)
-                        }
-                    } else {
-                        didRequestNewWindow = service.openNewWindow(for: originalWindow)
-                        if !didRequestNewWindow {
-                            didActivateApplication = service.activateOrOpenApplication(for: originalWindow)
+                            recoveryIssueByAttachmentID[attachmentID] = issue
+                            session.statusMessage = recoveryStatusMessage
                         }
                     }
                 }
@@ -2308,24 +2382,26 @@ struct ContentView: View {
             let resolvedReplacement = replacement
             let resolvedWindows = latestWindows
             let resolvedDidReopen = didReopen
-            let resolvedDidRequestNewWindow = didRequestNewWindow
             let resolvedDidActivateApplication = didActivateApplication
 
             await MainActor.run {
-                guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+                guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
+                      let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+                    clearAttachedWindowRecoveryActivity(for: attachmentID)
                     return
                 }
 
                 guard let replacement = resolvedReplacement else {
-                    session.reconnectingAttachedWindowIDs.remove(attachmentID)
+                    let recoveryIssue: AttachedWindowRecoveryIssue = if resolvedDidReopen {
+                        .openedButNotMatched
+                    } else if resolvedDidActivateApplication {
+                        .activatedButNotMatched
+                    } else {
+                        .couldNotOpen
+                    }
+                    recoveryIssueByAttachmentID[attachmentID] = recoveryIssue
                     handleAttachedWindowAccessFailure(for: attachmentID, error: unavailableError)
-                    session.statusMessage = resolvedDidRequestNewWindow
-                        ? "Opened \(originalWindow.appName), but could not find a matching window to reconnect."
-                        : resolvedDidReopen
-                        ? "Opened \(originalWindow.appName), but could not find a matching window to reconnect."
-                        : resolvedDidActivateApplication
-                        ? "Activated \(originalWindow.appName), but could not reconnect a matching window."
-                        : "Could not find a matching window to reconnect."
+                    session.statusMessage = recoveryIssue.failureMessage
                     return
                 }
 
@@ -2347,13 +2423,141 @@ struct ContentView: View {
         }
     }
 
+    private func useFrontWindowForAttached(_ attachedWindow: AttachedWindow) {
+        let attachmentID = attachedWindow.id
+        let application = frontWindowReplacementApplication(for: attachedWindow)
+        let expectedBundleIdentifier = attachedWindow.savedReference?.bundleIdentifier ?? attachedWindow.window.bundleIdentifier
+        let expectedAppName = attachedWindow.savedReference?.appName ?? attachedWindow.window.appName
+        recoveryRevisionByAttachmentID[attachmentID] = (recoveryRevisionByAttachmentID[attachmentID] ?? 0) + 1
+        session.statusMessage = "Checking front window..."
+
+        Task.detached(priority: .userInitiated) {
+            let service = AccessibilityWindowService()
+            var candidateWindows: [WindowInfo] = []
+
+            if let visibleFrontWindow = service.frontmostVisibleExternalWindow() {
+                candidateWindows.append(visibleFrontWindow)
+            }
+
+            if let application {
+                if let frontmostWindow = service.frontmostWindow(for: application) {
+                    candidateWindows.append(frontmostWindow)
+                }
+                candidateWindows.append(contentsOf: service.windows(for: application))
+            }
+
+            candidateWindows.append(contentsOf: service.listWindows())
+
+            var seenWindowIDs = Set<WindowInfo.ID>()
+            let uniqueCandidateWindows = candidateWindows.filter { window in
+                seenWindowIDs.insert(window.id).inserted
+            }
+            let replacementWindow = uniqueCandidateWindows.first { window in
+                if let expectedBundleIdentifier,
+                   let windowBundleIdentifier = window.bundleIdentifier {
+                    if expectedBundleIdentifier == windowBundleIdentifier {
+                        return true
+                    }
+                }
+
+                return appNamesMatch(window.appName, expectedAppName)
+            }
+
+            guard let replacementWindow else {
+                await MainActor.run {
+                    guard session.attachedWindows.contains(where: { $0.id == attachmentID }) else {
+                        recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
+                        clearAttachedWindowRecoveryActivity(for: attachmentID)
+                        session.statusMessage = "Attached window is no longer in this workspace."
+                        return
+                    }
+
+                    clearAttachedWindowRecoveryActivity(for: attachmentID)
+                    session.unavailableAttachedWindowIDs.insert(attachmentID)
+                    if recoveryIssueByAttachmentID[attachmentID] == nil {
+                        recoveryIssueByAttachmentID[attachmentID] = .activatedButNotMatched
+                    }
+                    session.statusMessage = "No matching front window found for \(expectedAppName). Checked \(uniqueCandidateWindows.count) window(s)."
+                }
+                return
+            }
+
+            let position = (try? service.position(of: replacementWindow)) ?? replacementWindow.position
+            let size = try? service.size(of: replacementWindow)
+
+            await MainActor.run {
+                guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+                    recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
+                    clearAttachedWindowRecoveryActivity(for: attachmentID)
+                    session.statusMessage = "Attached window is no longer in this workspace."
+                    return
+                }
+
+                let boardOrigin = boardMotion.currentOrigin ?? session.attachedWindows[index].lastBoardOrigin
+                let origin = position ?? session.attachedWindows[index].lastWindowOrigin
+                session.attachedWindows[index].window = replacementWindow
+                session.attachedWindows[index].lastBoardOrigin = boardOrigin
+                session.attachedWindows[index].lastWindowOrigin = origin
+                session.attachedWindows[index].lastAppliedOrigin = origin
+                session.attachedWindows[index].pendingReleaseOrigin = nil
+                session.attachedWindows[index].savedReference = SavedWindowReference.make(
+                    from: session.attachedWindows[index],
+                    boardOrigin: boardOrigin,
+                    size: size
+                )
+                clearAttachedWindowAccessFailure(for: attachmentID)
+                clearAttachedWindowRecoveryActivity(for: attachmentID)
+                minimizedAttachedWindowIDs.remove(attachmentID)
+                markAttachedWindowAvailable(attachmentID)
+                _ = session.persistActiveWorkspaceSnapshot(
+                    sizeByAttachmentID: size.map { [attachmentID: $0] } ?? [:]
+                )
+                windows = mergeWindows([replacementWindow], into: windows)
+                session.statusMessage = "Using \(replacementWindow.displayName) for this workspace."
+            }
+        }
+    }
+
+    private func frontWindowReplacementApplication(for attachedWindow: AttachedWindow) -> NSRunningApplication? {
+        let currentPID = ProcessInfo.processInfo.processIdentifier
+        let runningApplications = NSWorkspace.shared.runningApplications
+            .filter { $0.processIdentifier != currentPID }
+            .filter { $0.activationPolicy == .regular || $0.activationPolicy == .accessory }
+
+        let matchingApplication: (NSRunningApplication) -> Bool = { application in
+            if let expectedBundleIdentifier = attachedWindow.savedReference?.bundleIdentifier ?? attachedWindow.window.bundleIdentifier,
+               let applicationBundleIdentifier = application.bundleIdentifier {
+                if expectedBundleIdentifier == applicationBundleIdentifier {
+                    return true
+                }
+            }
+
+            let expectedAppName = attachedWindow.savedReference?.appName ?? attachedWindow.window.appName
+            return appNamesMatch(application.localizedName ?? "", expectedAppName)
+        }
+
+        if let frontmostApplication = NSWorkspace.shared.frontmostApplication,
+           matchingApplication(frontmostApplication) {
+            return frontmostApplication
+        }
+
+        if let lastExternalApplication,
+           matchingApplication(lastExternalApplication) {
+            return lastExternalApplication
+        }
+
+        return runningApplications.first(where: matchingApplication)
+    }
+
     private func handleAttachedWindowAccessFailure(for id: AttachedWindow.ID, error: Error) {
         guard session.attachedWindows.contains(where: { $0.id == id }) else {
+            clearAttachedWindowRecoveryActivity(for: id)
             return
         }
 
         let failureCount = (attachedWindowFailureCounts[id] ?? 0) + 1
         attachedWindowFailureCounts[id] = failureCount
+        clearAttachedWindowRecoveryActivity(for: id)
         session.unavailableAttachedWindowIDs.insert(id)
 
         session.statusMessage = "Attached window is unavailable. Use Activate App or Detach."
@@ -2362,6 +2566,8 @@ struct ContentView: View {
     private func detachWindow(id: AttachedWindow.ID, message: String? = nil) {
         session.detachWindow(id: id, boardOrigin: boardMotion.currentOrigin)
         clearAttachedWindowAccessFailure(for: id)
+        recoveryIssueByAttachmentID.removeValue(forKey: id)
+        recoveryRevisionByAttachmentID.removeValue(forKey: id)
         activePositionReadIDs.remove(id)
         minimizedAttachedWindowIDs.remove(id)
         detachingAttachedWindowIDs.remove(id)
@@ -2383,6 +2589,8 @@ struct ContentView: View {
         frontingTask = nil
         frontingRevision += 1
         attachedWindowFailureCounts.removeAll()
+        recoveryIssueByAttachmentID.removeAll()
+        recoveryRevisionByAttachmentID.removeAll()
         activePositionReadIDs.removeAll()
         minimizedAttachedWindowIDs.removeAll()
         boardMotion.pendingReleaseOrigin = nil

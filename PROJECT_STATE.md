@@ -353,6 +353,11 @@ Current docs:
 - The lower `Add Window` disclosure duplicates the Add Window card concept.
 - The lower `Workspace Settings` form still carries many responsibilities and may need a clearer destination.
 - Visual polish of transparency/header/titlebar is not fully settled.
+- Unresolved bug: `Find or Reopen` can bring the intended app/window to the front while the attached card still returns to or remains `Unavailable`.
+  - `Use Front Window` may appear late or fail to reconnect the currently visible window.
+  - Recent attempted fixes added recovery issue state, guarded stale recovery tasks, relaxed app-name matching, and tried CGWindow frontmost-window matching, but the user still reports the issue is not fixed.
+  - Treat this as an open investigation item. The next debugging pass should instrument the card action path and show per-card diagnostics for: button clicked, recovery revision, expected bundle/app, candidate window count, chosen candidate, AX position result, and final state update.
+  - Avoid adding more heuristic reconnect logic until the actual failing branch is observable.
 - Motion has compile verification, but still needs manual visual review for:
   - pin-in timing
   - hover strength

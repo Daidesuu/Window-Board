@@ -56,6 +56,43 @@ enum AttachedWindowDisplayState: Equatable {
     }
 }
 
+enum AttachedWindowRecoveryIssue: Equatable {
+    case openedButNotMatched
+    case activatedButNotMatched
+    case couldNotOpen
+
+    var detail: String {
+        switch self {
+        case .openedButNotMatched:
+            "App opened, window not matched"
+        case .activatedButNotMatched:
+            "App active, window not matched"
+        case .couldNotOpen:
+            "Could not open app"
+        }
+    }
+
+    var canUseFrontWindow: Bool {
+        switch self {
+        case .openedButNotMatched, .activatedButNotMatched:
+            true
+        case .couldNotOpen:
+            false
+        }
+    }
+
+    var failureMessage: String {
+        switch self {
+        case .openedButNotMatched:
+            "App opened, but WindowBoard could not identify the saved window."
+        case .activatedButNotMatched:
+            "App is active, but WindowBoard could not identify the saved window."
+        case .couldNotOpen:
+            "Could not open app. Open it manually, then try again."
+        }
+    }
+}
+
 struct WorkspaceSidebarView: View {
     let workspaces: [SavedWorkspace]
     let activeWorkspaceID: SavedWorkspace.ID?
@@ -64,24 +101,40 @@ struct WorkspaceSidebarView: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            List(selection: $selection) {
-                Section("Workspaces") {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 4) {
+                    Text("Workspaces")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.top, 12)
+                        .padding(.bottom, 4)
+
                     if workspaces.isEmpty {
                         Text("No Saved Workspaces")
+                            .font(.callout)
                             .foregroundStyle(.secondary)
+                            .padding(.horizontal, 14)
+                            .padding(.vertical, 8)
                     } else {
                         ForEach(workspaces) { workspace in
-                            WorkspaceSidebarRow(
-                                workspace: workspace,
-                                isActive: workspace.id == activeWorkspaceID
-                            )
-                            .tag(SavedWorkspace.ID?.some(workspace.id))
+                            Button {
+                                selection = workspace.id
+                            } label: {
+                                WorkspaceSidebarRow(
+                                    workspace: workspace,
+                                    isSelected: workspace.id == selection,
+                                    isActive: workspace.id == activeWorkspaceID
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .help(workspace.displayName)
                         }
                     }
                 }
+                .padding(.horizontal, 10)
+                .padding(.bottom, 12)
             }
-            .listStyle(.sidebar)
-            .scrollContentBackground(.hidden)
 
             Divider()
 
@@ -107,6 +160,7 @@ struct WorkspaceSidebarView: View {
 
 private struct WorkspaceSidebarRow: View {
     let workspace: SavedWorkspace
+    let isSelected: Bool
     let isActive: Bool
 
     var body: some View {
@@ -134,7 +188,16 @@ private struct WorkspaceSidebarRow: View {
                     .foregroundStyle(.secondary)
             }
         }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .background {
+            if isSelected {
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(Color(nsColor: .selectedContentBackgroundColor).opacity(0.18))
+            }
+        }
     }
 
     @ViewBuilder
@@ -181,6 +244,7 @@ struct WorkspaceDetailView: View {
     let restoreMissingWindowsOnSwitch: Binding<Bool>
     let boardAlwaysOnTop: Binding<Bool>
     let attachedState: (AttachedWindow) -> AttachedWindowDisplayState
+    let recoveryIssue: (AttachedWindow.ID) -> AttachedWindowRecoveryIssue?
     let refreshWindows: () -> Void
     let attachSelected: () -> Void
     let attachFrontmost: () -> Void
@@ -197,9 +261,12 @@ struct WorkspaceDetailView: View {
     let updateStatusItemIcon: (String) -> Void
     let updateStatusItemText: () -> Void
     let recoverAttached: (AttachedWindow) -> Void
+    let useFrontWindowForAttached: (AttachedWindow) -> Void
     let updateAttached: (AttachedWindow.ID) -> Void
     let detachAttached: (AttachedWindow.ID) -> Void
     let bringForwardAttached: (AttachedWindow) -> Void
+    let isNeverMinimizedApp: (String?) -> Bool
+    let addNeverMinimizeApp: (WindowInfo) -> Void
     let updatePositions: () -> Void
     let bringToFront: () -> Void
     let minimizeUnattached: () -> Void
@@ -258,6 +325,7 @@ struct WorkspaceDetailView: View {
                 PinnedWindowCardGrid(
                     attachedWindows: attachedWindows,
                     stateForWindow: attachedState,
+                    recoveryIssue: recoveryIssue,
                     canAttachFrontmost: canAttachFrontmost,
                     attachFrontmost: attachFrontmost,
                     attachFromAddCard: attachFromAddCard,
@@ -266,9 +334,12 @@ struct WorkspaceDetailView: View {
                     workspaceTransitionToken: workspaceTransitionToken,
                     detachingAttachedWindowIDs: detachingAttachedWindowIDs,
                     recover: recoverAttached,
+                    useFrontWindow: useFrontWindowForAttached,
                     update: updateAttached,
                     detach: detachAttached,
-                    bringForward: bringForwardAttached
+                    bringForward: bringForwardAttached,
+                    isNeverMinimizedApp: isNeverMinimizedApp,
+                    addNeverMinimizeApp: addNeverMinimizeApp
                 )
 
                 secondaryControls
@@ -686,6 +757,7 @@ private struct InspectorValueRow: View {
 private struct PinnedWindowCardGrid: View {
     let attachedWindows: [AttachedWindow]
     let stateForWindow: (AttachedWindow) -> AttachedWindowDisplayState
+    let recoveryIssue: (AttachedWindow.ID) -> AttachedWindowRecoveryIssue?
     let canAttachFrontmost: Bool
     let attachFrontmost: () -> Void
     let attachFromAddCard: () -> Void
@@ -694,15 +766,20 @@ private struct PinnedWindowCardGrid: View {
     let workspaceTransitionToken: UUID?
     let detachingAttachedWindowIDs: Set<AttachedWindow.ID>
     let recover: (AttachedWindow) -> Void
+    let useFrontWindow: (AttachedWindow) -> Void
     let update: (AttachedWindow.ID) -> Void
     let detach: (AttachedWindow.ID) -> Void
     let bringForward: (AttachedWindow) -> Void
+    let isNeverMinimizedApp: (String?) -> Bool
+    let addNeverMinimizeApp: (WindowInfo) -> Void
 
     private let columns = [
         GridItem(.adaptive(minimum: 200, maximum: 240), spacing: 18, alignment: .top)
     ]
 
     var body: some View {
+        let entranceToken = shouldAnimateWorkspaceEntrance ? workspaceTransitionToken : nil
+
         LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
             if attachedWindows.isEmpty {
                 AddPinnedWindowCard(
@@ -710,7 +787,7 @@ private struct PinnedWindowCardGrid: View {
                     attachFrontmost: attachFromAddCard,
                     isEmptyState: true,
                     appearanceGeneration: attachedWindows.count,
-                    workspaceTransitionToken: workspaceTransitionToken,
+                    workspaceTransitionToken: entranceToken,
                     workspaceTransitionIndex: 0
                 )
             } else {
@@ -720,15 +797,19 @@ private struct PinnedWindowCardGrid: View {
                     PinnedWindowCard(
                         attachedWindow: attachedWindow,
                         state: stateForWindow(attachedWindow),
+                        recoveryIssue: recoveryIssue(attachedWindow.id),
                         isPinningIn: isPinningIn,
                         isDetaching: isDetaching,
-                        workspaceTransitionToken: workspaceTransitionToken,
+                        workspaceTransitionToken: entranceToken,
                         workspaceTransitionIndex: index,
                         onPinInComplete: isPinningIn ? clearRecentlyAddedWindowID : {},
                         bringForward: { bringForward(attachedWindow) },
                         recover: { recover(attachedWindow) },
+                        useFrontWindow: { useFrontWindow(attachedWindow) },
                         update: { update(attachedWindow.id) },
-                        detach: { detach(attachedWindow.id) }
+                        detach: { detach(attachedWindow.id) },
+                        isNeverMinimizedApp: isNeverMinimizedApp(attachedWindow.window.bundleIdentifier),
+                        addNeverMinimizeApp: { addNeverMinimizeApp(attachedWindow.window) }
                     )
                 }
 
@@ -737,7 +818,7 @@ private struct PinnedWindowCardGrid: View {
                     attachFrontmost: attachFromAddCard,
                     isEmptyState: false,
                     appearanceGeneration: attachedWindows.count,
-                    workspaceTransitionToken: workspaceTransitionToken,
+                    workspaceTransitionToken: entranceToken,
                     workspaceTransitionIndex: attachedWindows.count
                 )
             }
@@ -746,6 +827,10 @@ private struct PinnedWindowCardGrid: View {
             .spring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.06),
             value: attachedWindows.map(\.id)
         )
+    }
+
+    private var shouldAnimateWorkspaceEntrance: Bool {
+        attachedWindows.count < 4
     }
 }
 
@@ -1216,6 +1301,7 @@ private struct PinnedWindowCard: View {
 
     let attachedWindow: AttachedWindow
     let state: AttachedWindowDisplayState
+    let recoveryIssue: AttachedWindowRecoveryIssue?
     let isPinningIn: Bool
     let isDetaching: Bool
     let workspaceTransitionToken: UUID?
@@ -1223,8 +1309,11 @@ private struct PinnedWindowCard: View {
     let onPinInComplete: () -> Void
     let bringForward: () -> Void
     let recover: () -> Void
+    let useFrontWindow: () -> Void
     let update: () -> Void
     let detach: () -> Void
+    let isNeverMinimizedApp: Bool
+    let addNeverMinimizeApp: () -> Void
 
     private let baseCardSize = CGSize(width: 220, height: 308)
 
@@ -1305,6 +1394,15 @@ private struct PinnedWindowCard: View {
 
                 Spacer(minLength: 0)
 
+                if shouldShowUseFrontWindow {
+                    Button("Use Front Window", action: useFrontWindow)
+                        .buttonStyle(.bordered)
+                        .controlSize(.small)
+                        .lineLimit(1)
+                        .frame(maxWidth: .infinity)
+                        .minimumScaleFactor(0.82)
+                }
+
                 Button(primaryActionTitle, action: primaryAction)
                     .buttonStyle(.borderedProminent)
                     .disabled(state == .reconnecting)
@@ -1343,6 +1441,10 @@ private struct PinnedWindowCard: View {
             Button("Save Layout", action: update)
             Button("Find or Reopen", action: recover)
                 .disabled(state == .reconnecting)
+            if shouldShowUseFrontWindow {
+                Button("Use Front Window", action: useFrontWindow)
+            }
+            neverMinimizeMenuItem
             Divider()
             Button("Detach from Board", action: detach)
         } label: {
@@ -1356,13 +1458,30 @@ private struct PinnedWindowCard: View {
         .help("More window actions")
     }
 
+    @ViewBuilder
+    private var neverMinimizeMenuItem: some View {
+        if attachedWindow.window.bundleIdentifier == nil {
+            Button("Never Minimize This App") {}
+                .disabled(true)
+        } else if isNeverMinimizedApp {
+            Button("Already Never Minimized") {}
+                .disabled(true)
+        } else {
+            Button("Never Minimize This App", action: addNeverMinimizeApp)
+        }
+    }
+
     private var windowSubtitle: String {
         let title = attachedWindow.window.title.trimmingCharacters(in: .whitespacesAndNewlines)
         return title.isEmpty ? "No window title" : title
     }
 
     private var statusDetail: String {
-        switch state {
+        if let recoveryIssue, state == .unavailable || state == .reconnecting {
+            return recoveryIssue.detail
+        }
+
+        return switch state {
         case .available:
             "Ready"
         case .minimized:
@@ -1489,6 +1608,10 @@ private struct PinnedWindowCard: View {
         case .reconnecting:
             "Finding..."
         }
+    }
+
+    private var shouldShowUseFrontWindow: Bool {
+        (state == .unavailable || state == .reconnecting) && recoveryIssue?.canUseFrontWindow == true
     }
 
     private func primaryAction() {
@@ -1896,16 +2019,11 @@ private struct AppIconView: View {
     }
 
     private var iconImage: NSImage? {
-        if let bundleURL {
-            return NSWorkspace.shared.icon(forFile: bundleURL.path)
-        }
-
-        if let bundleIdentifier,
-           let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
-            return NSWorkspace.shared.icon(forFile: applicationURL.path)
-        }
-
-        return nil
+        AppIconCache.icon(
+            appName: appName,
+            bundleURL: bundleURL,
+            bundleIdentifier: bundleIdentifier
+        )
     }
 
     private var fallbackIcon: some View {
@@ -1944,6 +2062,37 @@ private struct AppIconView: View {
         default:
             .accentColor
         }
+    }
+}
+
+private enum AppIconCache {
+    private static var cache: [String: NSImage] = [:]
+
+    static func icon(appName: String, bundleURL: URL?, bundleIdentifier: String?) -> NSImage? {
+        let key = bundleIdentifier ?? bundleURL?.absoluteString ?? appName
+        if let cachedIcon = cache[key] {
+            return cachedIcon
+        }
+
+        guard let resolvedIcon = resolvedIcon(bundleURL: bundleURL, bundleIdentifier: bundleIdentifier) else {
+            return nil
+        }
+
+        cache[key] = resolvedIcon
+        return resolvedIcon
+    }
+
+    private static func resolvedIcon(bundleURL: URL?, bundleIdentifier: String?) -> NSImage? {
+        if let bundleURL {
+            return NSWorkspace.shared.icon(forFile: bundleURL.path)
+        }
+
+        if let bundleIdentifier,
+           let applicationURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+            return NSWorkspace.shared.icon(forFile: applicationURL.path)
+        }
+
+        return nil
     }
 }
 

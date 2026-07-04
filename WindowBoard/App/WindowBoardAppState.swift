@@ -10,6 +10,15 @@ enum WindowBoardStatusCommand {
     case restoreMinimized
 }
 
+struct NeverMinimizeApp: Identifiable, Hashable {
+    let bundleIdentifier: String
+    let displayName: String
+
+    var id: String {
+        bundleIdentifier
+    }
+}
+
 final class WindowBoardAppState: ObservableObject {
     let workspaceStore: WorkspaceStore
     let session: WorkspaceSessionController
@@ -45,8 +54,10 @@ final class WindowBoardAppState: ObservableObject {
     @Published private(set) var positionUpdateMode: PositionUpdateMode
     @Published private(set) var autoFrontMode: AutoFrontMode
     @Published private(set) var boardClickAction: BoardClickAction
+    @Published private(set) var neverMinimizeApps: [NeverMinimizeApp]
 
     private let defaults: UserDefaults
+    private let neverMinimizeBundleIdentifiersKey = "neverMinimizeBundleIdentifiers"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -66,6 +77,11 @@ final class WindowBoardAppState: ObservableObject {
         positionUpdateMode = PositionUpdateMode(rawValue: storedPositionUpdateModeRawValue) ?? .manual
         autoFrontMode = AutoFrontMode(rawValue: storedAutoFrontModeRawValue) ?? .off
         boardClickAction = BoardClickAction(rawValue: storedBoardClickActionRawValue) ?? .none
+        neverMinimizeApps = Self.loadNeverMinimizeApps(
+            from: defaults,
+            key: neverMinimizeBundleIdentifiersKey
+        )
+        syncNeverMinimizeAppsToSession()
     }
 
     var canBringAttachedToFront: Bool {
@@ -92,6 +108,46 @@ final class WindowBoardAppState: ObservableObject {
         commandSubject.send(command)
     }
 
+    func isNeverMinimized(bundleIdentifier: String?) -> Bool {
+        guard let bundleIdentifier else {
+            return false
+        }
+
+        return neverMinimizeApps.contains { $0.bundleIdentifier == bundleIdentifier }
+    }
+
+    func addNeverMinimizeApp(bundleIdentifier: String, displayName: String) {
+        let resolvedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? Self.displayName(for: bundleIdentifier)
+            : displayName
+
+        if let index = neverMinimizeApps.firstIndex(where: { $0.bundleIdentifier == bundleIdentifier }) {
+            neverMinimizeApps[index] = NeverMinimizeApp(
+                bundleIdentifier: bundleIdentifier,
+                displayName: resolvedDisplayName
+            )
+        } else {
+            neverMinimizeApps.append(
+                NeverMinimizeApp(
+                    bundleIdentifier: bundleIdentifier,
+                    displayName: resolvedDisplayName
+                )
+            )
+        }
+
+        neverMinimizeApps.sort {
+            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+        }
+        persistNeverMinimizeApps()
+        syncNeverMinimizeAppsToSession()
+    }
+
+    func removeNeverMinimizeApp(bundleIdentifier: String) {
+        neverMinimizeApps.removeAll { $0.bundleIdentifier == bundleIdentifier }
+        persistNeverMinimizeApps()
+        syncNeverMinimizeAppsToSession()
+    }
+
     @discardableResult
     func focusMainWindowIfAvailable() -> Bool {
         NSApp.activate(ignoringOtherApps: true)
@@ -114,6 +170,35 @@ final class WindowBoardAppState: ObservableObject {
         NSApp.windows.first { window in
             window.title == "Window Board"
         }
+    }
+
+    private func persistNeverMinimizeApps() {
+        let bundleIdentifiers = neverMinimizeApps.map(\.bundleIdentifier).sorted()
+        defaults.set(bundleIdentifiers, forKey: neverMinimizeBundleIdentifiersKey)
+    }
+
+    private func syncNeverMinimizeAppsToSession() {
+        session.neverMinimizeBundleIdentifiers = Set(neverMinimizeApps.map(\.bundleIdentifier))
+    }
+
+    private static func loadNeverMinimizeApps(from defaults: UserDefaults, key: String) -> [NeverMinimizeApp] {
+        let bundleIdentifiers = defaults.stringArray(forKey: key) ?? []
+        let uniqueBundleIdentifiers = Array(Set(bundleIdentifiers)).sorted()
+
+        return uniqueBundleIdentifiers.map {
+            NeverMinimizeApp(
+                bundleIdentifier: $0,
+                displayName: displayName(for: $0)
+            )
+        }
+    }
+
+    private static func displayName(for bundleIdentifier: String) -> String {
+        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
+            return FileManager.default.displayName(atPath: appURL.path)
+        }
+
+        return bundleIdentifier
     }
 
 }

@@ -105,6 +105,52 @@ final class AccessibilityWindowService {
         return windows(for: application, appName: appName).first
     }
 
+    func frontmostVisibleExternalWindow(excludingProcessID excludedPID: pid_t = ProcessInfo.processInfo.processIdentifier) -> WindowInfo? {
+        guard let windowList = CGWindowListCopyWindowInfo(.optionOnScreenOnly, .zero) as? [[String: Any]] else {
+            return nil
+        }
+
+        for windowInfo in windowList {
+            guard let ownerPIDNumber = windowInfo[kCGWindowOwnerPID as String] as? NSNumber,
+                  let layerNumber = windowInfo[kCGWindowLayer as String] as? NSNumber,
+                  let windowNumberValue = windowInfo[kCGWindowNumber as String] as? NSNumber,
+                  let ownerPID = pid_t(exactly: ownerPIDNumber),
+                  ownerPID != excludedPID,
+                  layerNumber.intValue == 0 else {
+                continue
+            }
+
+            if let alphaNumber = windowInfo[kCGWindowAlpha as String] as? NSNumber,
+               alphaNumber.doubleValue <= 0 {
+                continue
+            }
+
+            if let boundsDictionary = windowInfo[kCGWindowBounds as String] as? [String: Any] {
+                let bounds = CGRect(dictionaryRepresentation: boundsDictionary as CFDictionary) ?? .zero
+                guard bounds.width > 40, bounds.height > 40 else {
+                    continue
+                }
+            }
+
+            guard let application = NSRunningApplication(processIdentifier: ownerPID),
+                  application.activationPolicy == .regular || application.activationPolicy == .accessory else {
+                continue
+            }
+
+            let candidateWindows = windows(for: application)
+            let windowNumber = CGWindowID(windowNumberValue.uint32Value)
+            if let matchingWindow = candidateWindows.first(where: { $0.windowNumber == windowNumber }) {
+                return matchingWindow
+            }
+
+            if candidateWindows.count == 1 {
+                return candidateWindows[0]
+            }
+        }
+
+        return nil
+    }
+
     func windows(for application: NSRunningApplication) -> [WindowInfo] {
         let currentPID = ProcessInfo.processInfo.processIdentifier
         guard application.processIdentifier != currentPID,
