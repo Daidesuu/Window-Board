@@ -35,6 +35,58 @@
 - For labels, toolbar, layout, settings, or attached row presentation, assign **UI / UX Agent + Session / Workspace Agent**.
 - Do not let multiple agents independently edit `WorkspaceSessionController` for the same task. One Session / Workspace owner should coordinate changes there; other agents should review or propose changes.
 
+## Review Workflow
+- Default to a Codex-first development flow:
+  - Codex implements the requested change.
+  - Codex reviews its own diff against the current codebase before reporting completion.
+  - Codex handles clear bugs, compile errors, obvious type errors, and small fixes without Oracle.
+  - Do not use Oracle for every task.
+- Use **Codex review** for all implemented changes. The primary agent should review the diff directly, focusing on regressions, race conditions, state consistency, missing verification, and adherence to this `AGENTS.md`.
+
+### When To Use Oracle
+- Use the local `oracle` skill/CLI as a second-model advisory review only when it is likely to add value, such as:
+  - an unexplained bug remains and Codex cannot narrow the likely causes enough on its own
+  - the change involves high-impact design decisions around Accessibility API, window management, or SwiftUI state management
+  - a large refactor was performed
+  - a pre-release review is requested
+  - a change spans enough files or subsystems that third-party review is useful
+- For unresolved or recurring bugs, include `PROJECT_STATE.md`, the relevant source files, and the exact observed symptom in the Oracle prompt. Ask Oracle to identify likely failing branches and diagnostics before asking for code changes.
+- Prefer `--dry-run summary --files-report` before sending a real Oracle browser/API run so the file set and token size are visible.
+
+### When Not To Use Oracle
+- Do not use Oracle for:
+  - simple syntax errors
+  - obvious type errors
+  - small UI wording changes
+  - lightweight one- or two-file changes
+  - problems that local inspection, build output, or a targeted run can resolve directly
+  - any task where the user explicitly says not to use Oracle
+- Do not use Oracle API mode without explicit user approval because it can incur cost. Browser mode may take time and may control Chrome; mention this when starting a real run.
+
+### Handling Oracle Output
+- Treat Oracle output as advisory, not authoritative.
+- Verify every Oracle recommendation against the local code, macOS/AX constraints, and build/run results before implementing it.
+- Adopt only recommendations that are technically justified and low-risk for the requested scope.
+- If rejecting an Oracle recommendation, explain why.
+- After implementation, briefly report what was changed and how it was verified.
+
+### Reporting Oracle Reviews
+- When Oracle was used, include these points in the final report:
+  - what was sent to Oracle for review
+  - Oracle's main findings
+  - which findings were accepted
+  - which findings were rejected or deferred, and why
+  - what was implemented or fixed
+
+### WindowBoard Oracle Review Focus
+- For this macOS SwiftUI app, Oracle reviews should pay special attention to:
+  - Accessibility API usage
+  - external app window detection, activation, reopen, and reconnect behavior
+  - SwiftUI state update timing
+  - inconsistencies among `Unavailable`, front-window recovery, and card state
+  - AppKit and SwiftUI responsibility boundaries
+  - low-risk fixes that avoid unnecessary broad refactors
+
 ## Current Behavior Expectations
 - Attached list order is user-visible state, but strict macOS z-order guarantees are not reliable with public APIs.
 - `Follow Mode: None` means attached windows remain selected but do not follow board movement.

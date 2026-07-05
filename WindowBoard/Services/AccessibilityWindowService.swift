@@ -143,6 +143,10 @@ final class AccessibilityWindowService {
                 return matchingWindow
             }
 
+            if let focusedWindow = frontmostWindow(for: application) {
+                return focusedWindow
+            }
+
             if candidateWindows.count == 1 {
                 return candidateWindows[0]
             }

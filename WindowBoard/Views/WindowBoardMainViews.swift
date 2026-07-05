@@ -3,6 +3,7 @@ import SwiftUI
 
 enum AttachedWindowDisplayState: Equatable {
     case available
+    case resolving
     case minimized
     case unavailable
     case reconnecting
@@ -11,6 +12,8 @@ enum AttachedWindowDisplayState: Equatable {
         switch self {
         case .available:
             "Available"
+        case .resolving:
+            "Resolving"
         case .minimized:
             "Minimized"
         case .unavailable:
@@ -24,6 +27,8 @@ enum AttachedWindowDisplayState: Equatable {
         switch self {
         case .available:
             "checkmark.circle"
+        case .resolving:
+            "arrow.triangle.2.circlepath"
         case .minimized:
             "minus.square"
         case .unavailable:
@@ -35,7 +40,7 @@ enum AttachedWindowDisplayState: Equatable {
 
     var needsAttention: Bool {
         switch self {
-        case .available:
+        case .available, .resolving:
             false
         case .minimized, .unavailable, .reconnecting:
             true
@@ -44,7 +49,7 @@ enum AttachedWindowDisplayState: Equatable {
 
     var recoveryActionTitle: String? {
         switch self {
-        case .available:
+        case .available, .resolving:
             nil
         case .minimized:
             "Restore Window"
@@ -1405,7 +1410,7 @@ private struct PinnedWindowCard: View {
 
                 Button(primaryActionTitle, action: primaryAction)
                     .buttonStyle(.borderedProminent)
-                    .disabled(state == .reconnecting)
+                    .disabled(state == .reconnecting || state == .resolving)
                     .controlSize(.small)
                     .lineLimit(1)
                     .frame(maxWidth: .infinity)
@@ -1418,7 +1423,7 @@ private struct PinnedWindowCard: View {
     }
 
     private var isPrimaryActionEnabled: Bool {
-        state != .reconnecting && !isDetaching
+        state != .reconnecting && state != .resolving && !isDetaching
     }
 
     private var iconField: some View {
@@ -1440,7 +1445,7 @@ private struct PinnedWindowCard: View {
         Menu {
             Button("Save Layout", action: update)
             Button("Find or Reopen", action: recover)
-                .disabled(state == .reconnecting)
+                .disabled(state == .reconnecting || state == .resolving)
             if shouldShowUseFrontWindow {
                 Button("Use Front Window", action: useFrontWindow)
             }
@@ -1484,6 +1489,8 @@ private struct PinnedWindowCard: View {
         return switch state {
         case .available:
             "Ready"
+        case .resolving:
+            "Restoring saved window"
         case .minimized:
             "Minimized"
         case .unavailable:
@@ -1564,6 +1571,8 @@ private struct PinnedWindowCard: View {
         switch state {
         case .available:
             appAccentColor.opacity(0.42)
+        case .resolving:
+            .blue.opacity(0.40)
         case .minimized:
             .orange.opacity(0.55)
         case .unavailable:
@@ -1601,6 +1610,8 @@ private struct PinnedWindowCard: View {
         switch state {
         case .available:
             "Bring Forward"
+        case .resolving:
+            "Restoring..."
         case .minimized:
             "Restore Window"
         case .unavailable:
@@ -1617,7 +1628,7 @@ private struct PinnedWindowCard: View {
     private func primaryAction() {
         if state == .available {
             bringForward()
-        } else {
+        } else if state != .resolving {
             recover()
         }
     }
@@ -1730,6 +1741,8 @@ private struct IconPrimaryActionField: View {
         switch state {
         case .available:
             "Bring Forward"
+        case .resolving:
+            "Restoring..."
         case .minimized:
             "Restore Window"
         case .unavailable:
@@ -1743,6 +1756,8 @@ private struct IconPrimaryActionField: View {
         switch state {
         case .available:
             Text("Bring \(appName) forward")
+        case .resolving:
+            Text("Restoring \(appName)")
         case .minimized:
             Text("Restore \(appName) window")
         case .unavailable:
@@ -1799,7 +1814,7 @@ private struct RecoveryPostingRow: View {
 
             if let title = state.recoveryActionTitle {
                 Button(title, action: recover)
-                    .disabled(state == .reconnecting)
+                    .disabled(state == .reconnecting || state == .resolving)
             }
 
             Button {
@@ -1971,6 +1986,8 @@ private struct SnapshotComparisonRow: View {
         switch state {
         case .available:
             "In Sync"
+        case .resolving:
+            "Restoring"
         case .minimized:
             "Minimized"
         case .unavailable:
@@ -1984,6 +2001,8 @@ private struct SnapshotComparisonRow: View {
         switch state {
         case .available:
             .green
+        case .resolving:
+            .blue
         case .minimized:
             .orange
         case .unavailable:
@@ -2490,7 +2509,7 @@ private struct AttachedWindowListRow: View {
             case .reconnecting:
                 Button(recoveryActionTitle, action: recover)
                     .disabled(true)
-            case .available:
+            case .available, .resolving:
                 EmptyView()
             }
         }

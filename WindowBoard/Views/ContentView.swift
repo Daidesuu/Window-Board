@@ -31,6 +31,7 @@ private struct AttachedWindowSnapshot {
 
 private struct AttachedWindowSnapshotResult {
     let id: AttachedWindow.ID
+    let windowID: WindowInfo.ID
     let title: String?
     let origin: CGPoint?
     let size: CGSize?
@@ -910,7 +911,9 @@ struct ContentView: View {
 
     @ViewBuilder
     private func attachedStatusBadge(for attachedWindow: AttachedWindow) -> some View {
-        if isReconnecting(attachedWindow.id) {
+        if session.isLoadingWorkspace {
+            statusBadge("Resolving", systemImage: "arrow.triangle.2.circlepath")
+        } else if isReconnecting(attachedWindow.id) {
             statusBadge("Reconnecting", systemImage: "arrow.triangle.2.circlepath")
         } else if isUnavailable(attachedWindow.id) {
             statusBadge("Unavailable", systemImage: "exclamationmark.triangle")
@@ -922,6 +925,10 @@ struct ContentView: View {
     }
 
     private func attachedDisplayState(for attachedWindow: AttachedWindow) -> AttachedWindowDisplayState {
+        if session.isLoadingWorkspace {
+            return .resolving
+        }
+
         if isReconnecting(attachedWindow.id) {
             return .reconnecting
         }
@@ -1559,6 +1566,7 @@ struct ContentView: View {
             return
         }
 
+        let sampledWindowID = attachedWindow.window.id
         activePositionReadIDs.insert(id)
 
         Task.detached(priority: .utility) {
@@ -1570,6 +1578,14 @@ struct ContentView: View {
                 activePositionReadIDs.remove(id)
 
                 guard let index = session.attachedWindows.firstIndex(where: { $0.id == id }) else {
+                    return
+                }
+
+                guard session.attachedWindows[index].window.id == sampledWindowID else {
+                    return
+                }
+
+                guard !isReconnecting(id) else {
                     return
                 }
 
@@ -1646,6 +1662,7 @@ struct ContentView: View {
                 let isMinimized = service.isMinimized(attachedWindow.window)
                 return AttachedWindowSnapshotResult(
                     id: attachedWindow.id,
+                    windowID: attachedWindow.window.id,
                     title: title,
                     origin: origin,
                     size: size,
@@ -1659,6 +1676,14 @@ struct ContentView: View {
 
         for result in results {
             guard let index = session.attachedWindows.firstIndex(where: { $0.id == result.id }) else {
+                continue
+            }
+
+            guard session.attachedWindows[index].window.id == result.windowID else {
+                continue
+            }
+
+            guard !isReconnecting(result.id) else {
                 continue
             }
 
@@ -2207,7 +2232,12 @@ struct ContentView: View {
         recoveryRevisionByAttachmentID.removeValue(forKey: id)
     }
 
-    private func clearAttachedWindowRecoveryActivity(for id: AttachedWindow.ID) {
+    private func clearAttachedWindowRecoveryActivity(for id: AttachedWindow.ID, matchingRevision: Int? = nil) {
+        if let matchingRevision,
+           recoveryRevisionByAttachmentID[id] != matchingRevision {
+            return
+        }
+
         session.reconnectingAttachedWindowIDs.remove(id)
         activePositionReadIDs.remove(id)
     }
@@ -2243,7 +2273,7 @@ struct ContentView: View {
                     await MainActor.run {
                         guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
                               let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
-                            clearAttachedWindowRecoveryActivity(for: attachmentID)
+                            clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
                             return
                         }
 
@@ -2281,7 +2311,7 @@ struct ContentView: View {
                 await MainActor.run {
                     guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
                           let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
-                        clearAttachedWindowRecoveryActivity(for: attachmentID)
+                        clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
                         return
                     }
 
@@ -2316,7 +2346,7 @@ struct ContentView: View {
             for attempt in 0..<40 {
                 if Task.isCancelled {
                     await MainActor.run {
-                        clearAttachedWindowRecoveryActivity(for: attachmentID)
+                        clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
                     }
                     return
                 }
@@ -2387,7 +2417,7 @@ struct ContentView: View {
             await MainActor.run {
                 guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
                       let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
-                    clearAttachedWindowRecoveryActivity(for: attachmentID)
+                    clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
                     return
                 }
 
@@ -2400,7 +2430,7 @@ struct ContentView: View {
                         .couldNotOpen
                     }
                     recoveryIssueByAttachmentID[attachmentID] = recoveryIssue
-                    handleAttachedWindowAccessFailure(for: attachmentID, error: unavailableError)
+                    handleAttachedWindowAccessFailure(for: attachmentID, error: unavailableError, force: true)
                     session.statusMessage = recoveryIssue.failureMessage
                     return
                 }
@@ -2428,14 +2458,17 @@ struct ContentView: View {
         let application = frontWindowReplacementApplication(for: attachedWindow)
         let expectedBundleIdentifier = attachedWindow.savedReference?.bundleIdentifier ?? attachedWindow.window.bundleIdentifier
         let expectedAppName = attachedWindow.savedReference?.appName ?? attachedWindow.window.appName
-        recoveryRevisionByAttachmentID[attachmentID] = (recoveryRevisionByAttachmentID[attachmentID] ?? 0) + 1
+        let recoveryRevision = (recoveryRevisionByAttachmentID[attachmentID] ?? 0) + 1
+        recoveryRevisionByAttachmentID[attachmentID] = recoveryRevision
+        session.reconnectingAttachedWindowIDs.insert(attachmentID)
         session.statusMessage = "Checking front window..."
 
         Task.detached(priority: .userInitiated) {
             let service = AccessibilityWindowService()
             var candidateWindows: [WindowInfo] = []
+            let visibleFrontWindow = service.frontmostVisibleExternalWindow()
 
-            if let visibleFrontWindow = service.frontmostVisibleExternalWindow() {
+            if let visibleFrontWindow {
                 candidateWindows.append(visibleFrontWindow)
             }
 
@@ -2462,17 +2495,22 @@ struct ContentView: View {
 
                 return appNamesMatch(window.appName, expectedAppName)
             }
+            let explicitFrontWindow = visibleFrontWindow ?? replacementWindow
 
-            guard let replacementWindow else {
+            guard let replacementWindow = explicitFrontWindow else {
                 await MainActor.run {
+                    guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision else {
+                        return
+                    }
+
                     guard session.attachedWindows.contains(where: { $0.id == attachmentID }) else {
                         recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
-                        clearAttachedWindowRecoveryActivity(for: attachmentID)
+                        clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
                         session.statusMessage = "Attached window is no longer in this workspace."
                         return
                     }
 
-                    clearAttachedWindowRecoveryActivity(for: attachmentID)
+                    clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
                     session.unavailableAttachedWindowIDs.insert(attachmentID)
                     if recoveryIssueByAttachmentID[attachmentID] == nil {
                         recoveryIssueByAttachmentID[attachmentID] = .activatedButNotMatched
@@ -2486,9 +2524,13 @@ struct ContentView: View {
             let size = try? service.size(of: replacementWindow)
 
             await MainActor.run {
+                guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision else {
+                    return
+                }
+
                 guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
                     recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
-                    clearAttachedWindowRecoveryActivity(for: attachmentID)
+                    clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
                     session.statusMessage = "Attached window is no longer in this workspace."
                     return
                 }
@@ -2506,7 +2548,7 @@ struct ContentView: View {
                     size: size
                 )
                 clearAttachedWindowAccessFailure(for: attachmentID)
-                clearAttachedWindowRecoveryActivity(for: attachmentID)
+                clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
                 minimizedAttachedWindowIDs.remove(attachmentID)
                 markAttachedWindowAvailable(attachmentID)
                 _ = session.persistActiveWorkspaceSnapshot(
@@ -2549,9 +2591,13 @@ struct ContentView: View {
         return runningApplications.first(where: matchingApplication)
     }
 
-    private func handleAttachedWindowAccessFailure(for id: AttachedWindow.ID, error: Error) {
+    private func handleAttachedWindowAccessFailure(for id: AttachedWindow.ID, error: Error, force: Bool = false) {
         guard session.attachedWindows.contains(where: { $0.id == id }) else {
             clearAttachedWindowRecoveryActivity(for: id)
+            return
+        }
+
+        guard force || !isReconnecting(id) else {
             return
         }
 
