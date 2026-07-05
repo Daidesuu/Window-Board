@@ -121,6 +121,22 @@ private func appNamesMatch(_ lhs: String, _ rhs: String) -> Bool {
     return lhsLowercased.contains(rhsLowercased) || rhsLowercased.contains(lhsLowercased)
 }
 
+private func isExpectedFrontWindow(
+    _ window: WindowInfo,
+    expectedBundleIdentifier: String?,
+    expectedAppName: String
+) -> Bool {
+    if let expectedBundleIdentifier {
+        guard let windowBundleIdentifier = window.bundleIdentifier else {
+            return appNamesMatch(window.appName, expectedAppName)
+        }
+
+        return expectedBundleIdentifier == windowBundleIdentifier
+    }
+
+    return appNamesMatch(window.appName, expectedAppName)
+}
+
 private func raiseAttachedWindowsOffMainThread(
     _ windows: [AttachedWindow],
     activationSettleNanoseconds: UInt64,
@@ -261,7 +277,7 @@ struct ContentView: View {
                     Label("Attach Window", systemImage: "plus.rectangle.on.rectangle")
                 }
                 .help("Pin the frontmost window to this board")
-                .disabled(!isTrusted || lastExternalApplication == nil || boardWindow == nil)
+                .disabled(!isTrusted || boardWindow == nil)
 
                 Button {
                     bringAllAttachedWindowsToFront()
@@ -391,7 +407,7 @@ struct ContentView: View {
             isMinimizingUnattached: session.isMinimizingUnattached,
             isRestoringMinimized: session.isRestoringMinimized,
             canAttachSelected: selectedWindow != nil && boardWindow != nil,
-            canAttachFrontmost: lastExternalApplication != nil && boardWindow != nil,
+            canAttachFrontmost: boardWindow != nil,
             canSaveWorkspace: !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
             canOverwriteWorkspace: selectedWorkspace != nil && !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
             canEditWorkspaceName: selectedWorkspace?.isDefault != true,
@@ -597,7 +613,7 @@ struct ContentView: View {
                     Button("Attach Window") {
                         attachFrontmostWindow()
                     }
-                    .disabled(lastExternalApplication == nil || boardWindow == nil)
+                    .disabled(boardWindow == nil)
 
                     Spacer()
                 }
@@ -1133,14 +1149,13 @@ struct ContentView: View {
     private func attachFrontmostWindow() {
         cancelScheduledBoardSelectedAction()
 
-        guard let lastExternalApplication,
-              let boardOrigin = boardMotion.currentOrigin else {
+        guard let boardOrigin = boardMotion.currentOrigin else {
             session.statusMessage = "Activate another app window first."
             return
         }
 
-        guard let frontmostWindow = service.frontmostWindow(for: lastExternalApplication) else {
-            session.statusMessage = "No attachable frontmost window found for \(lastExternalApplication.localizedName ?? "the selected app")."
+        guard let frontmostWindow = attachableFrontmostWindow() else {
+            session.statusMessage = "No attachable frontmost window found."
             return
         }
 
@@ -1150,16 +1165,15 @@ struct ContentView: View {
     private func attachFrontmostWindowFromAddCard() {
         cancelScheduledBoardSelectedAction()
 
-        guard let lastExternalApplication,
-              let boardOrigin = boardMotion.currentOrigin else {
+        guard let boardOrigin = boardMotion.currentOrigin else {
             recentlyAddedAttachedWindowID = nil
             session.statusMessage = "Activate another app window first."
             return
         }
 
-        guard let frontmostWindow = service.frontmostWindow(for: lastExternalApplication) else {
+        guard let frontmostWindow = attachableFrontmostWindow() else {
             recentlyAddedAttachedWindowID = nil
-            session.statusMessage = "No attachable frontmost window found for \(lastExternalApplication.localizedName ?? "the selected app")."
+            session.statusMessage = "No attachable frontmost window found."
             return
         }
 
@@ -1169,6 +1183,18 @@ struct ContentView: View {
             insertion: .end,
             markRecentlyAdded: true
         )
+    }
+
+    private func attachableFrontmostWindow() -> WindowInfo? {
+        if let visibleFrontWindow = service.frontmostVisibleExternalWindow() {
+            return visibleFrontWindow
+        }
+
+        guard let lastExternalApplication else {
+            return nil
+        }
+
+        return service.frontmostWindow(for: lastExternalApplication)
     }
 
     private func attachWindow(
@@ -1186,10 +1212,18 @@ struct ContentView: View {
                 lastAppliedOrigin: targetOrigin,
                 pendingReleaseOrigin: nil
             )
-            let wasAlreadyAttached = session.attachedWindows.contains {
-                isSameAttachedWindow($0.window, as: window)
+            let matchingAttachedWindowIDs = Set<AttachedWindow.ID>(session.attachedWindows.compactMap { attachedWindow in
+                guard !detachingAttachedWindowIDs.contains(attachedWindow.id),
+                      isSameAttachedWindow(attachedWindow.window, as: window) else {
+                    return nil
+                }
+
+                return attachedWindow.id
+            })
+            let wasAlreadyAttached = !matchingAttachedWindowIDs.isEmpty
+            session.attachedWindows.removeAll {
+                matchingAttachedWindowIDs.contains($0.id)
             }
-            session.attachedWindows.removeAll { isSameAttachedWindow($0.window, as: window) }
             clearAttachedWindowAccessFailure(for: attachedWindow.id)
             recoveryIssueByAttachmentID.removeValue(forKey: attachedWindow.id)
             markAttachedWindowAvailable(attachedWindow.id)
@@ -2485,17 +2519,15 @@ struct ContentView: View {
             let uniqueCandidateWindows = candidateWindows.filter { window in
                 seenWindowIDs.insert(window.id).inserted
             }
-            let replacementWindow = uniqueCandidateWindows.first { window in
-                if let expectedBundleIdentifier,
-                   let windowBundleIdentifier = window.bundleIdentifier {
-                    if expectedBundleIdentifier == windowBundleIdentifier {
-                        return true
-                    }
-                }
-
-                return appNamesMatch(window.appName, expectedAppName)
+            let matchesExpectedApp: (WindowInfo) -> Bool = { window in
+                isExpectedFrontWindow(
+                    window,
+                    expectedBundleIdentifier: expectedBundleIdentifier,
+                    expectedAppName: expectedAppName
+                )
             }
-            let explicitFrontWindow = visibleFrontWindow ?? replacementWindow
+            let replacementWindow = uniqueCandidateWindows.first(where: matchesExpectedApp)
+            let explicitFrontWindow = visibleFrontWindow.flatMap { matchesExpectedApp($0) ? $0 : nil } ?? replacementWindow
 
             guard let replacementWindow = explicitFrontWindow else {
                 await MainActor.run {
@@ -2515,7 +2547,11 @@ struct ContentView: View {
                     if recoveryIssueByAttachmentID[attachmentID] == nil {
                         recoveryIssueByAttachmentID[attachmentID] = .activatedButNotMatched
                     }
-                    session.statusMessage = "No matching front window found for \(expectedAppName). Checked \(uniqueCandidateWindows.count) window(s)."
+                    if visibleFrontWindow != nil {
+                        session.statusMessage = "Front window does not match this app."
+                    } else {
+                        session.statusMessage = "No matching front window found for \(expectedAppName). Checked \(uniqueCandidateWindows.count) window(s)."
+                    }
                 }
                 return
             }
