@@ -8,15 +8,22 @@ It does not embed other apps. External windows remain regular macOS windows, and
 
 - Pin multiple external app windows to a board
 - Add the frontmost external window from the toolbar or Add Window card
+- Refresh the external window list and attach a selected window when needed
 - Save, rename, overwrite, delete, and switch boards
 - Restore saved window positions and sizes
 - Optional follow modes: `None`, `Smooth`, and `On Release`
+- Configurable position update behavior for attached windows
+- Optional auto-front behavior for attached windows
+- Optional board-click action for bringing board windows forward
+- Optional Keep Window Board On Top behavior
 - Reconnect closed, minimized, or stale windows where macOS/app behavior allows it
 - Main Board for windows that belong only to the selected board
 - Permanent Board for windows that should be protected across all boards
 - Move cards between Main Board and Permanent Board with drag and drop
 - Bring a window forward from its card
 - Double-click a card's icon area to bring the window forward and place it below the cursor
+- Save an individual card's current position and size as its layout
+- Reconnect an unavailable card to the current front window when the app/window cannot be matched automatically
 - Minimize other windows and restore windows minimized by Window Board
 - Optional minimize-other-windows behavior when switching boards
 - Optional restore-missing-windows behavior when switching boards
@@ -67,6 +74,8 @@ dist/WindowBoard.app
 5. Use `Board Settings` to save, overwrite, rename, delete, or configure the selected board.
 6. Drag a Main Board card to Permanent Board when the window should be protected across all boards.
 7. Drag a Permanent Board card back to Main Board when it should belong only to the selected board.
+8. Use `Save Layout` on a card when you want to persist that window's current position and size.
+9. Use `Find or Reopen` or `Use Front Window` when a saved window cannot be matched automatically.
 
 ## Main UI
 
@@ -77,6 +86,34 @@ The main window is a card board.
 - Main Board: windows attached only to the selected board, plus an Add Window card.
 - Permanent Board: windows protected across all boards, plus an Add to Permanent Board card.
 - Status footer: current loading, minimize, restore, reconnect, and feedback messages.
+
+Toolbar actions:
+
+- `Refresh`: refresh the external window list.
+- `Attach Window`: pin the current frontmost external window.
+- `Focus Board`: bring the selected board's windows forward.
+- `Minimize Others`: minimize windows not on the current board or Permanent Board.
+- `Restore Windows`: restore windows minimized by Window Board.
+
+Board settings:
+
+- Save a new board from the current layout.
+- Overwrite the selected board.
+- Rename or delete a board.
+- Set the Status Item display with an SF Symbol, emoji, or text.
+- Toggle `Minimize Others When Switching Boards`.
+- Toggle `Restore Missing Windows When Switching Boards`.
+- Toggle `Keep Window Board On Top`.
+
+Card actions:
+
+- Click the icon area to bring a window forward.
+- Double-click the icon area to bring a window forward and move it below the cursor.
+- Use the drag handle to move a card between Main Board and Permanent Board.
+- `Save Layout`: save that card's current position and size.
+- `Find or Reopen`: try to recover an unavailable or minimized window.
+- `Use Front Window`: reconnect a failed match to the current front window when it belongs to the same app.
+- `Detach from Board`: remove the card from the selected board.
 
 Card states:
 
@@ -101,6 +138,14 @@ Board switching is designed to show the target board quickly, then finish heavie
 - Status Item board switches save the previous board without opening the Window Board window.
 - Window positions are snapshotted at low frequency so recently moved windows can be restored after close/reconnect where possible.
 
+Follow behavior:
+
+- `None`: windows stay attached but do not follow the Window Board window.
+- `Smooth`: attached windows follow board movement continuously.
+- `On Release`: attached windows move after the board window is released.
+- Position updates can be manual or automatic depending on the selected setting.
+- Auto-front and board-click options can bring attached windows forward after board movement or board selection.
+
 ## Permanent Board
 
 Permanent Board is global. It is not saved per board.
@@ -108,6 +153,27 @@ Permanent Board is global. It is not saved per board.
 Windows on Permanent Board are protected from `Minimize Others` and from automatic minimize when switching boards. Permanent Board is window-based rather than app-based, so adding one window should not protect every window from the same app.
 
 Because macOS window identity can change after close/reopen, matching is best-effort using available window metadata such as app identity, title, document URL, process ID, and window number.
+
+Permanent Board can be managed from:
+
+- the Permanent Board section in the main window
+- the `Add to Permanent Board` action on Main Board cards
+- the Settings window
+
+## Status Item
+
+Window Board also adds a macOS menu bar Status Item while remaining a normal Dock app.
+
+The Status Item can:
+
+- show the Window Board window
+- switch boards without opening the main window
+- show the active board with a checkmark
+- bring board windows to front
+- minimize other windows
+- restore windows minimized by Window Board
+- open Settings
+- quit Window Board
 
 ## Architecture
 
