@@ -10,12 +10,84 @@ enum WindowBoardStatusCommand {
     case restoreMinimized
 }
 
-struct NeverMinimizeApp: Identifiable, Hashable {
-    let bundleIdentifier: String
+struct NeverMinimizeWindow: Codable, Identifiable, Hashable {
+    let bundleIdentifier: String?
+    let appName: String
+    let title: String
+    let documentURLString: String?
+    let windowNumber: CGWindowID?
     let displayName: String
 
     var id: String {
-        bundleIdentifier
+        if let windowNumber {
+            return "\(appName)-window-\(windowNumber)"
+        }
+
+        if let documentURLString {
+            return "\(appName)-document-\(documentURLString)"
+        }
+
+        let appIdentity = bundleIdentifier ?? appName
+        return "\(appIdentity)-title-\(title)"
+    }
+
+    var documentURL: URL? {
+        documentURLString.flatMap(URL.init(string:))
+    }
+
+    init(window: WindowInfo) {
+        bundleIdentifier = window.bundleIdentifier
+        appName = window.appName
+        title = window.title
+        documentURLString = window.documentURL?.absoluteString
+        windowNumber = window.windowNumber
+        displayName = window.displayName
+    }
+
+    init(
+        bundleIdentifier: String?,
+        appName: String,
+        title: String,
+        documentURLString: String?,
+        windowNumber: CGWindowID?,
+        displayName: String
+    ) {
+        self.bundleIdentifier = bundleIdentifier
+        self.appName = appName
+        self.title = title
+        self.documentURLString = documentURLString
+        self.windowNumber = windowNumber
+        self.displayName = displayName
+    }
+
+    func matches(_ window: WindowInfo) -> Bool {
+        if let windowNumber,
+           let candidateWindowNumber = window.windowNumber,
+           let bundleIdentifier,
+           let candidateBundleIdentifier = window.bundleIdentifier,
+           bundleIdentifier == candidateBundleIdentifier,
+           windowNumber == candidateWindowNumber {
+            return true
+        }
+
+        if let documentURL,
+           let candidateDocumentURL = window.documentURL,
+           documentURL == candidateDocumentURL {
+            return true
+        }
+
+        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
+        let candidateTitle = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedTitle.isEmpty, !candidateTitle.isEmpty, trimmedTitle == candidateTitle else {
+            return false
+        }
+
+        if let bundleIdentifier,
+           let candidateBundleIdentifier = window.bundleIdentifier {
+            return bundleIdentifier == candidateBundleIdentifier
+        }
+
+        return appName == window.appName
     }
 }
 
@@ -54,10 +126,10 @@ final class WindowBoardAppState: ObservableObject {
     @Published private(set) var positionUpdateMode: PositionUpdateMode
     @Published private(set) var autoFrontMode: AutoFrontMode
     @Published private(set) var boardClickAction: BoardClickAction
-    @Published private(set) var neverMinimizeApps: [NeverMinimizeApp]
+    @Published private(set) var neverMinimizeWindows: [NeverMinimizeWindow]
 
     private let defaults: UserDefaults
-    private let neverMinimizeBundleIdentifiersKey = "neverMinimizeBundleIdentifiers"
+    private let neverMinimizeWindowsKey = "neverMinimizeWindows"
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -77,11 +149,11 @@ final class WindowBoardAppState: ObservableObject {
         positionUpdateMode = PositionUpdateMode(rawValue: storedPositionUpdateModeRawValue) ?? .manual
         autoFrontMode = AutoFrontMode(rawValue: storedAutoFrontModeRawValue) ?? .off
         boardClickAction = BoardClickAction(rawValue: storedBoardClickActionRawValue) ?? .none
-        neverMinimizeApps = Self.loadNeverMinimizeApps(
+        neverMinimizeWindows = Self.loadNeverMinimizeWindows(
             from: defaults,
-            key: neverMinimizeBundleIdentifiersKey
+            key: neverMinimizeWindowsKey
         )
-        syncNeverMinimizeAppsToSession()
+        syncNeverMinimizeWindowsToSession()
     }
 
     var canBringAttachedToFront: Bool {
@@ -108,44 +180,30 @@ final class WindowBoardAppState: ObservableObject {
         commandSubject.send(command)
     }
 
-    func isNeverMinimized(bundleIdentifier: String?) -> Bool {
-        guard let bundleIdentifier else {
-            return false
-        }
-
-        return neverMinimizeApps.contains { $0.bundleIdentifier == bundleIdentifier }
+    func isNeverMinimized(window: WindowInfo) -> Bool {
+        neverMinimizeWindows.contains { $0.matches(window) }
     }
 
-    func addNeverMinimizeApp(bundleIdentifier: String, displayName: String) {
-        let resolvedDisplayName = displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? Self.displayName(for: bundleIdentifier)
-            : displayName
+    func addNeverMinimizeWindow(_ window: WindowInfo) {
+        let neverMinimizeWindow = NeverMinimizeWindow(window: window)
 
-        if let index = neverMinimizeApps.firstIndex(where: { $0.bundleIdentifier == bundleIdentifier }) {
-            neverMinimizeApps[index] = NeverMinimizeApp(
-                bundleIdentifier: bundleIdentifier,
-                displayName: resolvedDisplayName
-            )
+        if let index = neverMinimizeWindows.firstIndex(where: { $0.matches(window) }) {
+            neverMinimizeWindows[index] = neverMinimizeWindow
         } else {
-            neverMinimizeApps.append(
-                NeverMinimizeApp(
-                    bundleIdentifier: bundleIdentifier,
-                    displayName: resolvedDisplayName
-                )
-            )
+            neverMinimizeWindows.append(neverMinimizeWindow)
         }
 
-        neverMinimizeApps.sort {
+        neverMinimizeWindows.sort {
             $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
         }
-        persistNeverMinimizeApps()
-        syncNeverMinimizeAppsToSession()
+        persistNeverMinimizeWindows()
+        syncNeverMinimizeWindowsToSession()
     }
 
-    func removeNeverMinimizeApp(bundleIdentifier: String) {
-        neverMinimizeApps.removeAll { $0.bundleIdentifier == bundleIdentifier }
-        persistNeverMinimizeApps()
-        syncNeverMinimizeAppsToSession()
+    func removeNeverMinimizeWindow(id: NeverMinimizeWindow.ID) {
+        neverMinimizeWindows.removeAll { $0.id == id }
+        persistNeverMinimizeWindows()
+        syncNeverMinimizeWindowsToSession()
     }
 
     @discardableResult
@@ -172,33 +230,25 @@ final class WindowBoardAppState: ObservableObject {
         }
     }
 
-    private func persistNeverMinimizeApps() {
-        let bundleIdentifiers = neverMinimizeApps.map(\.bundleIdentifier).sorted()
-        defaults.set(bundleIdentifiers, forKey: neverMinimizeBundleIdentifiersKey)
-    }
-
-    private func syncNeverMinimizeAppsToSession() {
-        session.neverMinimizeBundleIdentifiers = Set(neverMinimizeApps.map(\.bundleIdentifier))
-    }
-
-    private static func loadNeverMinimizeApps(from defaults: UserDefaults, key: String) -> [NeverMinimizeApp] {
-        let bundleIdentifiers = defaults.stringArray(forKey: key) ?? []
-        let uniqueBundleIdentifiers = Array(Set(bundleIdentifiers)).sorted()
-
-        return uniqueBundleIdentifiers.map {
-            NeverMinimizeApp(
-                bundleIdentifier: $0,
-                displayName: displayName(for: $0)
-            )
-        }
-    }
-
-    private static func displayName(for bundleIdentifier: String) -> String {
-        if let appURL = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleIdentifier) {
-            return FileManager.default.displayName(atPath: appURL.path)
+    private func persistNeverMinimizeWindows() {
+        guard let data = try? JSONEncoder().encode(neverMinimizeWindows) else {
+            return
         }
 
-        return bundleIdentifier
+        defaults.set(data, forKey: neverMinimizeWindowsKey)
+    }
+
+    private func syncNeverMinimizeWindowsToSession() {
+        session.neverMinimizeWindows = neverMinimizeWindows
+    }
+
+    private static func loadNeverMinimizeWindows(from defaults: UserDefaults, key: String) -> [NeverMinimizeWindow] {
+        guard let data = defaults.data(forKey: key),
+              let windows = try? JSONDecoder().decode([NeverMinimizeWindow].self, from: data) else {
+            return []
+        }
+
+        return windows
     }
 
 }

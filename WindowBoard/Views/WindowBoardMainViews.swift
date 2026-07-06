@@ -108,7 +108,7 @@ struct WorkspaceSidebarView: View {
         VStack(spacing: 0) {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 4) {
-                    Text("Workspaces")
+                    Text("Boards")
                         .font(.caption.weight(.semibold))
                         .foregroundStyle(.secondary)
                         .padding(.horizontal, 14)
@@ -116,7 +116,7 @@ struct WorkspaceSidebarView: View {
                         .padding(.bottom, 4)
 
                     if workspaces.isEmpty {
-                        Text("No Saved Workspaces")
+                        Text("No Saved Boards")
                             .font(.callout)
                             .foregroundStyle(.secondary)
                             .padding(.horizontal, 14)
@@ -145,7 +145,7 @@ struct WorkspaceSidebarView: View {
 
             Button(action: createWorkspace) {
                 ViewThatFits(in: .horizontal) {
-                    Label("New Workspace", systemImage: "plus")
+                    Label("New Board", systemImage: "plus")
                     Label("New", systemImage: "plus")
                     Image(systemName: "plus")
                 }
@@ -157,7 +157,7 @@ struct WorkspaceSidebarView: View {
             .foregroundStyle(.secondary)
             .padding(.horizontal, 14)
             .padding(.vertical, 10)
-            .help("New Workspace")
+            .help("New Board")
         }
         .navigationTitle("Window Board")
     }
@@ -270,15 +270,29 @@ struct WorkspaceDetailView: View {
     let updateAttached: (AttachedWindow.ID) -> Void
     let detachAttached: (AttachedWindow.ID) -> Void
     let bringForwardAttached: (AttachedWindow) -> Void
-    let isNeverMinimizedApp: (String?) -> Bool
-    let addNeverMinimizeApp: (WindowInfo) -> Void
+    let bringAndMoveAttachedBelowCard: (AttachedWindow, CGPoint) -> Void
+    let isNeverMinimizedWindow: (WindowInfo) -> Bool
+    let addNeverMinimizeWindow: (WindowInfo) -> Void
+    let moveAttachedWindowToPermanentBoard: (AttachedWindow.ID) -> Void
+    let rejectPermanentBoardDrop: () -> Void
+    let movePermanentWindowToMainBoard: (NeverMinimizeWindow.ID) -> Void
+    let rejectMainBoardDrop: () -> Void
+    let neverMinimizeWindows: [NeverMinimizeWindow]
+    let runningNeverMinimizeWindowCandidates: [WindowInfo]
+    let addNeverMinimizeRunningWindow: (WindowInfo) -> Void
+    let removeNeverMinimizeWindow: (NeverMinimizeWindow.ID) -> Void
+    let recentlyAddedNeverMinimizeWindowID: NeverMinimizeWindow.ID?
+    let clearRecentlyAddedNeverMinimizeWindowID: () -> Void
+    let detachingNeverMinimizeWindowIDs: Set<NeverMinimizeWindow.ID>
+    let liveNeverMinimizeWindow: (NeverMinimizeWindow) -> WindowInfo?
+    let showNeverMinimizeWindow: (WindowInfo) -> Void
+    let showAndMoveNeverMinimizeWindowBelowCard: (WindowInfo, CGPoint) -> Void
     let updatePositions: () -> Void
     let bringToFront: () -> Void
     let minimizeUnattached: () -> Void
     let restoreMinimized: () -> Void
     let detachAll: () -> Void
-    @State private var isAddWindowExpanded = false
-    @State private var isWorkspaceSettingsExpanded = false
+    @State private var isWorkspaceSettingsPresented = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -290,8 +304,34 @@ struct WorkspaceDetailView: View {
                 hasRecoverablePostings: hasRecoverablePostings,
                 reloadWorkspace: reloadWorkspace,
                 recoverMissing: recoverMissingPostings,
+                showWorkspaceSettings: { isWorkspaceSettingsPresented = true },
                 canReloadWorkspace: canReloadWorkspace
             )
+            .popover(isPresented: $isWorkspaceSettingsPresented, arrowEdge: .bottom) {
+                WorkspaceSettingsControls(
+                    selectedWorkspace: selectedWorkspace,
+                    workspaceName: workspaceName,
+                    workspaceStatusText: workspaceStatusText,
+                    minimizeUnattachedOnSwitch: minimizeUnattachedOnSwitch,
+                    restoreMissingWindowsOnSwitch: restoreMissingWindowsOnSwitch,
+                    boardAlwaysOnTop: boardAlwaysOnTop,
+                    canSaveWorkspace: canSaveWorkspace,
+                    canOverwriteWorkspace: canOverwriteWorkspace,
+                    canEditWorkspaceName: canEditWorkspaceName,
+                    canRenameWorkspace: canRenameWorkspace,
+                    canDeleteWorkspace: canDeleteWorkspace,
+                    canDetachAll: canDetachAll,
+                    saveWorkspace: saveWorkspace,
+                    overwriteWorkspace: overwriteWorkspace,
+                    renameWorkspace: renameWorkspace,
+                    deleteWorkspace: deleteWorkspace,
+                    updateStatusItemIcon: updateStatusItemIcon,
+                    updateStatusItemText: updateStatusItemText,
+                    detachAll: detachAll
+                )
+                .padding(18)
+                .frame(width: 420)
+            }
             .padding(.horizontal, 24)
             .padding(.vertical, 14)
             .background {
@@ -326,29 +366,57 @@ struct WorkspaceDetailView: View {
 
     private var boardContent: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 22) {
-                PinnedWindowCardGrid(
-                    attachedWindows: attachedWindows,
-                    stateForWindow: attachedState,
-                    recoveryIssue: recoveryIssue,
-                    canAttachFrontmost: canAttachFrontmost,
-                    attachFrontmost: attachFrontmost,
-                    attachFromAddCard: attachFromAddCard,
-                    recentlyAddedWindowID: recentlyAddedWindowID,
-                    clearRecentlyAddedWindowID: clearRecentlyAddedWindowID,
-                    workspaceTransitionToken: workspaceTransitionToken,
-                    detachingAttachedWindowIDs: detachingAttachedWindowIDs,
-                    recover: recoverAttached,
-                    useFrontWindow: useFrontWindowForAttached,
-                    update: updateAttached,
-                    detach: detachAttached,
-                    bringForward: bringForwardAttached,
-                    isNeverMinimizedApp: isNeverMinimizedApp,
-                    addNeverMinimizeApp: addNeverMinimizeApp
-                )
+            VStack(alignment: .leading, spacing: 24) {
+                BoardContentSection(
+                    title: "Main Board",
+                    subtitle: "Only on this board"
+                ) {
+                    PinnedWindowCardGrid(
+                        attachedWindows: attachedWindows,
+                        stateForWindow: attachedState,
+                        recoveryIssue: recoveryIssue,
+                        canAttachFrontmost: canAttachFrontmost,
+                        attachFrontmost: attachFrontmost,
+                        attachFromAddCard: attachFromAddCard,
+                        recentlyAddedWindowID: recentlyAddedWindowID,
+                        clearRecentlyAddedWindowID: clearRecentlyAddedWindowID,
+                        workspaceTransitionToken: workspaceTransitionToken,
+                        detachingAttachedWindowIDs: detachingAttachedWindowIDs,
+                        recover: recoverAttached,
+                        useFrontWindow: useFrontWindowForAttached,
+                        update: updateAttached,
+                        detach: detachAttached,
+                        bringForward: bringForwardAttached,
+                        bringAndMoveBelowCard: bringAndMoveAttachedBelowCard,
+                        isNeverMinimizedWindow: isNeverMinimizedWindow,
+                        addNeverMinimizeWindow: addNeverMinimizeWindow,
+                        movePermanentWindowToMainBoard: movePermanentWindowToMainBoard,
+                        rejectDrop: rejectMainBoardDrop
+                    )
+                }
 
-                secondaryControls
-                    .padding(.top, 4)
+                Divider()
+                    .padding(.vertical, 2)
+
+                BoardContentSection(
+                    title: "Permanent Board",
+                    subtitle: "Included on every board"
+                ) {
+                    NeverMinimizeWindowsBoardControls(
+                        windows: neverMinimizeWindows,
+                        runningWindowCandidates: runningNeverMinimizeWindowCandidates,
+                        addWindow: addNeverMinimizeRunningWindow,
+                        removeWindow: removeNeverMinimizeWindow,
+                        recentlyAddedWindowID: recentlyAddedNeverMinimizeWindowID,
+                        clearRecentlyAddedWindowID: clearRecentlyAddedNeverMinimizeWindowID,
+                        detachingWindowIDs: detachingNeverMinimizeWindowIDs,
+                        liveWindow: liveNeverMinimizeWindow,
+                        showWindow: showNeverMinimizeWindow,
+                        showAndMoveBelowCard: showAndMoveNeverMinimizeWindowBelowCard,
+                        moveAttachedWindow: moveAttachedWindowToPermanentBoard,
+                        rejectDrop: rejectPermanentBoardDrop
+                    )
+                }
             }
             .padding(24)
             .frame(maxWidth: 1120, alignment: .leading)
@@ -385,53 +453,471 @@ struct WorkspaceDetailView: View {
             recoverAttached(attachedWindow)
         }
     }
+}
 
-    private var secondaryControls: some View {
-        Form {
-            Section {
-                DisclosureGroup("Add Window", isExpanded: $isAddWindowExpanded) {
-                    WindowSelectionView(
-                        windows: windows,
-                        selection: selectedWindow,
-                        isLoading: isLoadingWindows,
-                        canAttachSelected: canAttachSelected,
-                        canAttachFrontmost: canAttachFrontmost,
-                        refreshWindows: refreshWindows,
-                        attachSelected: attachSelected,
-                        attachFrontmost: attachFrontmost
-                    )
-                }
+private struct BoardContentSection<Content: View>: View {
+    let title: String
+    let subtitle: String
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(title)
+                    .font(.subheadline.weight(.semibold))
+                Text(subtitle)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
 
-            Section {
-                DisclosureGroup("Workspace Settings", isExpanded: $isWorkspaceSettingsExpanded) {
-                    WorkspaceSettingsControls(
-                        selectedWorkspace: selectedWorkspace,
-                        workspaceName: workspaceName,
-                        workspaceStatusText: workspaceStatusText,
-                        minimizeUnattachedOnSwitch: minimizeUnattachedOnSwitch,
-                        restoreMissingWindowsOnSwitch: restoreMissingWindowsOnSwitch,
-                        boardAlwaysOnTop: boardAlwaysOnTop,
-                        canSaveWorkspace: canSaveWorkspace,
-                        canOverwriteWorkspace: canOverwriteWorkspace,
-                        canEditWorkspaceName: canEditWorkspaceName,
-                        canRenameWorkspace: canRenameWorkspace,
-                        canDeleteWorkspace: canDeleteWorkspace,
-                        canDetachAll: canDetachAll,
-                        saveWorkspace: saveWorkspace,
-                        overwriteWorkspace: overwriteWorkspace,
-                        renameWorkspace: renameWorkspace,
-                        deleteWorkspace: deleteWorkspace,
-                        updateStatusItemIcon: updateStatusItemIcon,
-                        updateStatusItemText: updateStatusItemText,
-                        detachAll: detachAll
+            content
+        }
+    }
+}
+
+private struct NeverMinimizeWindowsBoardControls: View {
+    let windows: [NeverMinimizeWindow]
+    let runningWindowCandidates: [WindowInfo]
+    let addWindow: (WindowInfo) -> Void
+    let removeWindow: (NeverMinimizeWindow.ID) -> Void
+    let recentlyAddedWindowID: NeverMinimizeWindow.ID?
+    let clearRecentlyAddedWindowID: () -> Void
+    let detachingWindowIDs: Set<NeverMinimizeWindow.ID>
+    let liveWindow: (NeverMinimizeWindow) -> WindowInfo?
+    let showWindow: (WindowInfo) -> Void
+    let showAndMoveBelowCard: (WindowInfo, CGPoint) -> Void
+    let moveAttachedWindow: (AttachedWindow.ID) -> Void
+    let rejectDrop: () -> Void
+    @State private var isDropTargeted = false
+
+    private let columns = [
+        GridItem(.adaptive(minimum: 200, maximum: 240), spacing: 18, alignment: .top)
+    ]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            if windows.isEmpty {
+                Text("No windows added.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+
+            LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
+                ForEach(windows) { window in
+                    let liveWindow = liveWindow(window)
+                    let isPinningIn = window.id == recentlyAddedWindowID
+                    let isDetaching = detachingWindowIDs.contains(window.id)
+                    NeverMinimizeWindowCard(
+                        window: window,
+                        liveWindow: liveWindow,
+                        isPinningIn: isPinningIn,
+                        isDetaching: isDetaching,
+                        onPinInComplete: isPinningIn ? clearRecentlyAddedWindowID : {},
+                        showWindow: {
+                            if let liveWindow {
+                                showWindow(liveWindow)
+                            }
+                        },
+                        showAndMoveBelowCard: { cursorScreenLocation in
+                            if let liveWindow {
+                                showAndMoveBelowCard(liveWindow, cursorScreenLocation)
+                            }
+                        },
+                        remove: { removeWindow(window.id) },
+                        dragPayload: liveWindow == nil ? nil : DragPayload.permanentBoardWindow(window.id)
                     )
                 }
+
+                NeverMinimizeAddRunningWindowCard(
+                    windows: windows,
+                    runningWindowCandidates: runningWindowCandidates,
+                    addWindow: addWindow
+                )
+            }
+            .animation(
+                .spring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.06),
+                value: windows.map(\.id)
+            )
+        }
+        .padding(.vertical, 2)
+        .padding(8)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isDropTargeted ? Color.accentColor.opacity(0.10) : Color.clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(
+                    isDropTargeted ? Color.accentColor.opacity(0.45) : Color.clear,
+                    style: StrokeStyle(lineWidth: 1.2, dash: [6, 5])
+                )
+        }
+        .dropDestination(for: String.self) { items, _ in
+            handleDrop(items)
+        } isTargeted: { isTargeted in
+            isDropTargeted = isTargeted
+        }
+    }
+
+    private func handleDrop(_ items: [String]) -> Bool {
+        guard let item = items.first,
+              let id = DragPayload.mainBoardWindowID(from: item) else {
+            rejectDrop()
+            return false
+        }
+
+        moveAttachedWindow(id)
+        return true
+    }
+}
+
+private struct NeverMinimizeWindowCard: View {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @State private var isPrimaryActionPressed = false
+    @State private var isPrimaryActionPopping = false
+
+    let window: NeverMinimizeWindow
+    let liveWindow: WindowInfo?
+    let isPinningIn: Bool
+    let isDetaching: Bool
+    let onPinInComplete: () -> Void
+    let showWindow: () -> Void
+    let showAndMoveBelowCard: (CGPoint) -> Void
+    let remove: () -> Void
+    let dragPayload: String?
+
+    private let baseCardSize = CGSize(width: 220, height: 308)
+
+    var body: some View {
+        GeometryReader { proxy in
+            let scale = proxy.size.width / baseCardSize.width
+
+            cardContent
+                .frame(width: baseCardSize.width, height: baseCardSize.height)
+                .scaleEffect(scale, anchor: .topLeading)
+                .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+                .clipped()
+        }
+        .aspectRatio(baseCardSize.width / baseCardSize.height, contentMode: .fit)
+        .frame(maxWidth: .infinity)
+        .background(cardBackground)
+        .overlay(cardSurfaceOverlay)
+        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .shadow(color: .black.opacity(0.12), radius: 11, y: 4)
+        .shadow(color: .black.opacity(0.08), radius: 24, y: 11)
+        .shadow(color: appAccentColor.opacity(0.12), radius: 20, y: 9)
+        .scaleEffect(primaryActionCardScale)
+        .animation(.spring(response: 0.20, dampingFraction: 0.82), value: primaryActionCardScale)
+        .interactiveCardMotion(
+            isEnabled: !isPinningIn && !isDetaching,
+            highlightOpacity: 0.12
+        )
+        .cardPinIn(
+            isActive: isPinningIn && !isDetaching,
+            onComplete: onPinInComplete
+        )
+        .cardDetachExit(isActive: isDetaching)
+    }
+
+    private var cardContent: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 8) {
+                Text(window.appName)
+                    .font(.title3.weight(.semibold))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+
+                Spacer(minLength: 8)
+
+                CardDragHandle(payload: dragPayload)
+
+                actionsMenu
+            }
+            .padding(.horizontal, 14)
+            .padding(.top, 10)
+            .padding(.bottom, 6)
+
+            iconField
+                .padding(.horizontal, 16)
+
+            Divider()
+                .padding(.horizontal, 16)
+                .padding(.top, 8)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text(windowTitle)
+                    .font(.callout.weight(.medium))
+                    .foregroundStyle(.primary)
+                    .lineLimit(2)
+                    .truncationMode(.tail)
+                    .frame(minHeight: 30, alignment: .topLeading)
+
+                neverMinimizedBadge
+
+                Text("Included on every board")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+
+                Spacer(minLength: 0)
+
+                Button("Remove", action: remove)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity)
+                    .minimumScaleFactor(0.82)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .padding(.bottom, 12)
+        }
+    }
+
+    private var iconField: some View {
+        IconPrimaryActionField(
+            appName: window.appName,
+            bundleURL: nil,
+            bundleIdentifier: window.bundleIdentifier,
+            state: liveWindow == nil ? .unavailable : .available,
+            background: iconFieldBackground,
+            strokeColor: liveWindow == nil ? Color(nsColor: .separatorColor).opacity(0.42) : appAccentColor.opacity(0.32),
+            isEnabled: liveWindow != nil,
+            actionTitle: liveWindow == nil ? "Window unavailable" : "Show Window",
+            accessibilityLabel: liveWindow == nil ? "Window unavailable" : "Show \(window.appName) window",
+            doubleClickAction: showAndMoveBelowCard,
+            onPressChanged: { isPrimaryActionPressed = $0 },
+            onActionFeedback: runPrimaryActionFeedback,
+            action: showWindow
+        )
+    }
+
+    private var actionsMenu: some View {
+        Menu {
+            Button("Show Window", action: showWindow)
+                .disabled(liveWindow == nil)
+            Button("Remove", action: remove)
+        } label: {
+            Image(systemName: "ellipsis")
+                .font(.body.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 22)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("More window actions")
+    }
+
+    private var neverMinimizedBadge: some View {
+        Label("Permanent", systemImage: "checkmark.circle")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(.quaternary)
+            .clipShape(Capsule())
+    }
+
+    private var cardBackground: some View {
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+            .fill(Color(nsColor: .controlBackgroundColor))
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(appAccentColor.opacity(0.12))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                .white.opacity(0.22),
+                                .white.opacity(0.04),
+                                .black.opacity(0.035)
+                            ],
+                            startPoint: .top,
+                            endPoint: .bottom
+                        )
+                    )
+            )
+    }
+
+    private var cardSurfaceOverlay: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(appAccentColor.opacity(0.42), lineWidth: 0.8)
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 0.7)
+                .stroke(.white.opacity(0.30), lineWidth: 1)
+                .blendMode(.plusLighter)
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 1.2)
+                .stroke(.black.opacity(0.035), lineWidth: 1)
+        }
+    }
+
+    private var iconFieldBackground: LinearGradient {
+        LinearGradient(
+            colors: [
+                appAccentColor.opacity(0.26),
+                appAccentColor.opacity(0.22),
+                appAccentColor.opacity(0.18)
+            ],
+            startPoint: .topLeading,
+            endPoint: .bottomTrailing
+        )
+    }
+
+    private var appAccentColor: Color {
+        Color(nsColor: AppIconPalette.accentColor(
+            appName: window.appName,
+            bundleURL: nil,
+            bundleIdentifier: window.bundleIdentifier
+        ))
+    }
+
+    private var primaryActionCardScale: CGFloat {
+        if reduceMotion {
+            1
+        } else if isPrimaryActionPressed {
+            0.992
+        } else if isPrimaryActionPopping {
+            1.012
+        } else {
+            1
+        }
+    }
+
+    private var windowTitle: String {
+        let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        return title.isEmpty ? "No window title" : title
+    }
+
+    private func runPrimaryActionFeedback() {
+        guard liveWindow != nil, !reduceMotion else { return }
+
+        isPrimaryActionPopping = true
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(115))
+            withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+                isPrimaryActionPopping = false
             }
         }
-        .formStyle(.grouped)
-        .scrollContentBackground(.hidden)
-        .frame(maxWidth: 520)
+    }
+}
+
+private struct NeverMinimizeAddRunningWindowCard: View {
+    let windows: [NeverMinimizeWindow]
+    let runningWindowCandidates: [WindowInfo]
+    let addWindow: (WindowInfo) -> Void
+
+    private let baseCardSize = CGSize(width: 220, height: 308)
+
+    var body: some View {
+        Menu {
+            if runningWindowCandidates.isEmpty {
+                Button("No running windows available") {}
+                    .disabled(true)
+            } else {
+                ForEach(runningWindowCandidates) { window in
+                    let alreadyAdded = windows.contains { $0.matches(window) }
+                    Button(alreadyAdded ? "\(window.displayName) (Added)" : window.displayName) {
+                        addWindow(window)
+                    }
+                    .disabled(alreadyAdded)
+                }
+            }
+        } label: {
+            GeometryReader { proxy in
+                let scale = proxy.size.width / baseCardSize.width
+
+                addCardContent
+                    .frame(width: baseCardSize.width, height: baseCardSize.height)
+                    .scaleEffect(scale, anchor: .topLeading)
+                    .frame(width: proxy.size.width, height: proxy.size.height, alignment: .topLeading)
+            }
+            .aspectRatio(baseCardSize.width / baseCardSize.height, contentMode: .fit)
+            .frame(maxWidth: .infinity)
+            .background {
+                RoundedRectangle(cornerRadius: 16, style: .continuous)
+                    .fill(Color(nsColor: .controlBackgroundColor))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 16, style: .continuous)
+                            .fill(
+                                LinearGradient(
+                                    colors: [
+                                        .white.opacity(0.18),
+                                        .white.opacity(0.04),
+                                        .black.opacity(0.025)
+                                    ],
+                                    startPoint: .top,
+                                    endPoint: .bottom
+                                )
+                            )
+                    )
+            }
+            .overlay(addCardSurfaceOverlay)
+            .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
+            .shadow(color: .black.opacity(0.08), radius: 22, y: 10)
+            .interactiveCardMotion(highlightOpacity: 0.10)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .help("Add to Permanent Board")
+    }
+
+    private var addCardContent: some View {
+        VStack(spacing: 12) {
+            Image(systemName: "plus")
+                .font(.system(size: 28, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 58, height: 58)
+                .background {
+                    Circle()
+                        .fill(Color(nsColor: .windowBackgroundColor).opacity(0.36))
+                        .overlay(
+                            Circle()
+                                .stroke(.white.opacity(0.24), lineWidth: 1)
+                        )
+                }
+                .shadow(color: .black.opacity(0.12), radius: 9, y: 4)
+
+            Text("Add to Permanent Board")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+
+            Text("Choose a running window to include on every board.")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .multilineTextAlignment(.center)
+                .lineLimit(3)
+                .padding(.horizontal, 18)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var addCardSurfaceOverlay: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .stroke(
+                    Color(nsColor: .separatorColor).opacity(0.46),
+                    style: StrokeStyle(lineWidth: 1, dash: [7, 6])
+                )
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 0.7)
+                .stroke(.white.opacity(0.24), lineWidth: 1)
+                .blendMode(.plusLighter)
+
+            RoundedRectangle(cornerRadius: 16, style: .continuous)
+                .inset(by: 1.2)
+                .stroke(.black.opacity(0.025), lineWidth: 1)
+        }
     }
 }
 
@@ -488,6 +974,7 @@ private struct BoardSummaryHeader: View {
     let hasRecoverablePostings: Bool
     let reloadWorkspace: () -> Void
     let recoverMissing: () -> Void
+    let showWorkspaceSettings: () -> Void
     let canReloadWorkspace: Bool
 
     var body: some View {
@@ -528,6 +1015,12 @@ private struct BoardSummaryHeader: View {
                         Label("Restore Layout", systemImage: "arrow.counterclockwise")
                     }
                     .disabled(!canReloadWorkspace)
+
+                    Button {
+                        showWorkspaceSettings()
+                    } label: {
+                        Label("Board Settings", systemImage: "slider.horizontal.3")
+                    }
                 }
 
                 HStack {
@@ -550,6 +1043,14 @@ private struct BoardSummaryHeader: View {
                     }
                     .disabled(!canReloadWorkspace)
                     .help("Restore Layout")
+
+                    Button {
+                        showWorkspaceSettings()
+                    } label: {
+                        Label("Board Settings", systemImage: "slider.horizontal.3")
+                            .labelStyle(.iconOnly)
+                    }
+                    .help("Board Settings")
                 }
             }
         }
@@ -775,8 +1276,12 @@ private struct PinnedWindowCardGrid: View {
     let update: (AttachedWindow.ID) -> Void
     let detach: (AttachedWindow.ID) -> Void
     let bringForward: (AttachedWindow) -> Void
-    let isNeverMinimizedApp: (String?) -> Bool
-    let addNeverMinimizeApp: (WindowInfo) -> Void
+    let bringAndMoveBelowCard: (AttachedWindow, CGPoint) -> Void
+    let isNeverMinimizedWindow: (WindowInfo) -> Bool
+    let addNeverMinimizeWindow: (WindowInfo) -> Void
+    let movePermanentWindowToMainBoard: (NeverMinimizeWindow.ID) -> Void
+    let rejectDrop: () -> Void
+    @State private var isDropTargeted = false
 
     private let columns = [
         GridItem(.adaptive(minimum: 200, maximum: 240), spacing: 18, alignment: .top)
@@ -799,9 +1304,13 @@ private struct PinnedWindowCardGrid: View {
                 ForEach(Array(attachedWindows.enumerated()), id: \.element.id) { index, attachedWindow in
                     let isPinningIn = attachedWindow.id == recentlyAddedWindowID
                     let isDetaching = detachingAttachedWindowIDs.contains(attachedWindow.id)
+                    let state = stateForWindow(attachedWindow)
+                    let canDragToPermanentBoard = attachedWindow.window.pid != 0
+                        && !isDetaching
+                        && state == .available
                     PinnedWindowCard(
                         attachedWindow: attachedWindow,
-                        state: stateForWindow(attachedWindow),
+                        state: state,
                         recoveryIssue: recoveryIssue(attachedWindow.id),
                         isPinningIn: isPinningIn,
                         isDetaching: isDetaching,
@@ -813,8 +1322,12 @@ private struct PinnedWindowCardGrid: View {
                         useFrontWindow: { useFrontWindow(attachedWindow) },
                         update: { update(attachedWindow.id) },
                         detach: { detach(attachedWindow.id) },
-                        isNeverMinimizedApp: isNeverMinimizedApp(attachedWindow.window.bundleIdentifier),
-                        addNeverMinimizeApp: { addNeverMinimizeApp(attachedWindow.window) }
+                        isNeverMinimizedWindow: isNeverMinimizedWindow(attachedWindow.window),
+                        addNeverMinimizeWindow: { addNeverMinimizeWindow(attachedWindow.window) },
+                        dragPayload: canDragToPermanentBoard ? DragPayload.mainBoardWindow(attachedWindow.id) : nil,
+                        bringAndMoveBelowCard: { cursorScreenLocation in
+                            bringAndMoveBelowCard(attachedWindow, cursorScreenLocation)
+                        }
                     )
                 }
 
@@ -832,10 +1345,38 @@ private struct PinnedWindowCardGrid: View {
             .spring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.06),
             value: attachedWindows.map(\.id)
         )
+        .padding(8)
+        .background {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(isDropTargeted ? Color.accentColor.opacity(0.10) : Color.clear)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .stroke(
+                    isDropTargeted ? Color.accentColor.opacity(0.45) : Color.clear,
+                    style: StrokeStyle(lineWidth: 1.2, dash: [6, 5])
+                )
+        }
+        .dropDestination(for: String.self) { items, _ in
+            handleDrop(items)
+        } isTargeted: { isTargeted in
+            isDropTargeted = isTargeted
+        }
     }
 
     private var shouldAnimateWorkspaceEntrance: Bool {
         attachedWindows.count < 4
+    }
+
+    private func handleDrop(_ items: [String]) -> Bool {
+        guard let item = items.first,
+              let id = DragPayload.permanentBoardWindowID(from: item) else {
+            rejectDrop()
+            return false
+        }
+
+        movePermanentWindowToMainBoard(id)
+        return true
     }
 }
 
@@ -877,6 +1418,53 @@ private extension View {
 
     func cardDetachExit(isActive: Bool) -> some View {
         modifier(CardDetachExitModifier(isActive: isActive))
+    }
+
+}
+
+private enum DragPayload {
+    private static let mainPrefix = "main:"
+    private static let permanentPrefix = "permanent:"
+
+    static func mainBoardWindow(_ id: AttachedWindow.ID) -> String {
+        "\(mainPrefix)\(id.uuidString)"
+    }
+
+    static func permanentBoardWindow(_ id: NeverMinimizeWindow.ID) -> String {
+        "\(permanentPrefix)\(id)"
+    }
+
+    static func mainBoardWindowID(from payload: String) -> AttachedWindow.ID? {
+        guard payload.hasPrefix(mainPrefix) else {
+            return nil
+        }
+
+        return UUID(uuidString: String(payload.dropFirst(mainPrefix.count)))
+    }
+
+    static func permanentBoardWindowID(from payload: String) -> NeverMinimizeWindow.ID? {
+        guard payload.hasPrefix(permanentPrefix) else {
+            return nil
+        }
+
+        return String(payload.dropFirst(permanentPrefix.count))
+    }
+}
+
+private struct CardDragHandle: View {
+    let payload: String?
+
+    var body: some View {
+        if let payload {
+            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .frame(width: 26, height: 22)
+                .contentShape(Rectangle())
+                .draggable(payload)
+                .help("Drag to move between boards")
+                .accessibilityLabel("Drag to move between boards")
+        }
     }
 }
 
@@ -1317,8 +1905,10 @@ private struct PinnedWindowCard: View {
     let useFrontWindow: () -> Void
     let update: () -> Void
     let detach: () -> Void
-    let isNeverMinimizedApp: Bool
-    let addNeverMinimizeApp: () -> Void
+    let isNeverMinimizedWindow: Bool
+    let addNeverMinimizeWindow: () -> Void
+    let dragPayload: String?
+    let bringAndMoveBelowCard: (CGPoint) -> Void
 
     private let baseCardSize = CGSize(width: 220, height: 308)
 
@@ -1368,6 +1958,8 @@ private struct PinnedWindowCard: View {
                     .truncationMode(.tail)
 
                 Spacer(minLength: 8)
+
+                CardDragHandle(payload: dragPayload)
 
                 actionsMenu
             }
@@ -1435,6 +2027,7 @@ private struct PinnedWindowCard: View {
             background: iconFieldBackground,
             strokeColor: iconFieldStroke,
             isEnabled: isPrimaryActionEnabled,
+            doubleClickAction: bringAndMoveBelowCard,
             onPressChanged: setPrimaryActionPressed,
             onActionFeedback: runPrimaryActionFeedback,
             action: primaryAction
@@ -1465,14 +2058,14 @@ private struct PinnedWindowCard: View {
 
     @ViewBuilder
     private var neverMinimizeMenuItem: some View {
-        if attachedWindow.window.bundleIdentifier == nil {
-            Button("Never Minimize This App") {}
+        if attachedWindow.window.pid == 0 {
+            Button("Add to Permanent Board") {}
                 .disabled(true)
-        } else if isNeverMinimizedApp {
-            Button("Already Never Minimized") {}
+        } else if isNeverMinimizedWindow {
+            Button("Already on Permanent Board") {}
                 .disabled(true)
         } else {
-            Button("Never Minimize This App", action: addNeverMinimizeApp)
+            Button("Add to Permanent Board", action: addNeverMinimizeWindow)
         }
     }
 
@@ -1661,6 +2254,9 @@ private struct IconPrimaryActionField: View {
     let background: LinearGradient
     let strokeColor: Color
     let isEnabled: Bool
+    var actionTitle: String? = nil
+    var accessibilityLabel: String? = nil
+    var doubleClickAction: ((CGPoint) -> Void)? = nil
     let onPressChanged: (Bool) -> Void
     let onActionFeedback: () -> Void
     let action: () -> Void
@@ -1695,11 +2291,18 @@ private struct IconPrimaryActionField: View {
                 isCursorPushed = false
             }
         }
-        .help(primaryActionTitle)
-        .accessibilityLabel(accessibilityLabel)
+        .help(resolvedActionTitle)
+        .accessibilityLabel(Text(resolvedAccessibilityLabel))
         .accessibilityAddTraits(isEnabled ? .isButton : [])
         .frame(maxWidth: .infinity)
         .aspectRatio(188.0 / 118.0, contentMode: .fit)
+        .simultaneousGesture(
+            TapGesture(count: 2)
+                .onEnded {
+                    guard isEnabled else { return }
+                    doubleClickAction?(NSEvent.mouseLocation)
+                }
+        )
     }
 
     private var fieldContent: some View {
@@ -1752,18 +2355,30 @@ private struct IconPrimaryActionField: View {
         }
     }
 
-    private var accessibilityLabel: Text {
+    private var resolvedActionTitle: String {
+        let title = actionTitle ?? primaryActionTitle
+        guard doubleClickAction != nil, isEnabled, state == .available else {
+            return title
+        }
+        return "\(title). Double-click to place below the cursor."
+    }
+
+    private var resolvedAccessibilityLabel: String {
+        if let accessibilityLabel {
+            return accessibilityLabel
+        }
+
         switch state {
         case .available:
-            Text("Bring \(appName) forward")
+            return "Bring \(appName) forward"
         case .resolving:
-            Text("Restoring \(appName)")
+            return "Restoring \(appName)"
         case .minimized:
-            Text("Restore \(appName) window")
+            return "Restore \(appName) window"
         case .unavailable:
-            Text("Find or reopen \(appName)")
+            return "Find or reopen \(appName)"
         case .reconnecting:
-            Text("Finding \(appName)")
+            return "Finding \(appName)"
         }
     }
 }
@@ -2240,11 +2855,11 @@ private struct WorkspaceSummaryHeader: View {
                 .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
 
             VStack(alignment: .leading, spacing: 3) {
-                Text(selectedWorkspace?.displayName ?? "No Workspace Selected")
+                Text(selectedWorkspace?.displayName ?? "No Board Selected")
                     .font(.title3.weight(.semibold))
                     .lineLimit(1)
 
-                Text("\(attachedCount) \(attachedCount == 1 ? "attached window" : "attached windows")")
+                Text("\(attachedCount) \(attachedCount == 1 ? "board window" : "board windows")")
                     .font(.callout)
                     .foregroundStyle(.secondary)
             }
@@ -2263,9 +2878,9 @@ private struct AttachedWindowsHeader: View {
     var body: some View {
         HStack {
             VStack(alignment: .leading, spacing: 2) {
-                Text("Attached Windows")
+                Text("Board Windows")
                     .font(.headline)
-                Text("\(count) \(count == 1 ? "window" : "windows") in this workspace")
+                Text("\(count) \(count == 1 ? "window" : "windows") on this board")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -2299,10 +2914,10 @@ private struct WorkspaceSettingsControls: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             VStack(alignment: .leading, spacing: 8) {
-                Text("Workspace")
+                Text("Board")
                     .font(.subheadline.weight(.medium))
 
-                TextField("Workspace Name", text: workspaceName)
+                TextField("Board Name", text: workspaceName)
                     .disabled(!canEditWorkspaceName)
 
                 ViewThatFits(in: .horizontal) {
@@ -2340,8 +2955,8 @@ private struct WorkspaceSettingsControls: View {
                 Text("Switch Behavior")
                     .font(.subheadline.weight(.medium))
 
-                Toggle("Minimize Unattached On Workspace Switch", isOn: minimizeUnattachedOnSwitch)
-                Toggle("Restore Missing Windows On Workspace Switch", isOn: restoreMissingWindowsOnSwitch)
+                Toggle("Minimize Others When Switching Boards", isOn: minimizeUnattachedOnSwitch)
+                Toggle("Restore Missing Windows When Switching Boards", isOn: restoreMissingWindowsOnSwitch)
                 Toggle("Keep Window Board On Top", isOn: boardAlwaysOnTop)
             }
 
@@ -2393,7 +3008,7 @@ private struct WorkspaceSettingsControls: View {
 
     @ViewBuilder
     private var dangerZoneButtons: some View {
-        Button("Delete Workspace", action: deleteWorkspace)
+        Button("Delete Board", action: deleteWorkspace)
             .disabled(!canDeleteWorkspace)
         Button("Remove All Windows", action: detachAll)
             .disabled(!canDetachAll)
@@ -2488,7 +3103,7 @@ private struct AttachedWindowListRow: View {
                 Button("Find Window Again", action: recover)
                     .disabled(state == .reconnecting)
                 Divider()
-                Button("Remove from Workspace", action: detach)
+                Button("Remove from Board", action: detach)
             } label: {
                 Image(systemName: "ellipsis.circle")
             }
@@ -2596,7 +3211,7 @@ private struct StatusFeedbackView: View {
             if isLoadingWorkspace {
                 ProgressView("Restoring windows and reconnecting as needed...")
             } else if isMinimizingUnattached {
-                ProgressView("Minimizing unattached windows...")
+                ProgressView("Minimizing other windows...")
             } else if isRestoringMinimized {
                 ProgressView("Restoring minimized windows...")
             }

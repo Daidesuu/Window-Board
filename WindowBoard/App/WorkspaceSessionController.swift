@@ -162,7 +162,7 @@ final class WorkspaceSessionController: ObservableObject {
     private let defaults: UserDefaults
     private let minimizeUnattachedOnWorkspaceSwitchKey = "minimizeUnattachedOnWorkspaceSwitch"
     private let restoreMissingWindowsOnWorkspaceSwitchKey = "restoreMissingWindowsOnWorkspaceSwitch"
-    var neverMinimizeBundleIdentifiers: Set<String> = []
+    var neverMinimizeWindows: [NeverMinimizeWindow] = []
 
     init(workspaceStore: WorkspaceStore, defaults: UserDefaults = .standard) {
         self.workspaceStore = workspaceStore
@@ -211,7 +211,7 @@ final class WorkspaceSessionController: ObservableObject {
 
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let resolvedName = trimmedName.isEmpty
-            ? "Workspace \(workspaceStore.workspaces.count + 1)"
+            ? "Board \(workspaceStore.workspaces.count + 1)"
             : trimmedName
         let workspace = workspaceStore.saveWorkspace(name: resolvedName, windows: references)
         selectedWorkspaceID = workspace.id
@@ -274,7 +274,7 @@ final class WorkspaceSessionController: ObservableObject {
 
         guard selectedWorkspace?.isDefault != true else {
             workspaceName = WorkspaceStore.defaultWorkspaceName
-            statusMessage = "Default workspace cannot be renamed."
+            statusMessage = "Default board cannot be renamed."
             return
         }
 
@@ -283,18 +283,18 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         workspaceName = workspace.name
-        statusMessage = "Renamed workspace to \(workspace.name)."
+        statusMessage = "Renamed board to \(workspace.name)."
     }
 
     private func nextWorkspaceName() -> String {
         let existingNames = Set(workspaceStore.workspaces.map(\.name))
         var index = workspaceStore.workspaces.count + 1
 
-        while existingNames.contains("Workspace \(index)") {
+        while existingNames.contains("Board \(index)") {
             index += 1
         }
 
-        return "Workspace \(index)"
+        return "Board \(index)"
     }
 
     func deleteSelectedWorkspace() {
@@ -303,7 +303,7 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         guard selectedWorkspace?.isDefault != true else {
-            statusMessage = "Default workspace cannot be deleted."
+            statusMessage = "Default board cannot be deleted."
             return
         }
 
@@ -313,7 +313,7 @@ final class WorkspaceSessionController: ObservableObject {
         }
         self.selectedWorkspaceID = workspaceStore.defaultWorkspace?.id
         workspaceName = workspaceStore.defaultWorkspace?.name ?? ""
-        statusMessage = "Deleted workspace."
+        statusMessage = "Deleted board."
     }
 
     @discardableResult
@@ -389,7 +389,7 @@ final class WorkspaceSessionController: ObservableObject {
         minimizeAfterSwitchCompletion: @escaping @MainActor () -> Void = {}
     ) {
         guard let workspace = workspaceStore.workspaces.first(where: { $0.id == workspaceID }) else {
-            statusMessage = "Workspace not found."
+            statusMessage = "Board not found."
             return
         }
 
@@ -720,9 +720,9 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         let attachedWindowsToRefresh = attachedWindows
-        let neverMinimizeBundleIdentifiers = neverMinimizeBundleIdentifiers
+        let neverMinimizeWindows = neverMinimizeWindows
         isMinimizingUnattached = true
-        statusMessage = "Preparing unattached windows..."
+        statusMessage = "Preparing other windows..."
 
         Task.detached(priority: .userInitiated) {
             let service = AccessibilityWindowService()
@@ -768,13 +768,13 @@ final class WorkspaceSessionController: ObservableObject {
                     Self.shouldMinimizeWindow(
                         $0,
                         attachedSnapshots: attachedSnapshots,
-                        neverMinimizeBundleIdentifiers: neverMinimizeBundleIdentifiers
+                        neverMinimizeWindows: neverMinimizeWindows
                     )
                 }
 
                 guard !windowsToMinimize.isEmpty else {
                     self.isMinimizingUnattached = false
-                    self.statusMessage = "No unattached windows to minimize."
+                    self.statusMessage = "No other windows to minimize."
                     return
                 }
 
@@ -845,7 +845,7 @@ final class WorkspaceSessionController: ObservableObject {
             }
 
             self.isMinimizingUnattached = true
-            self.statusMessage = "Minimizing unattached windows..."
+            self.statusMessage = "Minimizing other windows..."
             return true
         }
 
@@ -854,14 +854,14 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         let minimizeStart = Date()
-        let neverMinimizeBundleIdentifiers = await MainActor.run {
-            self.neverMinimizeBundleIdentifiers
+        let neverMinimizeWindows = await MainActor.run {
+            self.neverMinimizeWindows
         }
         let result = Self.minimizeUnattachedWindows(
             keeping: attachedWindows,
             candidateWindows: candidateWindows,
             unavailableAttachmentIDs: unavailableAttachmentIDs,
-            neverMinimizeBundleIdentifiers: neverMinimizeBundleIdentifiers,
+            neverMinimizeWindows: neverMinimizeWindows,
             service: service
         )
         Self.logDuration("minimizeUnattachedAfterWorkspaceSwitch", since: minimizeStart)
@@ -1466,7 +1466,7 @@ final class WorkspaceSessionController: ObservableObject {
         keeping attachedWindows: [AttachedWindow],
         candidateWindows: [WindowInfo],
         unavailableAttachmentIDs: Set<AttachedWindow.ID>,
-        neverMinimizeBundleIdentifiers: Set<String>,
+        neverMinimizeWindows: [NeverMinimizeWindow],
         service: AccessibilityWindowService
     ) -> SessionMinimizeWindowsResult {
         let snapshots = attachedWindows.map {
@@ -1490,7 +1490,7 @@ final class WorkspaceSessionController: ObservableObject {
             shouldMinimizeWindow(
                 $0,
                 attachedSnapshots: snapshots,
-                neverMinimizeBundleIdentifiers: neverMinimizeBundleIdentifiers
+                neverMinimizeWindows: neverMinimizeWindows
             )
         }
         return minimizeWindows(windowsToMinimize, attachedSnapshots: snapshots, service: service)
@@ -1545,10 +1545,9 @@ final class WorkspaceSessionController: ObservableObject {
     private static func shouldMinimizeWindow(
         _ window: WindowInfo,
         attachedSnapshots: [SessionAttachedWindowSnapshot],
-        neverMinimizeBundleIdentifiers: Set<String>
+        neverMinimizeWindows: [NeverMinimizeWindow]
     ) -> Bool {
-        if let bundleIdentifier = window.bundleIdentifier,
-           neverMinimizeBundleIdentifiers.contains(bundleIdentifier) {
+        if neverMinimizeWindows.contains(where: { $0.matches(window) }) {
             return false
         }
 

@@ -78,12 +78,12 @@ final class WindowBoardStatusItemController: NSObject {
         menu.addItem(menuItem("Show Window", action: #selector(showWindow)))
         menu.addItem(NSMenuItem.separator())
 
-        let workspacesItem = NSMenuItem(title: "Workspaces", action: nil, keyEquivalent: "")
+        let workspacesItem = NSMenuItem(title: "Boards", action: nil, keyEquivalent: "")
         let workspacesMenu = NSMenu()
         workspacesMenu.autoenablesItems = false
 
         if appState.workspaceStore.workspaces.isEmpty {
-            let emptyItem = NSMenuItem(title: "No Saved Workspaces", action: nil, keyEquivalent: "")
+            let emptyItem = NSMenuItem(title: "No Saved Boards", action: nil, keyEquivalent: "")
             emptyItem.isEnabled = false
             workspacesMenu.addItem(emptyItem)
         } else {
@@ -99,11 +99,11 @@ final class WindowBoardStatusItemController: NSObject {
         menu.addItem(workspacesItem)
         menu.addItem(NSMenuItem.separator())
 
-        let bringItem = menuItem("Bring Attached To Front", action: #selector(bringAttachedToFront))
+        let bringItem = menuItem("Bring Board Windows To Front", action: #selector(bringAttachedToFront))
         bringItem.isEnabled = appState.session.canBringAttachedToFront
         menu.addItem(bringItem)
 
-        let minimizeItem = menuItem("Minimize Unattached", action: #selector(minimizeUnattached))
+        let minimizeItem = menuItem("Minimize Others", action: #selector(minimizeUnattached))
         minimizeItem.isEnabled = appState.session.canMinimizeUnattached
         menu.addItem(minimizeItem)
 

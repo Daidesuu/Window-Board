@@ -31,17 +31,17 @@ struct SettingsView: View {
                 )
             }
 
-            Section("Never Minimize Apps") {
-                if appState.neverMinimizeApps.isEmpty {
-                    Text("No apps added.")
+            Section("Permanent Board") {
+                if appState.neverMinimizeWindows.isEmpty {
+                    Text("No windows added.")
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(appState.neverMinimizeApps) { app in
+                    ForEach(appState.neverMinimizeWindows) { window in
                         HStack(alignment: .firstTextBaseline, spacing: 12) {
                             VStack(alignment: .leading, spacing: 3) {
-                                Text(app.displayName)
+                                Text(window.displayName)
                                     .font(.body)
-                                Text(app.bundleIdentifier)
+                                Text(windowIdentityText(for: window))
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                                     .textSelection(.enabled)
@@ -50,9 +50,7 @@ struct SettingsView: View {
                             Spacer(minLength: 16)
 
                             Button("Remove") {
-                                appState.removeNeverMinimizeApp(
-                                    bundleIdentifier: app.bundleIdentifier
-                                )
+                                appState.removeNeverMinimizeWindow(id: window.id)
                             }
                             .buttonStyle(.borderless)
                         }
@@ -63,6 +61,15 @@ struct SettingsView: View {
         .formStyle(.grouped)
         .padding(20)
         .frame(width: 460)
+    }
+
+    private func windowIdentityText(for window: NeverMinimizeWindow) -> String {
+        let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty {
+            return "\(window.appName) - \(title)"
+        }
+
+        return window.bundleIdentifier ?? window.appName
     }
 
     private func modePicker<Value: Identifiable & Hashable>(

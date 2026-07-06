@@ -217,9 +217,12 @@ struct ContentView: View {
     @State private var minimizedAttachedWindowIDs: Set<AttachedWindow.ID> = []
     @State private var workspaceStatusTextInput = ""
     @State private var recentlyAddedAttachedWindowID: AttachedWindow.ID?
+    @State private var recentlyAddedNeverMinimizeWindowID: NeverMinimizeWindow.ID?
     @State private var workspaceCardTransitionToken: UUID?
     @State private var detachingAttachedWindowIDs: Set<AttachedWindow.ID> = []
+    @State private var detachingNeverMinimizeWindowIDs: Set<NeverMinimizeWindow.ID> = []
     @State private var detachAnimationTasks: [AttachedWindow.ID: Task<Void, Never>] = [:]
+    @State private var permanentDetachAnimationTasks: [NeverMinimizeWindow.ID: Task<Void, Never>] = [:]
 
     init(appState: WindowBoardAppState) {
         _appState = ObservedObject(initialValue: appState)
@@ -292,7 +295,7 @@ struct ContentView: View {
                 } label: {
                     Label("Minimize Others", systemImage: "minus.square")
                 }
-                .help("Minimize windows not in this workspace")
+                .help("Minimize windows not on this board")
                 .disabled(!isTrusted || session.isMinimizingUnattached || session.isRestoringMinimized || windows.isEmpty)
 
                 Button {
@@ -447,14 +450,39 @@ struct ContentView: View {
             updateAttached: updateAttachedPositionFromMainView(id:),
             detachAttached: detachWindowFromMainView(id:),
             bringForwardAttached: { bringAttachedWindowToFrontFromMainView($0) },
-            isNeverMinimizedApp: { appState.isNeverMinimized(bundleIdentifier: $0) },
-            addNeverMinimizeApp: addNeverMinimizeApp(for:),
+            bringAndMoveAttachedBelowCard: bringAndMoveAttachedWindowBelowCard(_:cursorScreenLocation:),
+            isNeverMinimizedWindow: { appState.isNeverMinimized(window: $0) },
+            addNeverMinimizeWindow: addNeverMinimizeWindow(_:),
+            moveAttachedWindowToPermanentBoard: moveAttachedWindowToPermanentBoard(id:),
+            rejectPermanentBoardDrop: rejectPermanentBoardDrop,
+            movePermanentWindowToMainBoard: movePermanentWindowToMainBoard(id:),
+            rejectMainBoardDrop: rejectMainBoardDrop,
+            neverMinimizeWindows: appState.neverMinimizeWindows,
+            runningNeverMinimizeWindowCandidates: runningNeverMinimizeWindowCandidates,
+            addNeverMinimizeRunningWindow: addNeverMinimizeWindow(_:),
+            removeNeverMinimizeWindow: removeNeverMinimizeWindowFromCard(id:),
+            recentlyAddedNeverMinimizeWindowID: recentlyAddedNeverMinimizeWindowID,
+            clearRecentlyAddedNeverMinimizeWindowID: { recentlyAddedNeverMinimizeWindowID = nil },
+            detachingNeverMinimizeWindowIDs: detachingNeverMinimizeWindowIDs,
+            liveNeverMinimizeWindow: liveNeverMinimizeWindow(for:),
+            showNeverMinimizeWindow: showNeverMinimizeWindow(_:),
+            showAndMoveNeverMinimizeWindowBelowCard: bringAndMovePermanentWindowBelowCard(_:cursorScreenLocation:),
             updatePositions: updateAttachedPositionsFromMainView,
             bringToFront: bringAllAttachedWindowsToFrontFromMainView,
             minimizeUnattached: minimizeUnattachedWindows,
             restoreMinimized: restoreMinimizedWindows,
             detachAll: detachAllFromMainView
         )
+    }
+
+    private var runningNeverMinimizeWindowCandidates: [WindowInfo] {
+        windows
+            .filter { window in
+                !appState.isNeverMinimized(window: window)
+            }
+            .sorted {
+                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
+            }
     }
 
     private func detachAllFromMainView() {
@@ -471,17 +499,215 @@ struct ContentView: View {
         bringAttachedWindowsToFrontSmoothly([attachedWindow], updateStatus: true)
     }
 
-    private func addNeverMinimizeApp(for window: WindowInfo) {
-        guard let bundleIdentifier = window.bundleIdentifier else {
-            session.statusMessage = "This app cannot be added because no bundle identifier is available."
+    private func addNeverMinimizeWindow(_ window: WindowInfo) {
+        let existingIDs = Set(appState.neverMinimizeWindows.map(\.id))
+        withAnimation(.spring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.06)) {
+            appState.addNeverMinimizeWindow(window)
+        }
+        recentlyAddedNeverMinimizeWindowID = appState.neverMinimizeWindows.first {
+            !existingIDs.contains($0.id) && $0.matches(window)
+        }?.id
+        session.statusMessage = "Window added to Permanent Board."
+    }
+
+    private func removeNeverMinimizeWindow(id: NeverMinimizeWindow.ID) {
+        permanentDetachAnimationTasks[id]?.cancel()
+        permanentDetachAnimationTasks[id] = nil
+        detachingNeverMinimizeWindowIDs.remove(id)
+        withAnimation(.spring(response: 0.24, dampingFraction: 0.86, blendDuration: 0.04)) {
+            appState.removeNeverMinimizeWindow(id: id)
+        }
+        session.statusMessage = "Window removed from Permanent Board."
+    }
+
+    private func removeNeverMinimizeWindowFromCard(id: NeverMinimizeWindow.ID) {
+        scheduleNeverMinimizeWindowRemoval(id: id, finalStatus: "Window removed from Permanent Board.")
+    }
+
+    private func scheduleNeverMinimizeWindowRemoval(id: NeverMinimizeWindow.ID, finalStatus: String) {
+        guard appState.neverMinimizeWindows.contains(where: { $0.id == id }),
+              !detachingNeverMinimizeWindowIDs.contains(id) else {
             return
         }
 
-        appState.addNeverMinimizeApp(
-            bundleIdentifier: bundleIdentifier,
-            displayName: window.appName
+        permanentDetachAnimationTasks[id]?.cancel()
+        detachingNeverMinimizeWindowIDs.insert(id)
+
+        permanentDetachAnimationTasks[id] = Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(260))
+            guard !Task.isCancelled else {
+                return
+            }
+
+            removeNeverMinimizeWindow(id: id)
+            session.statusMessage = finalStatus
+            permanentDetachAnimationTasks[id] = nil
+        }
+    }
+
+    private func moveAttachedWindowToPermanentBoard(id: AttachedWindow.ID) {
+        guard let attachedWindow = session.attachedWindows.first(where: { $0.id == id }) else {
+            session.statusMessage = "That card is no longer on the Main Board."
+            return
+        }
+
+        guard attachedDisplayState(for: attachedWindow) == .available,
+              attachedWindow.window.pid != 0 else {
+            session.statusMessage = "Only available windows can be moved to Permanent Board."
+            return
+        }
+
+        if !appState.isNeverMinimized(window: attachedWindow.window) {
+            let existingIDs = Set(appState.neverMinimizeWindows.map(\.id))
+            withAnimation(.spring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.06)) {
+                appState.addNeverMinimizeWindow(attachedWindow.window)
+            }
+            recentlyAddedNeverMinimizeWindowID = appState.neverMinimizeWindows.first {
+                !existingIDs.contains($0.id) && $0.matches(attachedWindow.window)
+            }?.id
+        }
+
+        detachWindowFromMainView(id: id)
+        session.statusMessage = "Moved window to Permanent Board."
+    }
+
+    private func rejectPermanentBoardDrop() {
+        session.statusMessage = "That card cannot be moved to Permanent Board."
+    }
+
+    private func movePermanentWindowToMainBoard(id: NeverMinimizeWindow.ID) {
+        guard let permanentWindow = appState.neverMinimizeWindows.first(where: { $0.id == id }) else {
+            session.statusMessage = "That card is no longer on the Permanent Board."
+            return
+        }
+
+        guard let window = liveNeverMinimizeWindow(for: permanentWindow) else {
+            session.statusMessage = "Only available permanent windows can be moved to Main Board."
+            return
+        }
+
+        guard let boardOrigin = boardMotion.currentOrigin else {
+            session.statusMessage = "Window Board position is not available."
+            return
+        }
+
+        guard attachWindow(
+            window,
+            boardOrigin: boardOrigin,
+            insertion: .end,
+            markRecentlyAdded: true,
+            bringToFrontAfterAttach: false
+        ) else {
+            return
+        }
+
+        scheduleNeverMinimizeWindowRemoval(id: id, finalStatus: "Moved window to Main Board.")
+        session.statusMessage = "Moved window to Main Board."
+    }
+
+    private func rejectMainBoardDrop() {
+        session.statusMessage = "That card cannot be moved to Main Board."
+    }
+
+    private func liveNeverMinimizeWindow(for window: NeverMinimizeWindow) -> WindowInfo? {
+        windows.first { window.matches($0) }
+    }
+
+    private func showNeverMinimizeWindow(_ window: WindowInfo) {
+        session.statusMessage = "Bringing \(window.displayName) to front..."
+        let service = service
+
+        Task.detached(priority: .utility) {
+            service.raise(window)
+
+            await MainActor.run {
+                session.statusMessage = "Brought \(window.displayName) to front."
+            }
+        }
+    }
+
+    private func bringAndMoveAttachedWindowBelowCard(_ attachedWindow: AttachedWindow, cursorScreenLocation: CGPoint) {
+        guard attachedDisplayState(for: attachedWindow) == .available else {
+            session.statusMessage = "\(attachedWindow.window.appName) is not available to move."
+            return
+        }
+
+        bringAndMoveWindowBelowCursor(attachedWindow.window, cursorScreenLocation: cursorScreenLocation)
+    }
+
+    private func bringAndMovePermanentWindowBelowCard(_ window: WindowInfo, cursorScreenLocation: CGPoint) {
+        bringAndMoveWindowBelowCursor(window, cursorScreenLocation: cursorScreenLocation)
+    }
+
+    private func bringAndMoveWindowBelowCursor(_ window: WindowInfo, cursorScreenLocation: CGPoint) {
+        session.statusMessage = "Moving \(window.displayName) below cursor..."
+        let service = service
+        let displayName = window.displayName
+
+        Task.detached(priority: .utility) {
+            do {
+                service.raise(window)
+                let windowSize = try? service.size(of: window)
+                let targetOrigin = await MainActor.run {
+                    Self.targetWindowOriginBelowCursor(
+                        cursorScreenLocation: cursorScreenLocation,
+                        windowSize: windowSize
+                    )
+                }
+                try service.setPosition(targetOrigin, for: window)
+
+                await MainActor.run {
+                    session.statusMessage = "Moved \(displayName) below cursor."
+                }
+            } catch {
+                await MainActor.run {
+                    session.statusMessage = "Window could not be moved."
+                }
+            }
+        }
+    }
+
+    private static func targetWindowOriginBelowCursor(cursorScreenLocation: CGPoint, windowSize: CGSize?) -> CGPoint {
+        guard let screen = screen(containing: cursorScreenLocation) else {
+            return CGPoint(x: cursorScreenLocation.x, y: cursorScreenLocation.y + 12)
+        }
+
+        let cursorAXY = screen.frame.maxY - cursorScreenLocation.y
+        var targetOrigin = CGPoint(
+            x: cursorScreenLocation.x,
+            y: cursorAXY + 64
         )
-        session.statusMessage = "App will not be minimized by WindowBoard."
+
+        guard let windowSize,
+              windowSize.width > 0,
+              windowSize.height > 0 else {
+            return targetOrigin
+        }
+
+        targetOrigin.x = cursorScreenLocation.x - (windowSize.width / 2)
+
+        let visibleAXFrame = axFrame(forAppKitScreenFrame: screen.visibleFrame, on: screen)
+        targetOrigin.x = clamped(
+            targetOrigin.x,
+            min: visibleAXFrame.minX,
+            max: max(visibleAXFrame.minX, visibleAXFrame.maxX - windowSize.width)
+        )
+        targetOrigin.y = max(targetOrigin.y, visibleAXFrame.minY)
+        return targetOrigin
+    }
+
+    private static func screen(containing point: CGPoint) -> NSScreen? {
+        NSScreen.screens.first { $0.frame.contains(point) } ?? NSScreen.main
+    }
+
+    private static func axFrame(forAppKitScreenFrame rect: CGRect, on screen: NSScreen) -> CGRect {
+        let minY = screen.frame.maxY - rect.maxY
+        let maxY = screen.frame.maxY - rect.minY
+        return CGRect(x: rect.minX, y: minY, width: rect.width, height: maxY - minY)
+    }
+
+    private static func clamped(_ value: CGFloat, min minimum: CGFloat, max maximum: CGFloat) -> CGFloat {
+        Swift.min(Swift.max(value, minimum), maximum)
     }
 
     private func updateAttachedPositionFromMainView(id: AttachedWindow.ID) {
@@ -624,7 +850,7 @@ struct ContentView: View {
     private var attachedSection: some View {
         sectionContainer {
             HStack {
-                sectionTitle("Attached Windows", systemImage: "rectangle.stack")
+                sectionTitle("Board Windows", systemImage: "rectangle.stack")
                 Spacer()
                 Text("\(session.attachedWindows.count)")
                     .font(.caption.weight(.semibold))
@@ -694,7 +920,7 @@ struct ContentView: View {
     private var workspaceSection: some View {
         sectionContainer {
             HStack {
-                sectionTitle("Current Workspace", systemImage: "rectangle.on.rectangle")
+                sectionTitle("Current Board", systemImage: "rectangle.on.rectangle")
                 Spacer()
                 if let selectedWorkspace {
                     Text(selectedWorkspace.displayName)
@@ -706,8 +932,8 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
-                    Picker("Saved Workspace", selection: $session.selectedWorkspaceID) {
-                        Text("Choose a workspace").tag(SavedWorkspace.ID?.none)
+                    Picker("Saved Board", selection: $session.selectedWorkspaceID) {
+                        Text("Choose a board").tag(SavedWorkspace.ID?.none)
                         ForEach(workspaceStore.workspaces) { workspace in
                             Text(workspace.displayName).tag(SavedWorkspace.ID?.some(workspace.id))
                         }
@@ -721,7 +947,7 @@ struct ContentView: View {
                 }
 
                 HStack(spacing: 8) {
-                    TextField("Workspace Name", text: $session.workspaceName)
+                    TextField("Board Name", text: $session.workspaceName)
                         .textFieldStyle(.roundedBorder)
                         .frame(minWidth: 160)
 
@@ -776,10 +1002,10 @@ struct ContentView: View {
             }
 
             if session.isLoadingWorkspace {
-                progressRow("Loading workspace...")
+                progressRow("Loading board...")
             }
 
-            Toggle("Minimize Unattached On Workspace Switch", isOn: $shouldMinimizeUnattachedOnWorkspaceSwitch)
+            Toggle("Minimize Others When Switching Boards", isOn: $shouldMinimizeUnattachedOnWorkspaceSwitch)
                 .font(.caption)
         }
     }
@@ -888,7 +1114,7 @@ struct ContentView: View {
             if session.isLoadingWorkspace {
                 progressRow("Restoring windows and reconnecting as needed...")
             } else if session.isMinimizingUnattached {
-                progressRow("Minimizing unattached windows...")
+                progressRow("Minimizing other windows...")
             } else if session.isRestoringMinimized {
                 progressRow("Restoring minimized windows...")
             }
@@ -1197,12 +1423,14 @@ struct ContentView: View {
         return service.frontmostWindow(for: lastExternalApplication)
     }
 
+    @discardableResult
     private func attachWindow(
         _ window: WindowInfo,
         boardOrigin: CGPoint,
         insertion: AttachedWindowInsertion = .start,
-        markRecentlyAdded: Bool = false
-    ) {
+        markRecentlyAdded: Bool = false,
+        bringToFrontAfterAttach: Bool = true
+    ) -> Bool {
         do {
             let targetOrigin = try service.position(of: window)
             let attachedWindow = AttachedWindow(
@@ -1240,12 +1468,16 @@ struct ContentView: View {
             session.statusMessage = wasAlreadyAttached
                 ? "Already attached. Updated \(window.displayName)."
                 : "Attached \(window.displayName)."
-            bringAllAttachedWindowsToFront(updateStatus: false)
+            if bringToFrontAfterAttach {
+                bringAllAttachedWindowsToFront(updateStatus: false)
+            }
+            return true
         } catch {
             if markRecentlyAdded {
                 recentlyAddedAttachedWindowID = nil
             }
             session.statusMessage = "Could not attach selected window. \(error.localizedDescription)"
+            return false
         }
     }
 
@@ -2122,7 +2354,7 @@ struct ContentView: View {
 
         let availableWindows = session.attachedWindows.filter { !isUnavailable($0.id) }
         guard !availableWindows.isEmpty else {
-            session.statusMessage = "No available attached windows to bring to front."
+            session.statusMessage = "No available board windows to bring to front."
             return
         }
 
@@ -2538,7 +2770,7 @@ struct ContentView: View {
                     guard session.attachedWindows.contains(where: { $0.id == attachmentID }) else {
                         recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
                         clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                        session.statusMessage = "Attached window is no longer in this workspace."
+                        session.statusMessage = "Attached window is no longer on this board."
                         return
                     }
 
@@ -2567,7 +2799,7 @@ struct ContentView: View {
                 guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
                     recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
                     clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                    session.statusMessage = "Attached window is no longer in this workspace."
+                    session.statusMessage = "Attached window is no longer on this board."
                     return
                 }
 
@@ -2591,7 +2823,7 @@ struct ContentView: View {
                     sizeByAttachmentID: size.map { [attachmentID: $0] } ?? [:]
                 )
                 windows = mergeWindows([replacementWindow], into: windows)
-                session.statusMessage = "Using \(replacementWindow.displayName) for this workspace."
+                session.statusMessage = "Using \(replacementWindow.displayName) for this board."
             }
         }
     }

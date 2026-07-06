@@ -12,9 +12,9 @@ struct StatusMenuView: View {
             showMainWindow()
         }
 
-        Menu("Workspaces") {
+        Menu("Boards") {
             if workspaceStore.workspaces.isEmpty {
-                Text("No Saved Workspaces")
+                Text("No Saved Boards")
             } else {
                 ForEach(workspaceStore.workspaces) { workspace in
                     Button(workspaceMenuTitle(for: workspace)) {
@@ -31,13 +31,13 @@ struct StatusMenuView: View {
 
         Divider()
 
-        Button("Bring Attached To Front") {
+        Button("Bring Board Windows To Front") {
             showMainWindow()
             appState.send(.bringAttachedToFront)
         }
         .disabled(!appState.canBringAttachedToFront)
 
-        Button("Minimize Unattached") {
+        Button("Minimize Others") {
             showMainWindow()
             appState.send(.minimizeUnattached)
         }
