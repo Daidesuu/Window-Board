@@ -216,6 +216,7 @@ struct ContentView: View {
     @State private var activePositionReadIDs: Set<AttachedWindow.ID> = []
     @State private var minimizedAttachedWindowIDs: Set<AttachedWindow.ID> = []
     @State private var workspaceStatusTextInput = ""
+    @State private var isWorkspaceSettingsPresented = false
     @State private var recentlyAddedAttachedWindowID: AttachedWindow.ID?
     @State private var recentlyAddedNeverMinimizeWindowID: NeverMinimizeWindow.ID?
     @State private var workspaceCardTransitionToken: UUID?
@@ -233,12 +234,10 @@ struct ContentView: View {
     var body: some View {
         Group {
             if isTrusted {
-                HStack(spacing: 0) {
+                NavigationSplitView {
                     workspaceSidebar
-                        .frame(width: 240)
-
-                    Divider()
-
+                        .navigationSplitViewColumnWidth(min: 220, ideal: 240, max: 300)
+                } detail: {
                     workspaceDetail
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
@@ -265,19 +264,23 @@ struct ContentView: View {
             }
         )
         .toolbar {
-            ToolbarItemGroup {
+            ToolbarItemGroup(placement: .navigation) {
                 Button {
-                    refreshWindowsAsync()
+                    createWorkspace()
                 } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
+                    Label("New Board", systemImage: "square.and.pencil")
+                        .labelStyle(.iconOnly)
                 }
-                .help("Refresh window list")
-                .disabled(!isTrusted || isLoadingWindows)
+                .help("New Board")
+                .disabled(!isTrusted)
+            }
 
+            ToolbarItemGroup(placement: .primaryAction) {
                 Button {
                     attachFrontmostWindow()
                 } label: {
                     Label("Attach Window", systemImage: "plus.rectangle.on.rectangle")
+                        .labelStyle(.iconOnly)
                 }
                 .help("Pin the frontmost window to this board")
                 .disabled(!isTrusted || boardWindow == nil)
@@ -286,14 +289,29 @@ struct ContentView: View {
                     bringAllAttachedWindowsToFront()
                 } label: {
                     Label("Focus Board", systemImage: "scope")
+                        .labelStyle(.iconOnly)
                 }
                 .help("Bring this board's pinned windows to the front")
                 .disabled(!isTrusted || session.attachedWindows.isEmpty)
+
+                if hasRecoverableAttachedWindows {
+                    Button {
+                        recoverMissingAttachedWindows()
+                    } label: {
+                        Label("Recover Missing", systemImage: "arrow.triangle.2.circlepath")
+                            .labelStyle(.iconOnly)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
+                    .help("Recover missing windows")
+                    .disabled(!isTrusted)
+                }
 
                 Button {
                     minimizeUnattachedWindows()
                 } label: {
                     Label("Minimize Others", systemImage: "minus.square")
+                        .labelStyle(.iconOnly)
                 }
                 .help("Minimize windows not on this board")
                 .disabled(!isTrusted || session.isMinimizingUnattached || session.isRestoringMinimized || windows.isEmpty)
@@ -302,9 +320,74 @@ struct ContentView: View {
                     restoreMinimizedWindows()
                 } label: {
                     Label("Restore Windows", systemImage: "arrow.counterclockwise")
+                        .labelStyle(.iconOnly)
                 }
                 .help("Restore windows minimized by WindowBoard")
                 .disabled(!isTrusted || session.isMinimizingUnattached || session.isRestoringMinimized || session.minimizedWindows.isEmpty)
+
+                Menu {
+                    Button {
+                        refreshWindowsAsync()
+                    } label: {
+                        Label("Refresh Window List", systemImage: "arrow.clockwise")
+                    }
+                    .disabled(!isTrusted || isLoadingWindows)
+
+                    Button {
+                        loadSelectedWorkspace()
+                    } label: {
+                        Label("Restore Layout", systemImage: "arrow.counterclockwise")
+                    }
+                    .disabled(!canReloadSelectedWorkspace)
+
+                    Divider()
+
+                    Button {
+                        isWorkspaceSettingsPresented = true
+                    } label: {
+                        Label("Board Settings", systemImage: "slider.horizontal.3")
+                    }
+                    .disabled(selectedWorkspace == nil)
+
+                    Divider()
+
+                    Button(role: .destructive) {
+                        detachAllFromMainView()
+                    } label: {
+                        Label("Remove All Windows", systemImage: "xmark.circle")
+                    }
+                    .disabled(session.attachedWindows.isEmpty)
+                } label: {
+                    Label("More", systemImage: "ellipsis.circle")
+                        .labelStyle(.iconOnly)
+                }
+                .help("More board actions")
+                .disabled(!isTrusted)
+                .popover(isPresented: $isWorkspaceSettingsPresented, arrowEdge: .bottom) {
+                    WorkspaceSettingsControls(
+                        selectedWorkspace: selectedWorkspace,
+                        workspaceName: $session.workspaceName,
+                        workspaceStatusText: $workspaceStatusTextInput,
+                        minimizeUnattachedOnSwitch: $shouldMinimizeUnattachedOnWorkspaceSwitch,
+                        restoreMissingWindowsOnSwitch: $shouldRestoreMissingWindowsOnWorkspaceSwitch,
+                        boardAlwaysOnTop: $isBoardAlwaysOnTop,
+                        canSaveWorkspace: !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
+                        canOverwriteWorkspace: selectedWorkspace != nil && !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
+                        canEditWorkspaceName: selectedWorkspace?.isDefault != true,
+                        canRenameWorkspace: selectedWorkspace != nil && selectedWorkspace?.isDefault != true && !trimmedWorkspaceName.isEmpty,
+                        canDeleteWorkspace: selectedWorkspace != nil && selectedWorkspace?.isDefault != true && !session.isLoadingWorkspace,
+                        canDetachAll: !session.attachedWindows.isEmpty,
+                        saveWorkspace: saveCurrentWorkspace,
+                        overwriteWorkspace: overwriteSelectedWorkspace,
+                        renameWorkspace: renameSelectedWorkspace,
+                        deleteWorkspace: deleteSelectedWorkspace,
+                        updateStatusItemIcon: updateSelectedWorkspaceIcon,
+                        updateStatusItemText: updateSelectedWorkspaceStatusText,
+                        detachAll: detachAllFromMainView
+                    )
+                    .padding(18)
+                    .frame(width: 420)
+                }
             }
         }
         .onAppear {
@@ -393,7 +476,10 @@ struct ContentView: View {
         WorkspaceSidebarView(
             workspaces: workspaceStore.workspaces,
             activeWorkspaceID: session.activeWorkspaceID,
-            createWorkspace: createWorkspace,
+            showBoardSettings: showBoardSettingsFromSidebar,
+            restoreBoardLayout: restoreBoardLayoutFromSidebar,
+            removeBoardWindows: removeBoardWindowsFromSidebar,
+            deleteBoard: deleteBoardFromSidebar,
             selection: $session.selectedWorkspaceID
         )
     }
@@ -404,7 +490,6 @@ struct ContentView: View {
             selectedWindowID: selectedWindowID,
             windows: windows,
             attachedWindows: session.attachedWindows,
-            statusMessage: session.statusMessage,
             isLoadingWindows: isLoadingWindows,
             isLoadingWorkspace: session.isLoadingWorkspace,
             isMinimizingUnattached: session.isMinimizingUnattached,
@@ -483,6 +568,64 @@ struct ContentView: View {
             .sorted {
                 $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
             }
+    }
+
+    private var recoverableAttachedWindows: [AttachedWindow] {
+        session.attachedWindows.filter { attachedWindow in
+            let state = attachedDisplayState(for: attachedWindow)
+            return state.needsAttention && state != .reconnecting && state.recoveryActionTitle != nil
+        }
+    }
+
+    private var hasRecoverableAttachedWindows: Bool {
+        !recoverableAttachedWindows.isEmpty
+    }
+
+    private var canReloadSelectedWorkspace: Bool {
+        selectedWorkspace != nil && !session.isLoadingWorkspace && boardWindow != nil
+    }
+
+    private func recoverMissingAttachedWindows() {
+        for attachedWindow in recoverableAttachedWindows {
+            recoverAttachedWindow(attachedWindow)
+        }
+    }
+
+    private func selectWorkspaceForSidebarAction(_ workspace: SavedWorkspace) {
+        session.selectedWorkspaceID = workspace.id
+        session.workspaceName = workspace.name
+        workspaceStatusTextInput = WorkspaceStatusItemIcon.title(from: workspace.statusItemSymbolName) ?? ""
+    }
+
+    private func showBoardSettingsFromSidebar(_ workspace: SavedWorkspace) {
+        selectWorkspaceForSidebarAction(workspace)
+        isWorkspaceSettingsPresented = true
+    }
+
+    private func restoreBoardLayoutFromSidebar(_ workspace: SavedWorkspace) {
+        selectWorkspaceForSidebarAction(workspace)
+        guard boardWindow != nil, !session.isLoadingWorkspace else {
+            return
+        }
+
+        loadWorkspace(id: workspace.id)
+    }
+
+    private func removeBoardWindowsFromSidebar(_ workspace: SavedWorkspace) {
+        if workspace.id == session.activeWorkspaceID {
+            selectWorkspaceForSidebarAction(workspace)
+            detachAllFromMainView()
+            return
+        }
+
+        _ = workspaceStore.updateWorkspace(id: workspace.id, windows: [])
+        selectWorkspaceForSidebarAction(workspace)
+        session.statusMessage = "Removed all windows from \(workspace.name)."
+    }
+
+    private func deleteBoardFromSidebar(_ workspace: SavedWorkspace) {
+        selectWorkspaceForSidebarAction(workspace)
+        deleteSelectedWorkspace()
     }
 
     private func detachAllFromMainView() {
@@ -2425,13 +2568,13 @@ struct ContentView: View {
 
     private func configureBoardWindowTransparency(_ window: NSWindow) {
         window.isOpaque = false
-        let baseBackgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.74)
+        let baseBackgroundColor = NSColor.windowBackgroundColor.withAlphaComponent(0.68)
         window.backgroundColor = baseBackgroundColor
         window.titlebarAppearsTransparent = true
         window.titleVisibility = .hidden
         window.toolbarStyle = .unified
         window.toolbar?.showsBaselineSeparator = false
-        window.styleMask.remove(.fullSizeContentView)
+        window.styleMask.insert(.fullSizeContentView)
         window.hasShadow = true
         window.contentView?.wantsLayer = true
         window.contentView?.layer?.backgroundColor = baseBackgroundColor.cgColor

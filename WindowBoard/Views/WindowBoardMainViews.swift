@@ -99,73 +99,74 @@ enum AttachedWindowRecoveryIssue: Equatable {
 }
 
 struct WorkspaceSidebarView: View {
+    private let titlebarInsetHeight: CGFloat = 4
+
     let workspaces: [SavedWorkspace]
     let activeWorkspaceID: SavedWorkspace.ID?
-    let createWorkspace: () -> Void
+    let showBoardSettings: (SavedWorkspace) -> Void
+    let restoreBoardLayout: (SavedWorkspace) -> Void
+    let removeBoardWindows: (SavedWorkspace) -> Void
+    let deleteBoard: (SavedWorkspace) -> Void
     @Binding var selection: SavedWorkspace.ID?
 
     var body: some View {
-        VStack(spacing: 0) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 4) {
-                    Text("Boards")
-                        .font(.caption.weight(.semibold))
+        List(selection: $selection) {
+            Section("Boards") {
+                if workspaces.isEmpty {
+                    Text("No Saved Boards")
+                        .font(.callout)
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 14)
-                        .padding(.top, 12)
-                        .padding(.bottom, 4)
-
-                    if workspaces.isEmpty {
-                        Text("No Saved Boards")
-                            .font(.callout)
-                            .foregroundStyle(.secondary)
-                            .padding(.horizontal, 14)
-                            .padding(.vertical, 8)
-                    } else {
-                        ForEach(workspaces) { workspace in
+                } else {
+                    ForEach(workspaces) { workspace in
+                        WorkspaceSidebarRow(
+                            workspace: workspace,
+                            isActive: workspace.id == activeWorkspaceID
+                        )
+                        .tag(SavedWorkspace.ID?.some(workspace.id))
+                        .help(workspace.displayName)
+                        .contextMenu {
                             Button {
-                                selection = workspace.id
+                                showBoardSettings(workspace)
                             } label: {
-                                WorkspaceSidebarRow(
-                                    workspace: workspace,
-                                    isSelected: workspace.id == selection,
-                                    isActive: workspace.id == activeWorkspaceID
-                                )
+                                Label("Board Settings", systemImage: "slider.horizontal.3")
                             }
-                            .buttonStyle(.plain)
-                            .help(workspace.displayName)
+
+                            Button {
+                                restoreBoardLayout(workspace)
+                            } label: {
+                                Label("Restore Layout", systemImage: "arrow.counterclockwise")
+                            }
+
+                            Divider()
+
+                            Button(role: .destructive) {
+                                removeBoardWindows(workspace)
+                            } label: {
+                                Label("Remove All Windows", systemImage: "xmark.circle")
+                            }
+                            .disabled(workspace.windows.isEmpty)
+
+                            Button(role: .destructive) {
+                                deleteBoard(workspace)
+                            } label: {
+                                Label("Delete Board", systemImage: "trash")
+                            }
+                            .disabled(workspace.isDefault)
                         }
                     }
                 }
-                .padding(.horizontal, 10)
-                .padding(.bottom, 12)
             }
-
-            Divider()
-
-            Button(action: createWorkspace) {
-                ViewThatFits(in: .horizontal) {
-                    Label("New Board", systemImage: "plus")
-                    Label("New", systemImage: "plus")
-                    Image(systemName: "plus")
-                }
-                .font(.callout)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 14)
-            .padding(.vertical, 10)
-            .help("New Board")
         }
-        .navigationTitle("Window Board")
+        .listStyle(.sidebar)
+        .safeAreaInset(edge: .top, spacing: 0) {
+            Color.clear
+                .frame(height: titlebarInsetHeight)
+        }
     }
 }
 
 private struct WorkspaceSidebarRow: View {
     let workspace: SavedWorkspace
-    let isSelected: Bool
     let isActive: Bool
 
     var body: some View {
@@ -194,15 +195,9 @@ private struct WorkspaceSidebarRow: View {
             }
         }
         .padding(.horizontal, 8)
-        .padding(.vertical, 8)
+        .padding(.vertical, 3)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .background {
-            if isSelected {
-                RoundedRectangle(cornerRadius: 8, style: .continuous)
-                    .fill(Color(nsColor: .selectedContentBackgroundColor).opacity(0.18))
-            }
-        }
     }
 
     @ViewBuilder
@@ -224,7 +219,6 @@ struct WorkspaceDetailView: View {
     let selectedWindowID: WindowInfo.ID?
     let windows: [WindowInfo]
     let attachedWindows: [AttachedWindow]
-    let statusMessage: String
     let isLoadingWindows: Bool
     let isLoadingWorkspace: Bool
     let isMinimizingUnattached: Bool
@@ -292,76 +286,21 @@ struct WorkspaceDetailView: View {
     let minimizeUnattached: () -> Void
     let restoreMinimized: () -> Void
     let detachAll: () -> Void
-    @State private var isWorkspaceSettingsPresented = false
 
     var body: some View {
-        VStack(spacing: 0) {
-            BoardSummaryHeader(
-                selectedWorkspace: selectedWorkspace,
-                postingCount: attachedWindows.count,
-                attentionCount: needsRecoveryPostings.count,
-                symbolName: selectedWorkspace?.statusItemSymbolName,
-                hasRecoverablePostings: hasRecoverablePostings,
-                reloadWorkspace: reloadWorkspace,
-                recoverMissing: recoverMissingPostings,
-                showWorkspaceSettings: { isWorkspaceSettingsPresented = true },
-                canReloadWorkspace: canReloadWorkspace
-            )
-            .popover(isPresented: $isWorkspaceSettingsPresented, arrowEdge: .bottom) {
-                WorkspaceSettingsControls(
-                    selectedWorkspace: selectedWorkspace,
-                    workspaceName: workspaceName,
-                    workspaceStatusText: workspaceStatusText,
-                    minimizeUnattachedOnSwitch: minimizeUnattachedOnSwitch,
-                    restoreMissingWindowsOnSwitch: restoreMissingWindowsOnSwitch,
-                    boardAlwaysOnTop: boardAlwaysOnTop,
-                    canSaveWorkspace: canSaveWorkspace,
-                    canOverwriteWorkspace: canOverwriteWorkspace,
-                    canEditWorkspaceName: canEditWorkspaceName,
-                    canRenameWorkspace: canRenameWorkspace,
-                    canDeleteWorkspace: canDeleteWorkspace,
-                    canDetachAll: canDetachAll,
-                    saveWorkspace: saveWorkspace,
-                    overwriteWorkspace: overwriteWorkspace,
-                    renameWorkspace: renameWorkspace,
-                    deleteWorkspace: deleteWorkspace,
-                    updateStatusItemIcon: updateStatusItemIcon,
-                    updateStatusItemText: updateStatusItemText,
-                    detachAll: detachAll
-                )
-                .padding(18)
-                .frame(width: 420)
-            }
-            .padding(.horizontal, 24)
-            .padding(.vertical, 14)
-            .background {
-                Color(nsColor: .windowBackgroundColor).opacity(0.22)
-            }
-
-            Divider()
-
+        ZStack(alignment: .bottom) {
             boardContent
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
-            .background(Color.clear)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color.clear)
 
-            Divider()
-
-            StatusFeedbackView(
-                statusMessage: statusMessage,
+            ProcessingStatusOverlay(
                 isLoadingWorkspace: isLoadingWorkspace,
                 isMinimizingUnattached: isMinimizingUnattached,
                 isRestoringMinimized: isRestoringMinimized
             )
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
-            .background {
-                Rectangle()
-                    .fill(.thinMaterial)
-                    .overlay(Color(nsColor: .windowBackgroundColor).opacity(0.08))
-            }
+            .padding(.bottom, 16)
         }
-        .navigationTitle("")
+        .navigationTitle(selectedWorkspace?.name ?? "Window Board")
     }
 
     private var boardContent: some View {
@@ -424,35 +363,6 @@ struct WorkspaceDetailView: View {
         }
     }
 
-    private var livePostings: [AttachedWindow] {
-        attachedWindows.filter { attachedState($0) == .available }
-    }
-
-    private var minimizedPostings: [AttachedWindow] {
-        attachedWindows.filter { attachedState($0) == .minimized }
-    }
-
-    private var missingPostings: [AttachedWindow] {
-        attachedWindows.filter { attachedState($0) == .unavailable }
-    }
-
-    private var reconnectingPostings: [AttachedWindow] {
-        attachedWindows.filter { attachedState($0) == .reconnecting }
-    }
-
-    private var needsRecoveryPostings: [AttachedWindow] {
-        attachedWindows.filter { attachedState($0).needsAttention }
-    }
-
-    private var hasRecoverablePostings: Bool {
-        needsRecoveryPostings.contains { attachedState($0).recoveryActionTitle != nil }
-    }
-
-    private func recoverMissingPostings() {
-        for attachedWindow in needsRecoveryPostings where attachedState(attachedWindow) != .reconnecting {
-            recoverAttached(attachedWindow)
-        }
-    }
 }
 
 private struct BoardContentSection<Content: View>: View {
@@ -963,107 +873,6 @@ struct WindowSelectionView: View {
             .disabled(!canAttachSelected)
         Button("Attach Window", action: attachFrontmost)
             .disabled(!canAttachFrontmost)
-    }
-}
-
-private struct BoardSummaryHeader: View {
-    let selectedWorkspace: SavedWorkspace?
-    let postingCount: Int
-    let attentionCount: Int
-    let symbolName: String?
-    let hasRecoverablePostings: Bool
-    let reloadWorkspace: () -> Void
-    let recoverMissing: () -> Void
-    let showWorkspaceSettings: () -> Void
-    let canReloadWorkspace: Bool
-
-    var body: some View {
-        HStack(alignment: .center, spacing: 14) {
-            StatusItemPreview(symbolName: symbolName)
-                .padding(.horizontal, 9)
-                .padding(.vertical, 6)
-                .background(.quaternary)
-                .clipShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
-
-            VStack(alignment: .leading, spacing: 3) {
-                Text(selectedWorkspace?.name ?? "No Board Selected")
-                    .font(.title3.weight(.semibold))
-                    .lineLimit(1)
-
-                Text(summaryText)
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
-
-            Spacer()
-
-            ViewThatFits(in: .horizontal) {
-                HStack {
-                    Button {
-                        recoverMissing()
-                    } label: {
-                        Label("Recover Missing", systemImage: "arrow.triangle.2.circlepath")
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .disabled(!hasRecoverablePostings)
-
-                    Button {
-                        reloadWorkspace()
-                    } label: {
-                        Label("Restore Layout", systemImage: "arrow.counterclockwise")
-                    }
-                    .disabled(!canReloadWorkspace)
-
-                    Button {
-                        showWorkspaceSettings()
-                    } label: {
-                        Label("Board Settings", systemImage: "slider.horizontal.3")
-                    }
-                }
-
-                HStack {
-                    Button {
-                        recoverMissing()
-                    } label: {
-                        Label("Recover Missing", systemImage: "arrow.triangle.2.circlepath")
-                            .labelStyle(.iconOnly)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .tint(.red)
-                    .disabled(!hasRecoverablePostings)
-                    .help("Recover Missing")
-
-                    Button {
-                        reloadWorkspace()
-                    } label: {
-                        Label("Restore Layout", systemImage: "arrow.counterclockwise")
-                            .labelStyle(.iconOnly)
-                    }
-                    .disabled(!canReloadWorkspace)
-                    .help("Restore Layout")
-
-                    Button {
-                        showWorkspaceSettings()
-                    } label: {
-                        Label("Board Settings", systemImage: "slider.horizontal.3")
-                            .labelStyle(.iconOnly)
-                    }
-                    .help("Board Settings")
-                }
-            }
-        }
-    }
-
-    private var summaryText: String {
-        let countText = "\(postingCount) pinned"
-        let attentionText = attentionCount > 0 ? " · \(attentionCount) need attention" : ""
-        guard let updatedAt = selectedWorkspace?.updatedAt else {
-            return "\(countText)\(attentionText)"
-        }
-
-        return "\(countText)\(attentionText) · saved \(updatedAt.formatted(date: .omitted, time: .shortened))"
     }
 }
 
@@ -2890,7 +2699,7 @@ private struct AttachedWindowsHeader: View {
     }
 }
 
-private struct WorkspaceSettingsControls: View {
+struct WorkspaceSettingsControls: View {
     let selectedWorkspace: SavedWorkspace?
     let workspaceName: Binding<String>
     let workspaceStatusText: Binding<String>
@@ -3200,26 +3009,44 @@ private struct StatusItemIconMenu: View {
     }
 }
 
-private struct StatusFeedbackView: View {
-    let statusMessage: String
+private struct ProcessingStatusOverlay: View {
     let isLoadingWorkspace: Bool
     let isMinimizingUnattached: Bool
     let isRestoringMinimized: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if isLoadingWorkspace {
-                ProgressView("Restoring windows and reconnecting as needed...")
-            } else if isMinimizingUnattached {
-                ProgressView("Minimizing other windows...")
-            } else if isRestoringMinimized {
-                ProgressView("Restoring minimized windows...")
-            }
+        if let message {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
 
-            Text(statusMessage)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
+                Text(message)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(.thinMaterial, in: Capsule())
+            .shadow(color: .black.opacity(0.08), radius: 12, y: 4)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+            .animation(.easeInOut(duration: 0.18), value: message)
         }
+    }
+
+    private var message: String? {
+        if isLoadingWorkspace {
+            return "Restoring windows..."
+        }
+
+        if isMinimizingUnattached {
+            return "Minimizing other windows..."
+        }
+
+        if isRestoringMinimized {
+            return "Restoring windows..."
+        }
+
+        return nil
     }
 }
