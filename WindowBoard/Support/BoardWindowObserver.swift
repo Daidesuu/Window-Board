@@ -28,7 +28,6 @@ struct BoardWindowObserver: NSViewRepresentable {
         private let onOriginChanged: (CGPoint) -> Void
         private weak var observedWindow: NSWindow?
         private var observers: [NSObjectProtocol] = []
-        private var pollingTimer: Timer?
         private var lastReportedOrigin: CGPoint?
         private var lastReportDate = Date.distantPast
         private let minimumReportInterval: TimeInterval = 1.0 / 20.0
@@ -52,7 +51,6 @@ struct BoardWindowObserver: NSViewRepresentable {
             window.title = "Window Board"
             onWindowAvailable(window)
             reportOriginIfNeeded(window.frame.origin, force: true)
-            startPolling()
 
             let center = NotificationCenter.default
             let moved = center.addObserver(
@@ -77,8 +75,6 @@ struct BoardWindowObserver: NSViewRepresentable {
         }
 
         private func clearObservers() {
-            pollingTimer?.invalidate()
-            pollingTimer = nil
             lastReportedOrigin = nil
             lastReportDate = .distantPast
 
@@ -86,17 +82,6 @@ struct BoardWindowObserver: NSViewRepresentable {
                 NotificationCenter.default.removeObserver(observer)
             }
             observers.removeAll()
-        }
-
-        private func startPolling() {
-            pollingTimer = Timer.scheduledTimer(withTimeInterval: 1.0 / 20.0, repeats: true) { [weak self] _ in
-                guard let self, let window = self.observedWindow else {
-                    return
-                }
-
-                self.reportOriginIfNeeded(window.frame.origin)
-            }
-            RunLoop.main.add(pollingTimer!, forMode: .common)
         }
 
         private func reportOriginIfNeeded(_ origin: CGPoint, force: Bool = false) {

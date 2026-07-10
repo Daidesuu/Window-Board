@@ -57,82 +57,6 @@ private enum LayoutOperationResult {
     case failed
 }
 
-private func bestReplacementWindow(for originalWindow: WindowInfo, in candidates: [WindowInfo]) -> WindowInfo? {
-    let appCandidates = candidates.filter { candidate in
-        if let originalBundleIdentifier = originalWindow.bundleIdentifier,
-           let candidateBundleIdentifier = candidate.bundleIdentifier {
-            return originalBundleIdentifier == candidateBundleIdentifier
-        }
-
-        return candidate.appName == originalWindow.appName
-    }
-
-    if let originalDocumentURL = originalWindow.documentURL,
-       let documentMatch = appCandidates.first(where: { $0.documentURL == originalDocumentURL }) {
-        return documentMatch
-    }
-
-    let trimmedTitle = originalWindow.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !trimmedTitle.isEmpty,
-       let titleMatch = appCandidates.first(where: {
-           $0.title.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedTitle
-       }) {
-        return titleMatch
-    }
-
-    return appCandidates.first
-}
-
-private func bestSavedWorkspaceWindow(
-    for reference: SavedWindowReference,
-    in candidates: [WindowInfo],
-    excluding usedWindowIDs: Set<WindowInfo.ID>
-) -> WindowInfo? {
-    let appCandidates = candidates.filter { candidate in
-        guard !usedWindowIDs.contains(candidate.id) else {
-            return false
-        }
-
-        if let referenceBundleIdentifier = reference.bundleIdentifier,
-           let candidateBundleIdentifier = candidate.bundleIdentifier {
-            return referenceBundleIdentifier == candidateBundleIdentifier
-        }
-
-        return candidate.appName == reference.appName
-    }
-
-    if !reference.isVisualStudioCode,
-       let referenceDocumentURL = reference.documentURL,
-       let documentMatch = appCandidates.first(where: { $0.documentURL == referenceDocumentURL }) {
-        return documentMatch
-    }
-
-    let trimmedTitle = reference.title.trimmingCharacters(in: .whitespacesAndNewlines)
-    if !trimmedTitle.isEmpty,
-       let titleMatch = appCandidates.first(where: {
-           $0.title.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedTitle
-       }) {
-        return titleMatch
-    }
-
-    return appCandidates.first
-}
-
-private func placeholderWindowInfo(for reference: SavedWindowReference) -> WindowInfo {
-    WindowInfo(
-        id: "saved-placeholder-\(reference.id.uuidString)",
-        appName: reference.appName,
-        title: reference.title,
-        pid: 0,
-        bundleIdentifier: reference.bundleIdentifier,
-        bundleURL: reference.bundleURL,
-        documentURL: reference.documentURL,
-        axWindow: AXUIElementCreateApplication(0),
-        windowNumber: nil,
-        position: nil
-    )
-}
-
 final class WorkspaceSessionController: ObservableObject {
     let workspaceStore: WorkspaceStore
 
@@ -417,7 +341,7 @@ final class WorkspaceSessionController: ObservableObject {
         let shouldMinimizeAfterSwitch = defaults.bool(forKey: minimizeUnattachedOnWorkspaceSwitchKey)
         let shouldRestoreMissingWindows = defaults.bool(forKey: restoreMissingWindowsOnWorkspaceSwitchKey)
         let shouldDeferWindowApplication = windowCache != nil
-        let plannedAttachedWindows = Self.placeholderAttachedWindows(
+        let plannedAttachedWindows = WorkspaceWindowResolver.placeholderAttachments(
             for: workspace.windows,
             boardOrigin: effectiveBoardOrigin,
             useSavedOrigin: shouldRestoreSavedOrigin
@@ -435,112 +359,51 @@ final class WorkspaceSessionController: ObservableObject {
             let service = AccessibilityWindowService()
             let resolveStart = Date()
             var availableWindows = windowCache ?? []
-            var usedWindowIDs = Set<WindowInfo.ID>()
-            var loadedAttachedWindows: [AttachedWindow] = []
-            var loadedWindowIDs: [SavedWindowReference.ID: WindowInfo.ID] = [:]
-            var unavailableAttachmentIDs = Set<AttachedWindow.ID>()
-            var unresolvedReferences: [SavedWindowReference] = []
-            var reconnectedCount = 0
-            var missedCount = 0
+            var resolution = WorkspaceWindowResolver.resolve(
+                references: workspace.windows,
+                candidates: availableWindows,
+                cachedWindowIDs: targetLoadedWindowIDs
+            )
 
-            for reference in workspace.windows {
-                guard !Task.isCancelled else { return }
+            if windowCache == nil || !resolution.unresolvedReferences.isEmpty {
+                let listWindowsStart = Date()
+                availableWindows = service.listWindows()
+                Self.logDuration("workspace listWindows", since: listWindowsStart)
+            }
 
-                guard let replacement = Self.workspaceWindow(
-                    for: reference,
-                    cachedWindowID: targetLoadedWindowIDs[reference.id],
-                    in: availableWindows,
-                    excluding: usedWindowIDs
-                ) else {
-                    unresolvedReferences.append(reference)
-                    continue
-                }
+            if !resolution.unresolvedReferences.isEmpty {
+                resolution = WorkspaceWindowResolver.resolve(
+                    references: resolution.unresolvedReferences,
+                    candidates: availableWindows,
+                    cachedWindowIDs: targetLoadedWindowIDs,
+                    previous: resolution
+                )
+            }
 
-                let attached = Self.makeAttachedWindow(
-                    replacement,
-                    attachmentID: reference.id,
-                    reference: reference,
+            let loadedAttachedWindows = resolution.matches.map { match in
+                Self.makeAttachedWindow(
+                    match.window,
+                    attachmentID: match.reference.id,
+                    reference: match.reference,
                     boardOrigin: effectiveBoardOrigin,
                     useSavedOrigin: shouldRestoreSavedOrigin,
                     applyImmediately: !shouldDeferWindowApplication,
                     raiseImmediately: false,
                     service: service
                 )
-                usedWindowIDs.insert(replacement.id)
-                loadedWindowIDs[reference.id] = replacement.id
-                loadedAttachedWindows.append(attached)
-                reconnectedCount += 1
-            }
-
-            if windowCache == nil || !unresolvedReferences.isEmpty {
-                let listWindowsStart = Date()
-                availableWindows = service.listWindows()
-                Self.logDuration("workspace listWindows", since: listWindowsStart)
-            }
-
-            if !unresolvedReferences.isEmpty {
-                var stillUnresolved: [SavedWindowReference] = []
-
-                for reference in unresolvedReferences {
-                    guard let replacement = Self.workspaceWindow(
-                        for: reference,
-                        cachedWindowID: targetLoadedWindowIDs[reference.id],
-                        in: availableWindows,
-                        excluding: usedWindowIDs
-                    ) else {
-                        stillUnresolved.append(reference)
-                        continue
-                    }
-
-                    let attached = Self.makeAttachedWindow(
-                        replacement,
-                        attachmentID: reference.id,
-                        reference: reference,
-                        boardOrigin: effectiveBoardOrigin,
-                        useSavedOrigin: shouldRestoreSavedOrigin,
-                        applyImmediately: !shouldDeferWindowApplication,
-                        raiseImmediately: false,
-                        service: service
-                    )
-                    usedWindowIDs.insert(replacement.id)
-                    loadedWindowIDs[reference.id] = replacement.id
-                    loadedAttachedWindows.append(attached)
-                    reconnectedCount += 1
-                }
-
-                unresolvedReferences = stillUnresolved
-            }
-
-            for reference in unresolvedReferences {
-                let targetOrigin = reference.targetOrigin(
-                    from: effectiveBoardOrigin,
-                    useSavedOrigin: shouldRestoreSavedOrigin
-                )
-                let placeholder = placeholderWindowInfo(for: reference)
-                let unavailableAttachment = AttachedWindow(
-                    attachmentID: reference.id,
-                    window: placeholder,
-                    savedReference: reference,
-                    lastBoardOrigin: effectiveBoardOrigin,
-                    lastWindowOrigin: targetOrigin,
-                    lastAppliedOrigin: nil,
-                    pendingReleaseOrigin: nil
-                )
-                loadedAttachedWindows.append(unavailableAttachment)
-                unavailableAttachmentIDs.insert(unavailableAttachment.id)
-                missedCount += 1
             }
 
             let resolvedAvailableWindows = availableWindows
-            let resolvedAttachedWindows = Self.orderedWorkspaceAttachments(
+            let resolvedAttachedWindows = WorkspaceWindowResolver.orderedAttachments(
                 references: workspace.windows,
                 resolvedAttachments: loadedAttachedWindows,
-                fallbackAttachments: plannedAttachedWindows
+                boardOrigin: effectiveBoardOrigin,
+                useSavedOrigin: shouldRestoreSavedOrigin
             )
-            let resolvedUnavailableAttachmentIDs = unavailableAttachmentIDs
-            let resolvedLoadedWindowIDs = loadedWindowIDs
-            let resolvedReconnectedCount = reconnectedCount
-            let resolvedMissedCount = missedCount
+            let resolvedUnavailableAttachmentIDs = Set(resolution.unresolvedReferences.map(\.id))
+            let resolvedLoadedWindowIDs = resolution.loadedWindowIDs
+            let resolvedReconnectedCount = resolution.matches.count
+            let resolvedMissedCount = resolution.unresolvedReferences.count
             let unresolvedAttachmentsForDeferredRecovery = resolvedAttachedWindows.filter {
                 resolvedUnavailableAttachmentIDs.contains($0.id)
             }
@@ -739,7 +602,7 @@ final class WorkspaceSessionController: ObservableObject {
                 let candidates = service.windows(matching: attachedWindow.window)
                 attachedCandidateWindows.append(contentsOf: candidates)
 
-                if let replacement = bestReplacementWindow(for: attachedWindow.window, in: candidates) {
+                if let replacement = WindowMatching.bestReplacement(for: attachedWindow.window, in: candidates) {
                     refreshedAttachedWindows[attachedWindow.id] = replacement
                 }
             }
@@ -1176,38 +1039,6 @@ final class WorkspaceSessionController: ObservableObject {
         )
     }
 
-    private static func placeholderAttachedWindows(
-        for references: [SavedWindowReference],
-        boardOrigin: CGPoint,
-        useSavedOrigin: Bool
-    ) -> [AttachedWindow] {
-        references.map { reference in
-            let targetOrigin = reference.targetOrigin(from: boardOrigin, useSavedOrigin: useSavedOrigin)
-            return AttachedWindow(
-                attachmentID: reference.id,
-                window: placeholderWindowInfo(for: reference),
-                savedReference: reference,
-                lastBoardOrigin: boardOrigin,
-                lastWindowOrigin: targetOrigin,
-                lastAppliedOrigin: nil,
-                pendingReleaseOrigin: nil
-            )
-        }
-    }
-
-    private static func orderedWorkspaceAttachments(
-        references: [SavedWindowReference],
-        resolvedAttachments: [AttachedWindow],
-        fallbackAttachments: [AttachedWindow]
-    ) -> [AttachedWindow] {
-        let resolvedByID = Dictionary(uniqueKeysWithValues: resolvedAttachments.map { ($0.id, $0) })
-        let fallbackByID = Dictionary(uniqueKeysWithValues: fallbackAttachments.map { ($0.id, $0) })
-
-        return references.compactMap { reference in
-            resolvedByID[reference.id] ?? fallbackByID[reference.id]
-        }
-    }
-
     private static func applyWorkspaceWindowPositions(
         _ attachedWindows: [AttachedWindow],
         service: AccessibilityWindowService
@@ -1346,7 +1177,7 @@ final class WorkspaceSessionController: ObservableObject {
             var stillUnresolved: [(AttachedWindow.ID, SavedWindowReference)] = []
 
             for (attachmentID, reference) in unresolvedAttachments {
-                guard let replacement = workspaceWindow(
+                guard let replacement = WorkspaceWindowResolver.bestWindow(
                     for: reference,
                     cachedWindowID: nil,
                     in: availableWindows,
@@ -1413,7 +1244,7 @@ final class WorkspaceSessionController: ObservableObject {
             var stillUnresolved: [(AttachedWindow.ID, SavedWindowReference)] = []
 
             for (attachmentID, reference) in unresolvedAttachments {
-                guard let replacement = workspaceWindow(
+                guard let replacement = WorkspaceWindowResolver.bestWindow(
                     for: reference,
                     cachedWindowID: nil,
                     in: availableWindows,
@@ -1441,25 +1272,6 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         return recoveredAttachments
-    }
-
-    private static func workspaceWindow(
-        for reference: SavedWindowReference,
-        cachedWindowID: WindowInfo.ID?,
-        in candidates: [WindowInfo],
-        excluding usedWindowIDs: Set<WindowInfo.ID>
-    ) -> WindowInfo? {
-        if let cachedWindowID,
-           !usedWindowIDs.contains(cachedWindowID),
-           let exactWindow = candidates.first(where: { $0.id == cachedWindowID }) {
-            return exactWindow
-        }
-
-        return bestSavedWorkspaceWindow(
-            for: reference,
-            in: candidates,
-            excluding: usedWindowIDs
-        )
     }
 
     private static func minimizeUnattachedWindows(

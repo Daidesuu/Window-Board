@@ -61,33 +61,14 @@ struct NeverMinimizeWindow: Codable, Identifiable, Hashable {
     }
 
     func matches(_ window: WindowInfo) -> Bool {
-        if let windowNumber,
-           let candidateWindowNumber = window.windowNumber,
-           let bundleIdentifier,
-           let candidateBundleIdentifier = window.bundleIdentifier,
-           bundleIdentifier == candidateBundleIdentifier,
-           windowNumber == candidateWindowNumber {
-            return true
-        }
-
-        if let documentURL,
-           let candidateDocumentURL = window.documentURL,
-           documentURL == candidateDocumentURL {
-            return true
-        }
-
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidateTitle = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty, !candidateTitle.isEmpty, trimmedTitle == candidateTitle else {
-            return false
-        }
-
-        if let bundleIdentifier,
-           let candidateBundleIdentifier = window.bundleIdentifier {
-            return bundleIdentifier == candidateBundleIdentifier
-        }
-
-        return appName == window.appName
+        WindowMatching.matchesNeverMinimizeWindow(
+            bundleIdentifier: bundleIdentifier,
+            appName: appName,
+            title: title,
+            documentURL: documentURL,
+            windowNumber: windowNumber,
+            candidate: window
+        )
     }
 }
 

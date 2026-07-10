@@ -25,7 +25,16 @@
 		1A0000010000000000000022 /* StatusMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000021 /* StatusMenuView.swift */; };
 		1A0000010000000000000024 /* WindowBoardStatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000023 /* WindowBoardStatusItemController.swift */; };
 		1A0000010000000000000026 /* WorkspaceSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000025 /* WorkspaceSessionController.swift */; };
-		1A0000010000000000000028 /* WindowBoardMainViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000027 /* WindowBoardMainViews.swift */; };
+		1A000001000000000000002A /* WindowMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000029 /* WindowMatching.swift */; };
+		1A000001000000000000002B /* BoardSidebarViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000002C /* BoardSidebarViews.swift */; };
+		1A000001000000000000002D /* BoardDetailViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000002E /* BoardDetailViews.swift */; };
+		1A000001000000000000002F /* BoardCardViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000039 /* BoardCardViews.swift */; };
+		1A0000010000000000000041 /* BoardSupportingViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000042 /* BoardSupportingViews.swift */; };
+		1A0000010000000000000043 /* BoardToolbarControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000044 /* BoardToolbarControls.swift */; };
+		1B000001000000000000000D /* BoardAppIconViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B000001000000000000000E /* BoardAppIconViews.swift */; };
+		1B000001000000000000000F /* BoardCardInteractionSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B0000010000000000000010 /* BoardCardInteractionSupport.swift */; };
+		1B0000010000000000000011 /* WorkspaceWindowResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B0000010000000000000012 /* WorkspaceWindowResolver.swift */; };
+		1B0000010000000000000001 /* WindowMatchingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B0000010000000000000002 /* WindowMatchingTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,7 +57,17 @@
 		1A0000010000000000000021 /* StatusMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuView.swift; sourceTree = "<group>"; };
 		1A0000010000000000000023 /* WindowBoardStatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardStatusItemController.swift; sourceTree = "<group>"; };
 		1A0000010000000000000025 /* WorkspaceSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionController.swift; sourceTree = "<group>"; };
-		1A0000010000000000000027 /* WindowBoardMainViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardMainViews.swift; sourceTree = "<group>"; };
+		1A0000010000000000000029 /* WindowMatching.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowMatching.swift; sourceTree = "<group>"; };
+		1A000001000000000000002C /* BoardSidebarViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardSidebarViews.swift; sourceTree = "<group>"; };
+		1A000001000000000000002E /* BoardDetailViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardDetailViews.swift; sourceTree = "<group>"; };
+		1A0000010000000000000039 /* BoardCardViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardCardViews.swift; sourceTree = "<group>"; };
+		1A0000010000000000000042 /* BoardSupportingViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardSupportingViews.swift; sourceTree = "<group>"; };
+		1A0000010000000000000044 /* BoardToolbarControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardToolbarControls.swift; sourceTree = "<group>"; };
+		1B000001000000000000000E /* BoardAppIconViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardAppIconViews.swift; sourceTree = "<group>"; };
+		1B0000010000000000000010 /* BoardCardInteractionSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardCardInteractionSupport.swift; sourceTree = "<group>"; };
+		1B0000010000000000000012 /* WorkspaceWindowResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindowResolver.swift; sourceTree = "<group>"; };
+		1B0000010000000000000002 /* WindowMatchingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowMatchingTests.swift; sourceTree = "<group>"; };
+		1B0000010000000000000003 /* WindowBoardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowBoardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -69,6 +88,7 @@
 			isa = PBXGroup;
 			children = (
 				1A0000010000000000000031 /* WindowBoard */,
+				1B0000010000000000000004 /* WindowBoardTests */,
 				1A0000010000000000000032 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -90,8 +110,17 @@
 			isa = PBXGroup;
 			children = (
 				1A0000010000000000000010 /* WindowBoard.app */,
+				1B0000010000000000000003 /* WindowBoardTests.xctest */,
 			);
 			name = Products;
+			sourceTree = "<group>";
+		};
+		1B0000010000000000000004 /* WindowBoardTests */ = {
+			isa = PBXGroup;
+			children = (
+				1B0000010000000000000002 /* WindowMatchingTests.swift */,
+			);
+			path = WindowBoardTests;
 			sourceTree = "<group>";
 		};
 		1A0000010000000000000033 /* App */ = {
@@ -109,7 +138,13 @@
 			isa = PBXGroup;
 			children = (
 				1A0000010000000000000012 /* ContentView.swift */,
-				1A0000010000000000000027 /* WindowBoardMainViews.swift */,
+				1A000001000000000000002C /* BoardSidebarViews.swift */,
+				1A000001000000000000002E /* BoardDetailViews.swift */,
+				1A0000010000000000000039 /* BoardCardViews.swift */,
+				1A0000010000000000000042 /* BoardSupportingViews.swift */,
+				1A0000010000000000000044 /* BoardToolbarControls.swift */,
+				1B000001000000000000000E /* BoardAppIconViews.swift */,
+				1B0000010000000000000010 /* BoardCardInteractionSupport.swift */,
 				1A000001000000000000001E /* SettingsView.swift */,
 				1A0000010000000000000021 /* StatusMenuView.swift */,
 			);
@@ -120,6 +155,8 @@
 			isa = PBXGroup;
 			children = (
 				1A0000010000000000000013 /* WindowInfo.swift */,
+				1A0000010000000000000029 /* WindowMatching.swift */,
+				1B0000010000000000000012 /* WorkspaceWindowResolver.swift */,
 				1A0000010000000000000017 /* FollowMode.swift */,
 				1A0000010000000000000018 /* PositionUpdateMode.swift */,
 				1A0000010000000000000019 /* AutoFrontMode.swift */,
@@ -177,6 +214,25 @@
 			productReference = 1A0000010000000000000010 /* WindowBoard.app */;
 			productType = "com.apple.product-type.application";
 		};
+		1B0000010000000000000005 /* WindowBoardTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 1B0000010000000000000006 /* Build configuration list for PBXNativeTarget "WindowBoardTests" */;
+			buildPhases = (
+				1B0000010000000000000007 /* Sources */,
+				1B0000010000000000000008 /* Frameworks */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				1B0000010000000000000009 /* PBXTargetDependency */,
+			);
+			name = WindowBoardTests;
+			packageProductDependencies = (
+			);
+			productName = WindowBoardTests;
+			productReference = 1B0000010000000000000003 /* WindowBoardTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -207,9 +263,28 @@
 			projectRoot = "";
 			targets = (
 				1A0000010000000000000040 /* WindowBoard */,
+				1B0000010000000000000005 /* WindowBoardTests */,
 			);
 		};
 /* End PBXProject section */
+
+/* Begin PBXContainerItemProxy section */
+		1B000001000000000000000A /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 1A0000010000000000000070 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 1A0000010000000000000040;
+			remoteInfo = WindowBoard;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXTargetDependency section */
+		1B0000010000000000000009 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 1A0000010000000000000040 /* WindowBoard */;
+			targetProxy = 1B000001000000000000000A /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
 
 /* Begin PBXResourcesBuildPhase section */
 		1A0000010000000000000061 /* Resources */ = {
@@ -220,6 +295,16 @@
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXResourcesBuildPhase section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		1B0000010000000000000008 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
 
 /* Begin PBXSourcesBuildPhase section */
 		1A0000010000000000000060 /* Sources */ = {
@@ -244,7 +329,23 @@
 				1A0000010000000000000022 /* StatusMenuView.swift in Sources */,
 				1A0000010000000000000024 /* WindowBoardStatusItemController.swift in Sources */,
 				1A0000010000000000000026 /* WorkspaceSessionController.swift in Sources */,
-				1A0000010000000000000028 /* WindowBoardMainViews.swift in Sources */,
+				1A000001000000000000002A /* WindowMatching.swift in Sources */,
+				1A000001000000000000002B /* BoardSidebarViews.swift in Sources */,
+				1A000001000000000000002D /* BoardDetailViews.swift in Sources */,
+				1A000001000000000000002F /* BoardCardViews.swift in Sources */,
+				1A0000010000000000000041 /* BoardSupportingViews.swift in Sources */,
+				1A0000010000000000000043 /* BoardToolbarControls.swift in Sources */,
+				1B000001000000000000000D /* BoardAppIconViews.swift in Sources */,
+				1B000001000000000000000F /* BoardCardInteractionSupport.swift in Sources */,
+				1B0000010000000000000011 /* WorkspaceWindowResolver.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		1B0000010000000000000007 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1B0000010000000000000001 /* WindowMatchingTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -423,6 +524,34 @@
 			};
 			name = Release;
 		};
+		1B000001000000000000000B /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.local.WindowBoardTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WindowBoard.app/Contents/MacOS/WindowBoard";
+				TEST_TARGET_NAME = WindowBoard;
+			};
+			name = Debug;
+		};
+		1B000001000000000000000C /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGNING_ALLOWED = NO;
+				GENERATE_INFOPLIST_FILE = YES;
+				PRODUCT_BUNDLE_IDENTIFIER = "com.local.WindowBoardTests";
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/WindowBoard.app/Contents/MacOS/WindowBoard";
+				TEST_TARGET_NAME = WindowBoard;
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -440,6 +569,15 @@
 			buildConfigurations = (
 				1A0000010000000000000080 /* Debug */,
 				1A0000010000000000000081 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		1B0000010000000000000006 /* Build configuration list for PBXNativeTarget "WindowBoardTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				1B000001000000000000000B /* Debug */,
+				1B000001000000000000000C /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
