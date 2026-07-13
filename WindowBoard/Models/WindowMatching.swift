@@ -110,40 +110,4 @@ enum WindowMatching {
         }
     }
 
-    static func matchesNeverMinimizeWindow(
-        bundleIdentifier: String?,
-        appName: String,
-        title: String,
-        documentURL: URL?,
-        windowNumber: CGWindowID?,
-        candidate: WindowInfo
-    ) -> Bool {
-        if let windowNumber,
-           let candidateWindowNumber = candidate.windowNumber,
-           let bundleIdentifier,
-           let candidateBundleIdentifier = candidate.bundleIdentifier,
-           bundleIdentifier == candidateBundleIdentifier,
-           windowNumber == candidateWindowNumber {
-            return true
-        }
-
-        if let documentURL,
-           let candidateDocumentURL = candidate.documentURL,
-           documentURL == candidateDocumentURL {
-            return true
-        }
-
-        let trimmedTitle = title.trimmingCharacters(in: .whitespacesAndNewlines)
-        let candidateTitle = candidate.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedTitle.isEmpty, !candidateTitle.isEmpty, trimmedTitle == candidateTitle else {
-            return false
-        }
-
-        if let bundleIdentifier,
-           let candidateBundleIdentifier = candidate.bundleIdentifier {
-            return bundleIdentifier == candidateBundleIdentifier
-        }
-
-        return appName == candidate.appName
-    }
 }

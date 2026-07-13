@@ -74,6 +74,7 @@ struct ContentView: View {
     private let moveScheduler = WindowMoveScheduler.shared
     @ObservedObject private var appState: WindowBoardAppState
     @ObservedObject private var workspaceStore: WorkspaceStore
+    @ObservedObject private var boardCompositionStore: BoardCompositionStore
     @ObservedObject private var session: WorkspaceSessionController
 
     @StateObject private var boardMotion = BoardMotionState()
@@ -97,13 +98,11 @@ struct ContentView: View {
     @State private var workspaceStatusTextInput = ""
     @State private var isWorkspaceSettingsPresented = false
     @State private var recentlyAddedAttachedWindowID: AttachedWindow.ID?
-    @State private var recentlyAddedNeverMinimizeWindowID: NeverMinimizeWindow.ID?
     @State private var workspaceCardTransitionToken: UUID?
     @State private var detachingAttachedWindowIDs: Set<AttachedWindow.ID> = []
-    @State private var detachingNeverMinimizeWindowIDs: Set<NeverMinimizeWindow.ID> = []
     @State private var detachAnimationTasks: [AttachedWindow.ID: Task<Void, Never>] = [:]
-    @State private var permanentDetachAnimationTasks: [NeverMinimizeWindow.ID: Task<Void, Never>] = [:]
     @State private var applicationWindowRefreshTasksByPID: [pid_t: Task<Void, Never>] = [:]
+    @State private var compositionStatusAfterReload: String?
 
     init(
         appState: WindowBoardAppState,
@@ -120,6 +119,7 @@ struct ContentView: View {
         )
         _appState = ObservedObject(initialValue: appState)
         _workspaceStore = ObservedObject(initialValue: appState.workspaceStore)
+        _boardCompositionStore = ObservedObject(initialValue: appState.boardCompositionStore)
         _session = ObservedObject(initialValue: appState.session)
     }
 
@@ -295,6 +295,11 @@ struct ContentView: View {
         WorkspaceSidebarView(
             workspaces: workspaceStore.workspaces,
             activeWorkspaceID: session.activeWorkspaceID,
+            includedWorkspaceIDs: Set(
+                session.activeWorkspaceID.map { boardCompositionStore.displayedRootBoardIDs(for: $0) } ?? []
+            ),
+            includeBoard: { _ = includeBoardInCurrentBoard($0) },
+            excludeBoard: excludeBoardFromCurrentBoard,
             showBoardSettings: showBoardSettingsFromSidebar,
             restoreBoardLayout: restoreBoardLayoutFromSidebar,
             removeBoardWindows: removeBoardWindowsFromSidebar,
@@ -305,6 +310,7 @@ struct ContentView: View {
 
     private var workspaceDetail: some View {
         WorkspaceDetailView(
+            primaryBoardID: session.activeWorkspaceID,
             attachedWindows: session.attachedWindows,
             isLoadingWorkspace: session.isLoadingWorkspace,
             isMinimizingUnattached: session.isMinimizingUnattached,
@@ -321,37 +327,97 @@ struct ContentView: View {
                 detachAttached: detachWindowFromMainView(id:),
                 bringForwardAttached: { bringAttachedWindowToFrontFromMainView($0) },
                 bringAndMoveAttachedBelowCard: bringAndMoveAttachedWindowBelowCard(_:cursorScreenLocation:),
-                addNeverMinimizeWindow: addNeverMinimizeWindow(_:),
-                moveAttachedWindowToPermanentBoard: moveAttachedWindowToPermanentBoard(id:),
-                rejectPermanentBoardDrop: rejectPermanentBoardDrop,
-                movePermanentWindowToMainBoard: movePermanentWindowToMainBoard(id:),
                 rejectMainBoardDrop: rejectMainBoardDrop,
-                addNeverMinimizeRunningWindow: addNeverMinimizeWindow(_:),
-                removeNeverMinimizeWindow: removeNeverMinimizeWindowFromCard(id:),
-                clearRecentlyAddedNeverMinimizeWindowID: { recentlyAddedNeverMinimizeWindowID = nil },
-                showNeverMinimizeWindow: showNeverMinimizeWindow(_:),
-                showAndMoveNeverMinimizeWindowBelowCard: bringAndMovePermanentWindowBelowCard(_:cursorScreenLocation:)
+                includeRootBoard: includeBoardInCurrentBoard,
+                excludeRootBoard: excludeBoardFromCurrentBoard,
+                includeChildBoard: includeChildBoard(_:in:),
+                excludeChildBoard: excludeChildBoard(_:from:),
+                rejectBoardDrop: rejectBoardDrop
             ),
             recentlyAddedWindowID: recentlyAddedAttachedWindowID,
             workspaceTransitionToken: workspaceCardTransitionToken,
             detachingAttachedWindowIDs: detachingAttachedWindowIDs,
-            isNeverMinimizedWindow: { appState.isNeverMinimized(window: $0) },
-            neverMinimizeWindows: appState.neverMinimizeWindows,
-            runningNeverMinimizeWindowCandidates: runningNeverMinimizeWindowCandidates,
-            recentlyAddedNeverMinimizeWindowID: recentlyAddedNeverMinimizeWindowID,
-            detachingNeverMinimizeWindowIDs: detachingNeverMinimizeWindowIDs,
-            liveNeverMinimizeWindow: liveNeverMinimizeWindow(for:)
+            composition: session.currentBoardComposition,
+            sourceBoard: sourceBoard(for:)
         )
     }
 
-    private var runningNeverMinimizeWindowCandidates: [WindowInfo] {
-        windows
-            .filter { window in
-                !appState.isNeverMinimized(window: window)
-            }
-            .sorted {
-                $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-            }
+    private func sourceBoard(for attachmentID: AttachedWindow.ID) -> BoardCardSource? {
+        guard let ownerID = session.attachmentOwnerBoardIDs[attachmentID],
+              ownerID != session.activeWorkspaceID,
+              let board = workspaceStore.workspaces.first(where: { $0.id == ownerID }) else {
+            return nil
+        }
+
+        return BoardCardSource(name: board.name, isPermanent: board.isDefault)
+    }
+
+    @discardableResult
+    private func includeBoardInCurrentBoard(_ boardID: SavedWorkspace.ID) -> BoardCompositionMutationResult {
+        guard let primaryID = session.activeWorkspaceID else { return .missingBoard }
+        let availableBoardIDs = Set(workspaceStore.workspaces.map(\.id))
+        let result = isPermanentBoard(boardID)
+            ? boardCompositionStore.includeGlobalRoot(boardID, availableBoardIDs: availableBoardIDs)
+            : boardCompositionStore.includeRoot(boardID, for: primaryID, availableBoardIDs: availableBoardIDs)
+        session.statusMessage = result.userMessage
+        if result == .inserted {
+            compositionStatusAfterReload = result.userMessage
+            reloadCurrentBoardComposition()
+        }
+        return result
+    }
+
+    private func excludeBoardFromCurrentBoard(_ boardID: SavedWorkspace.ID) {
+        guard let primaryID = session.activeWorkspaceID else { return }
+        if isPermanentBoard(boardID) {
+            _ = boardCompositionStore.excludeGlobalRoot(boardID)
+        } else {
+            _ = boardCompositionStore.excludeRoot(boardID, for: primaryID)
+        }
+        compositionStatusAfterReload = "Board removed from Current Board."
+        reloadCurrentBoardComposition()
+    }
+
+    private func includeChildBoard(
+        _ childID: SavedWorkspace.ID,
+        in parentID: SavedWorkspace.ID
+    ) -> BoardCompositionMutationResult {
+        let availableBoardIDs = Set(workspaceStore.workspaces.map(\.id))
+        let result = isPermanentBoard(childID)
+            ? boardCompositionStore.includeGlobalRoot(childID, availableBoardIDs: availableBoardIDs)
+            : boardCompositionStore.includeChild(childID, in: parentID, availableBoardIDs: availableBoardIDs)
+        session.statusMessage = result.userMessage
+        if result == .inserted {
+            compositionStatusAfterReload = result.userMessage
+            reloadCurrentBoardComposition()
+        }
+        return result
+    }
+
+    private func isPermanentBoard(_ boardID: SavedWorkspace.ID) -> Bool {
+        workspaceStore.workspaces.first(where: { $0.id == boardID })?.isDefault == true
+    }
+
+    private func excludeChildBoard(_ childID: SavedWorkspace.ID, from parentID: SavedWorkspace.ID) {
+        let result = boardCompositionStore.excludeChild(childID, from: parentID)
+        session.statusMessage = result.userMessage
+        if result == .removed {
+            compositionStatusAfterReload = result.userMessage
+            reloadCurrentBoardComposition()
+        }
+    }
+
+    private func rejectBoardDrop() {
+        session.statusMessage = "Drag a board from the sidebar to include it."
+    }
+
+    private func reloadCurrentBoardComposition() {
+        guard let activeWorkspaceID = session.activeWorkspaceID,
+              !session.isLoadingWorkspace else {
+            return
+        }
+
+        loadWorkspace(id: activeWorkspaceID, shouldBringBoardToFrontAfterLoad: false)
     }
 
     private var recoverableAttachedWindows: [AttachedWindow] {
@@ -426,131 +492,8 @@ struct ContentView: View {
         bringAttachedWindowsToFrontSmoothly([attachedWindow], updateStatus: true)
     }
 
-    private func addNeverMinimizeWindow(_ window: WindowInfo) {
-        let existingIDs = Set(appState.neverMinimizeWindows.map(\.id))
-        withAnimation(.spring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.06)) {
-            appState.addNeverMinimizeWindow(window)
-        }
-        recentlyAddedNeverMinimizeWindowID = appState.neverMinimizeWindows.first {
-            !existingIDs.contains($0.id) && $0.matches(window)
-        }?.id
-        session.statusMessage = "Window added to Permanent Board."
-    }
-
-    private func removeNeverMinimizeWindow(id: NeverMinimizeWindow.ID) {
-        permanentDetachAnimationTasks[id]?.cancel()
-        permanentDetachAnimationTasks[id] = nil
-        detachingNeverMinimizeWindowIDs.remove(id)
-        withAnimation(.spring(response: 0.24, dampingFraction: 0.86, blendDuration: 0.04)) {
-            appState.removeNeverMinimizeWindow(id: id)
-        }
-        session.statusMessage = "Window removed from Permanent Board."
-    }
-
-    private func removeNeverMinimizeWindowFromCard(id: NeverMinimizeWindow.ID) {
-        scheduleNeverMinimizeWindowRemoval(id: id, finalStatus: "Window removed from Permanent Board.")
-    }
-
-    private func scheduleNeverMinimizeWindowRemoval(id: NeverMinimizeWindow.ID, finalStatus: String) {
-        guard appState.neverMinimizeWindows.contains(where: { $0.id == id }),
-              !detachingNeverMinimizeWindowIDs.contains(id) else {
-            return
-        }
-
-        permanentDetachAnimationTasks[id]?.cancel()
-        detachingNeverMinimizeWindowIDs.insert(id)
-
-        permanentDetachAnimationTasks[id] = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(260))
-            guard !Task.isCancelled else {
-                return
-            }
-
-            removeNeverMinimizeWindow(id: id)
-            session.statusMessage = finalStatus
-            permanentDetachAnimationTasks[id] = nil
-        }
-    }
-
-    private func moveAttachedWindowToPermanentBoard(id: AttachedWindow.ID) {
-        guard let attachedWindow = session.attachedWindows.first(where: { $0.id == id }) else {
-            session.statusMessage = "That card is no longer on the Main Board."
-            return
-        }
-
-        guard attachedDisplayState(for: attachedWindow) == .available,
-              attachedWindow.window.pid != 0 else {
-            session.statusMessage = "Only available windows can be moved to Permanent Board."
-            return
-        }
-
-        if !appState.isNeverMinimized(window: attachedWindow.window) {
-            let existingIDs = Set(appState.neverMinimizeWindows.map(\.id))
-            withAnimation(.spring(response: 0.32, dampingFraction: 0.88, blendDuration: 0.06)) {
-                appState.addNeverMinimizeWindow(attachedWindow.window)
-            }
-            recentlyAddedNeverMinimizeWindowID = appState.neverMinimizeWindows.first {
-                !existingIDs.contains($0.id) && $0.matches(attachedWindow.window)
-            }?.id
-        }
-
-        detachWindowFromMainView(id: id)
-        session.statusMessage = "Moved window to Permanent Board."
-    }
-
-    private func rejectPermanentBoardDrop() {
-        session.statusMessage = "That card cannot be moved to Permanent Board."
-    }
-
-    private func movePermanentWindowToMainBoard(id: NeverMinimizeWindow.ID) {
-        guard let permanentWindow = appState.neverMinimizeWindows.first(where: { $0.id == id }) else {
-            session.statusMessage = "That card is no longer on the Permanent Board."
-            return
-        }
-
-        guard let window = liveNeverMinimizeWindow(for: permanentWindow) else {
-            session.statusMessage = "Only available permanent windows can be moved to Main Board."
-            return
-        }
-
-        guard let boardOrigin = boardMotion.currentOrigin else {
-            session.statusMessage = "Window Board position is not available."
-            return
-        }
-
-        guard attachWindow(
-            window,
-            boardOrigin: boardOrigin,
-            insertion: .end,
-            markRecentlyAdded: true,
-            bringToFrontAfterAttach: false
-        ) else {
-            return
-        }
-
-        scheduleNeverMinimizeWindowRemoval(id: id, finalStatus: "Moved window to Main Board.")
-        session.statusMessage = "Moved window to Main Board."
-    }
-
     private func rejectMainBoardDrop() {
         session.statusMessage = "That card cannot be moved to Main Board."
-    }
-
-    private func liveNeverMinimizeWindow(for window: NeverMinimizeWindow) -> WindowInfo? {
-        windows.first { window.matches($0) }
-    }
-
-    private func showNeverMinimizeWindow(_ window: WindowInfo) {
-        session.statusMessage = "Bringing \(window.displayName) to front..."
-        let service = service
-
-        Task.detached(priority: .utility) {
-            service.raise(window)
-
-            await MainActor.run {
-                session.statusMessage = "Brought \(window.displayName) to front."
-            }
-        }
     }
 
     private func bringAndMoveAttachedWindowBelowCard(_ attachedWindow: AttachedWindow, cursorScreenLocation: CGPoint) {
@@ -560,10 +503,6 @@ struct ContentView: View {
         }
 
         bringAndMoveWindowBelowCursor(attachedWindow.window, cursorScreenLocation: cursorScreenLocation)
-    }
-
-    private func bringAndMovePermanentWindowBelowCard(_ window: WindowInfo, cursorScreenLocation: CGPoint) {
-        bringAndMoveWindowBelowCursor(window, cursorScreenLocation: cursorScreenLocation)
     }
 
     private func bringAndMoveWindowBelowCursor(_ window: WindowInfo, cursorScreenLocation: CGPoint) {
@@ -936,17 +875,6 @@ struct ContentView: View {
             return true
         }
 
-        if appState.neverMinimizeWindows.contains(where: { permanentWindow in
-            if let applicationBundleIdentifier = application.bundleIdentifier,
-               permanentWindow.bundleIdentifier == applicationBundleIdentifier {
-                return true
-            }
-
-            return permanentWindow.appName == application.localizedName
-        }) {
-            return true
-        }
-
         return false
     }
 
@@ -1081,7 +1009,7 @@ struct ContentView: View {
     }
 
     private func createWorkspace() {
-        session.createWorkspace(boardOrigin: boardMotion.currentOrigin)
+        let workspace = session.createWorkspace(boardOrigin: boardMotion.currentOrigin)
         attachedWindowFailureCounts.removeAll()
         recoveryIssueByAttachmentID.removeAll()
         recoveryRevisionByAttachmentID.removeAll()
@@ -1089,6 +1017,7 @@ struct ContentView: View {
         minimizedAttachedWindowIDs.removeAll()
         workspaceStatusTextInput = ""
         followCoordinator.cancelAll()
+        loadWorkspace(id: workspace.id, shouldBringBoardToFrontAfterLoad: false)
     }
 
     private func overwriteSelectedWorkspace() {
@@ -1167,6 +1096,10 @@ struct ContentView: View {
                 recoveryRevisionByAttachmentID.removeAll()
                 activePositionReadIDs.removeAll()
                 followCoordinator.cancelRelease()
+                if let compositionStatusAfterReload {
+                    session.statusMessage = compositionStatusAfterReload
+                    self.compositionStatusAfterReload = nil
+                }
                 if autoFrontMode == .off {
                     if shouldBringBoardToFrontAfterLoad && shouldBringBoardToFront {
                         bringBoardWindowToFront()
@@ -1219,7 +1152,18 @@ struct ContentView: View {
     }
 
     private func deleteSelectedWorkspace() {
+        let deletedWorkspaceID = session.selectedWorkspaceID
+        let activeWorkspaceID = session.activeWorkspaceID
+        let removedIncludedBoard = deletedWorkspaceID.map { deletedID in
+            boardCompositionStore.data.rootBoardIDsByPrimaryID.values.contains { $0.contains(deletedID) }
+                || boardCompositionStore.data.childBoardIDsByBoardID.values.contains { $0.contains(deletedID) }
+        } ?? false
         session.deleteSelectedWorkspace()
+
+        if removedIncludedBoard, deletedWorkspaceID != activeWorkspaceID {
+            compositionStatusAfterReload = "Board removed from Current Board."
+            reloadCurrentBoardComposition()
+        }
     }
 
     private func rememberActivatedApplication(from notification: Notification) {
@@ -1363,7 +1307,11 @@ struct ContentView: View {
 
         Task.detached(priority: .utility) {
             let result = Result {
-                try windowServiceFactory().position(of: attachedWindow.window)
+                let service = windowServiceFactory()
+                return (
+                    position: try service.position(of: attachedWindow.window),
+                    size: try? service.size(of: attachedWindow.window)
+                )
             }
 
             await MainActor.run {
@@ -1382,15 +1330,19 @@ struct ContentView: View {
                 }
 
                 switch result {
-                case let .success(currentWindowOrigin):
+                case let .success(layout):
+                    let currentWindowOrigin = layout.position
                     session.attachedWindows[index].lastBoardOrigin = boardOrigin
                     session.attachedWindows[index].lastWindowOrigin = currentWindowOrigin
                     session.attachedWindows[index].lastAppliedOrigin = currentWindowOrigin
                     session.attachedWindows[index].pendingReleaseOrigin = nil
                     clearAttachedWindowAccessFailure(for: id)
                     markAttachedWindowAvailable(id)
+                    _ = session.persistActiveWorkspaceSnapshot(
+                        sizeByAttachmentID: layout.size.map { [id: $0] } ?? [:]
+                    )
                     if showStatus {
-                        session.statusMessage = "Updated position for \(attachedWindow.window.displayName)."
+                        session.statusMessage = "Saved layout for \(attachedWindow.window.displayName)."
                     }
                 case let .failure(error):
                     handleAttachedWindowAccessFailure(for: id, error: error)

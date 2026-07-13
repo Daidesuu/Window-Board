@@ -18,8 +18,8 @@ It does not embed other apps. External windows remain regular macOS windows, and
 - Optional Keep Window Board On Top behavior
 - Reconnect closed, minimized, or stale windows where macOS/app behavior allows it
 - Main Board for windows that belong only to the selected board
-- Permanent Board for windows that should be protected across all boards
-- Move cards between Main Board and Permanent Board with drag and drop
+- Permanent Board as a fixed reusable board that can be included in the current board
+- Combine multiple saved boards by dragging them from the sidebar into the current board
 - Bring a window forward from its card
 - Double-click a card's icon area to bring the window forward and place it below the cursor
 - Save an individual card's current position and size as its layout
@@ -72,8 +72,8 @@ dist/WindowBoard.app
 3. Use the Add Window card or toolbar `Attach Window` to pin the frontmost external window.
 4. Use the board sidebar to switch between saved boards.
 5. Use `Board Settings` to save, overwrite, rename, delete, or configure the selected board.
-6. Drag a Main Board card to Permanent Board when the window should be protected across all boards.
-7. Drag a Permanent Board card back to Main Board when it should belong only to the selected board.
+6. Drag another board from the sidebar into the current board when you want to display both window sets together.
+7. Include Permanent Board when its windows should remain part of the current composition while switching boards.
 8. Use `Save Layout` on a card when you want to persist that window's current position and size.
 9. Use `Find or Reopen` or `Use Front Window` when a saved window cannot be matched automatically.
 
@@ -82,17 +82,16 @@ dist/WindowBoard.app
 The main window is a card board.
 
 - Sidebar: saved boards, active board indicator, Status Item glyph, and `New Board`.
-- Header: selected board name, pinned count, attention count, `Recover Missing`, `Restore Layout`, and `Board Settings`.
-- Main Board: windows attached only to the selected board, plus an Add Window card.
-- Permanent Board: windows protected across all boards, plus an Add to Permanent Board card.
-- Status footer: current loading, minimize, restore, reconnect, and feedback messages.
+- Main Board: windows from the selected board and any boards included in its current composition, plus an Add Window card.
+- Included Boards: the boards currently combined with the selected board and controls for removing them from the composition.
+- Processing overlay: temporary loading, minimize, and restore progress when work is active.
 
 Toolbar actions:
 
 - `Refresh`: refresh the external window list.
 - `Attach Window`: pin the current frontmost external window.
 - `Focus Board`: bring the selected board's windows forward.
-- `Minimize Others`: minimize windows not on the current board or Permanent Board.
+- `Minimize Others`: minimize windows not attached to the current board composition.
 - `Restore Windows`: restore windows minimized by Window Board.
 
 Board settings:
@@ -109,7 +108,7 @@ Card actions:
 
 - Click the icon area to bring a window forward.
 - Double-click the icon area to bring a window forward and move it below the cursor.
-- Use the drag handle to move a card between Main Board and Permanent Board.
+- Drag a board from the sidebar into the current board to include its windows.
 - `Save Layout`: save that card's current position and size.
 - `Find or Reopen`: try to recover an unavailable or minimized window.
 - `Use Front Window`: reconnect a failed match to the current front window when it belongs to the same app.
@@ -148,17 +147,13 @@ Follow behavior:
 
 ## Permanent Board
 
-Permanent Board is global. It is not saved per board.
+Permanent Board is the fixed, non-deletable board used for windows that should be reusable across board compositions. It is no longer a separate global minimize-exclusion list.
 
-Windows on Permanent Board are protected from `Minimize Others` and from automatic minimize when switching boards. Permanent Board is window-based rather than app-based, so adding one window should not protect every window from the same app.
+Permanent Board affects the current board only when it is included in that board's composition. Its windows are then handled like other attached windows, including protection from `Minimize Others` while included.
 
 Because macOS window identity can change after close/reopen, matching is best-effort using available window metadata such as app identity, title, document URL, process ID, and window number.
 
-Permanent Board can be managed from:
-
-- the Permanent Board section in the main window
-- the `Add to Permanent Board` action on Main Board cards
-- the Settings window
+Permanent Board can be selected normally from the sidebar or dragged into the current board. It cannot be renamed or deleted. Legacy `Never Minimize Windows` registrations are migrated into Permanent Board once and the old setting is removed.
 
 ## Status Item
 

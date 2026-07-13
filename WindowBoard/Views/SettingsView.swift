@@ -31,45 +31,10 @@ struct SettingsView: View {
                 )
             }
 
-            Section("Permanent Board") {
-                if appState.neverMinimizeWindows.isEmpty {
-                    Text("No windows added.")
-                        .foregroundStyle(.secondary)
-                } else {
-                    ForEach(appState.neverMinimizeWindows) { window in
-                        HStack(alignment: .firstTextBaseline, spacing: 12) {
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(window.displayName)
-                                    .font(.body)
-                                Text(windowIdentityText(for: window))
-                                    .font(.caption)
-                                    .foregroundStyle(.secondary)
-                                    .textSelection(.enabled)
-                            }
-
-                            Spacer(minLength: 16)
-
-                            Button("Remove") {
-                                appState.removeNeverMinimizeWindow(id: window.id)
-                            }
-                            .buttonStyle(.borderless)
-                        }
-                    }
-                }
-            }
         }
         .formStyle(.grouped)
         .padding(20)
         .frame(width: 460)
-    }
-
-    private func windowIdentityText(for window: NeverMinimizeWindow) -> String {
-        let title = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !title.isEmpty {
-            return "\(window.appName) - \(title)"
-        }
-
-        return window.bundleIdentifier ?? window.appName
     }
 
     private func modePicker<Value: Identifiable & Hashable>(

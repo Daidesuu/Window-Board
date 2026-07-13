@@ -1,5 +1,10 @@
 import SwiftUI
 
+struct BoardCardSource: Equatable {
+    let name: String
+    let isPermanent: Bool
+}
+
 extension View {
     func interactiveCardMotion(
         cornerRadius: CGFloat = 16,
@@ -23,36 +28,12 @@ extension View {
 }
 
 enum DragPayload {
-    private static let mainPrefix = "main:"
-    private static let permanentPrefix = "permanent:"
+    private static let boardPrefix = "board:"
 
-    static func mainBoardWindow(_ id: AttachedWindow.ID) -> String { "\(mainPrefix)\(id.uuidString)" }
-    static func permanentBoardWindow(_ id: NeverMinimizeWindow.ID) -> String { "\(permanentPrefix)\(id)" }
+    static func board(_ id: SavedWorkspace.ID) -> String { "\(boardPrefix)\(id.uuidString)" }
 
-    static func mainBoardWindowID(from payload: String) -> AttachedWindow.ID? {
-        guard payload.hasPrefix(mainPrefix) else { return nil }
-        return UUID(uuidString: String(payload.dropFirst(mainPrefix.count)))
-    }
-
-    static func permanentBoardWindowID(from payload: String) -> NeverMinimizeWindow.ID? {
-        guard payload.hasPrefix(permanentPrefix) else { return nil }
-        return String(payload.dropFirst(permanentPrefix.count))
-    }
-}
-
-struct CardDragHandle: View {
-    let payload: String?
-
-    var body: some View {
-        if let payload {
-            Image(systemName: "arrow.up.and.down.and.arrow.left.and.right")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 26, height: 22)
-                .contentShape(Rectangle())
-                .draggable(payload)
-                .help("Drag to move between boards")
-                .accessibilityLabel("Drag to move between boards")
-        }
+    static func boardID(from payload: String) -> SavedWorkspace.ID? {
+        guard payload.hasPrefix(boardPrefix) else { return nil }
+        return UUID(uuidString: String(payload.dropFirst(boardPrefix.count)))
     }
 }

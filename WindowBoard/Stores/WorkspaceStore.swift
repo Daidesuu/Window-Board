@@ -1,7 +1,7 @@
 import Foundation
 
 final class WorkspaceStore: ObservableObject {
-    static let defaultWorkspaceName = "Default"
+    static let defaultWorkspaceName = "Permanent Board"
 
     @Published private(set) var workspaces: [SavedWorkspace] = []
 

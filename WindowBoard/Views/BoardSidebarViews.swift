@@ -66,6 +66,9 @@ struct WorkspaceSidebarView: View {
 
     let workspaces: [SavedWorkspace]
     let activeWorkspaceID: SavedWorkspace.ID?
+    let includedWorkspaceIDs: Set<SavedWorkspace.ID>
+    let includeBoard: (SavedWorkspace.ID) -> Void
+    let excludeBoard: (SavedWorkspace.ID) -> Void
     let showBoardSettings: (SavedWorkspace) -> Void
     let restoreBoardLayout: (SavedWorkspace) -> Void
     let removeBoardWindows: (SavedWorkspace) -> Void
@@ -83,11 +86,32 @@ struct WorkspaceSidebarView: View {
                     ForEach(workspaces) { workspace in
                         WorkspaceSidebarRow(
                             workspace: workspace,
-                            isActive: workspace.id == activeWorkspaceID
+                            isActive: workspace.id == activeWorkspaceID,
+                            isIncluded: includedWorkspaceIDs.contains(workspace.id)
                         )
                         .tag(SavedWorkspace.ID?.some(workspace.id))
+                        .draggable(DragPayload.board(workspace.id))
                         .help(workspace.displayName)
                         .contextMenu {
+                            if workspace.id == activeWorkspaceID {
+                                Button("Current Board") {}
+                                    .disabled(true)
+                            } else if includedWorkspaceIDs.contains(workspace.id) {
+                                Button {
+                                    excludeBoard(workspace.id)
+                                } label: {
+                                    Label("Remove from Current Board", systemImage: "rectangle.badge.minus")
+                                }
+                            } else {
+                                Button {
+                                    includeBoard(workspace.id)
+                                } label: {
+                                    Label("Include in Current Board", systemImage: "rectangle.badge.plus")
+                                }
+                            }
+
+                            Divider()
+
                             Button {
                                 showBoardSettings(workspace)
                             } label: {
@@ -131,6 +155,7 @@ struct WorkspaceSidebarView: View {
 private struct WorkspaceSidebarRow: View {
     let workspace: SavedWorkspace
     let isActive: Bool
+    let isIncluded: Bool
 
     var body: some View {
         HStack(spacing: 10) {
@@ -155,6 +180,11 @@ private struct WorkspaceSidebarRow: View {
                 Image(systemName: "checkmark.circle.fill")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+            } else if isIncluded {
+                Image(systemName: "rectangle.stack.fill")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .help("Included in Current Board")
             }
         }
         .padding(.horizontal, 8)

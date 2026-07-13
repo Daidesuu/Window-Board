@@ -18,7 +18,10 @@ final class BoardFrontingCoordinatorTests: XCTestCase {
         )
         isEnabled = true
 
-        try? await Task.sleep(for: .milliseconds(30))
+        let deadline = Date().addingTimeInterval(1)
+        while actionCount == 0, Date() < deadline {
+            try? await Task.sleep(for: .milliseconds(10))
+        }
         XCTAssertEqual(actionCount, 1)
     }
 

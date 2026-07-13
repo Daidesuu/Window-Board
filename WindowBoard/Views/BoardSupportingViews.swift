@@ -1,5 +1,32 @@
 import SwiftUI
 
+struct BoardSectionHeader: View {
+    let title: String
+    let count: Int
+    let systemImage: String
+
+    var body: some View {
+        HStack(spacing: 7) {
+            Image(systemName: systemImage)
+                .font(.caption)
+
+            Text(title)
+                .font(.subheadline.weight(.semibold))
+
+            Text("\(count)")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(.quaternary)
+                .clipShape(Capsule())
+
+            Spacer()
+        }
+        .foregroundStyle(.secondary)
+    }
+}
+
 struct WorkspaceSettingsControls: View {
     let selectedWorkspace: SavedWorkspace?
     let workspaceName: Binding<String>

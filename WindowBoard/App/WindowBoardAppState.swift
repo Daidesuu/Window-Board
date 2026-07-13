@@ -10,70 +10,17 @@ enum WindowBoardStatusCommand {
     case restoreMinimized
 }
 
-struct NeverMinimizeWindow: Codable, Identifiable, Hashable {
+private struct LegacyNeverMinimizeWindow: Decodable {
     let bundleIdentifier: String?
     let appName: String
     let title: String
     let documentURLString: String?
-    let windowNumber: CGWindowID?
     let displayName: String
-
-    var id: String {
-        if let windowNumber {
-            return "\(appName)-window-\(windowNumber)"
-        }
-
-        if let documentURLString {
-            return "\(appName)-document-\(documentURLString)"
-        }
-
-        let appIdentity = bundleIdentifier ?? appName
-        return "\(appIdentity)-title-\(title)"
-    }
-
-    var documentURL: URL? {
-        documentURLString.flatMap(URL.init(string:))
-    }
-
-    init(window: WindowInfo) {
-        bundleIdentifier = window.bundleIdentifier
-        appName = window.appName
-        title = window.title
-        documentURLString = window.documentURL?.absoluteString
-        windowNumber = window.windowNumber
-        displayName = window.displayName
-    }
-
-    init(
-        bundleIdentifier: String?,
-        appName: String,
-        title: String,
-        documentURLString: String?,
-        windowNumber: CGWindowID?,
-        displayName: String
-    ) {
-        self.bundleIdentifier = bundleIdentifier
-        self.appName = appName
-        self.title = title
-        self.documentURLString = documentURLString
-        self.windowNumber = windowNumber
-        self.displayName = displayName
-    }
-
-    func matches(_ window: WindowInfo) -> Bool {
-        WindowMatching.matchesNeverMinimizeWindow(
-            bundleIdentifier: bundleIdentifier,
-            appName: appName,
-            title: title,
-            documentURL: documentURL,
-            windowNumber: windowNumber,
-            candidate: window
-        )
-    }
 }
 
 final class WindowBoardAppState: ObservableObject {
     let workspaceStore: WorkspaceStore
+    let boardCompositionStore: BoardCompositionStore
     let session: WorkspaceSessionController
     let commandSubject = PassthroughSubject<WindowBoardStatusCommand, Never>()
     weak var mainWindow: NSWindow?
@@ -107,8 +54,6 @@ final class WindowBoardAppState: ObservableObject {
     @Published private(set) var positionUpdateMode: PositionUpdateMode
     @Published private(set) var autoFrontMode: AutoFrontMode
     @Published private(set) var boardClickAction: BoardClickAction
-    @Published private(set) var neverMinimizeWindows: [NeverMinimizeWindow]
-
     private let defaults: UserDefaults
     private let neverMinimizeWindowsKey = "neverMinimizeWindows"
 
@@ -116,7 +61,29 @@ final class WindowBoardAppState: ObservableObject {
         self.defaults = defaults
         let workspaceStore = WorkspaceStore(defaults: defaults)
         self.workspaceStore = workspaceStore
-        self.session = WorkspaceSessionController(workspaceStore: workspaceStore, defaults: defaults)
+        let availableBoardIDs = Set(workspaceStore.workspaces.map(\.id))
+        let storedActiveBoardID = defaults.string(forKey: "activeWorkspaceID").flatMap(UUID.init(uuidString:))
+        let migrationPrimaryID = storedActiveBoardID.flatMap { availableBoardIDs.contains($0) ? $0 : nil }
+            ?? workspaceStore.defaultWorkspace?.id
+        let boardCompositionStore = BoardCompositionStore(
+            defaults: defaults,
+            migrationPrimaryID: migrationPrimaryID,
+            availableBoardIDs: availableBoardIDs,
+            permanentBoardID: workspaceStore.defaultWorkspace?.id
+        )
+        Self.migrateNeverMinimizeWindowsIfNeeded(
+            defaults: defaults,
+            key: neverMinimizeWindowsKey,
+            workspaceStore: workspaceStore,
+            compositionStore: boardCompositionStore
+        )
+        boardCompositionStore.removeMissingBoards(availableBoardIDs: availableBoardIDs)
+        self.boardCompositionStore = boardCompositionStore
+        self.session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            boardCompositionStore: boardCompositionStore
+        )
         let storedFollowModeRawValue = defaults.string(forKey: "followMode") ?? FollowMode.none.rawValue
         let storedPositionUpdateModeRawValue = defaults.string(forKey: "positionUpdateMode") ?? PositionUpdateMode.manual.rawValue
         let storedAutoFrontModeRawValue = defaults.string(forKey: "autoFrontMode") ?? AutoFrontMode.off.rawValue
@@ -130,11 +97,6 @@ final class WindowBoardAppState: ObservableObject {
         positionUpdateMode = PositionUpdateMode(rawValue: storedPositionUpdateModeRawValue) ?? .manual
         autoFrontMode = AutoFrontMode(rawValue: storedAutoFrontModeRawValue) ?? .off
         boardClickAction = BoardClickAction(rawValue: storedBoardClickActionRawValue) ?? .none
-        neverMinimizeWindows = Self.loadNeverMinimizeWindows(
-            from: defaults,
-            key: neverMinimizeWindowsKey
-        )
-        syncNeverMinimizeWindowsToSession()
     }
 
     var canBringAttachedToFront: Bool {
@@ -161,32 +123,6 @@ final class WindowBoardAppState: ObservableObject {
         commandSubject.send(command)
     }
 
-    func isNeverMinimized(window: WindowInfo) -> Bool {
-        neverMinimizeWindows.contains { $0.matches(window) }
-    }
-
-    func addNeverMinimizeWindow(_ window: WindowInfo) {
-        let neverMinimizeWindow = NeverMinimizeWindow(window: window)
-
-        if let index = neverMinimizeWindows.firstIndex(where: { $0.matches(window) }) {
-            neverMinimizeWindows[index] = neverMinimizeWindow
-        } else {
-            neverMinimizeWindows.append(neverMinimizeWindow)
-        }
-
-        neverMinimizeWindows.sort {
-            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
-        persistNeverMinimizeWindows()
-        syncNeverMinimizeWindowsToSession()
-    }
-
-    func removeNeverMinimizeWindow(id: NeverMinimizeWindow.ID) {
-        neverMinimizeWindows.removeAll { $0.id == id }
-        persistNeverMinimizeWindows()
-        syncNeverMinimizeWindowsToSession()
-    }
-
     @discardableResult
     func focusMainWindowIfAvailable() -> Bool {
         NSApp.activate(ignoringOtherApps: true)
@@ -211,25 +147,54 @@ final class WindowBoardAppState: ObservableObject {
         }
     }
 
-    private func persistNeverMinimizeWindows() {
-        guard let data = try? JSONEncoder().encode(neverMinimizeWindows) else {
+    private static func migrateNeverMinimizeWindowsIfNeeded(
+        defaults: UserDefaults,
+        key: String,
+        workspaceStore: WorkspaceStore,
+        compositionStore: BoardCompositionStore
+    ) {
+        guard let data = defaults.data(forKey: key),
+              let windows = try? JSONDecoder().decode([LegacyNeverMinimizeWindow].self, from: data),
+              let permanentBoard = workspaceStore.defaultWorkspace else {
             return
         }
 
-        defaults.set(data, forKey: neverMinimizeWindowsKey)
-    }
-
-    private func syncNeverMinimizeWindowsToSession() {
-        session.neverMinimizeWindows = neverMinimizeWindows
-    }
-
-    private static func loadNeverMinimizeWindows(from defaults: UserDefaults, key: String) -> [NeverMinimizeWindow] {
-        guard let data = defaults.data(forKey: key),
-              let windows = try? JSONDecoder().decode([NeverMinimizeWindow].self, from: data) else {
-            return []
+        var references = permanentBoard.windows
+        for window in windows where !references.contains(where: { reference in
+            reference.bundleIdentifier == window.bundleIdentifier
+                && reference.appName == window.appName
+                && reference.title == window.title
+                && reference.documentURLString == window.documentURLString
+        }) {
+            references.append(
+                SavedWindowReference(
+                    id: UUID(),
+                    displayName: window.displayName,
+                    appName: window.appName,
+                    title: window.title,
+                    bundleIdentifier: window.bundleIdentifier,
+                    bundleURLString: nil,
+                    documentURLString: window.documentURLString,
+                    workspaceURLString: nil,
+                    offsetX: 0,
+                    offsetY: 0,
+                    originX: nil,
+                    originY: nil,
+                    width: nil,
+                    height: nil
+                )
+            )
         }
 
-        return windows
+        if !windows.isEmpty {
+            _ = workspaceStore.updateWorkspace(id: permanentBoard.id, windows: references)
+            let availableBoardIDs = Set(workspaceStore.workspaces.map(\.id))
+            _ = compositionStore.includeGlobalRoot(
+                permanentBoard.id,
+                availableBoardIDs: availableBoardIDs
+            )
+        }
+        defaults.removeObject(forKey: key)
     }
 
 }

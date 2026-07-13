@@ -3,6 +3,412 @@ import XCTest
 @testable import WindowBoard
 
 final class WindowMatchingTests: XCTestCase {
+    func testLegacyDefaultBoardNameMigratesToPermanentBoard() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let now = Date()
+        let legacyDefault = SavedWorkspace(
+            id: UUID(),
+            name: "Default",
+            statusItemSymbolName: nil,
+            createdAt: now,
+            updatedAt: now,
+            windows: [],
+            isDefault: true
+        )
+        defaults.set(try! JSONEncoder().encode([legacyDefault]), forKey: "savedWorkspaces")
+
+        let store = WorkspaceStore(defaults: defaults)
+
+        XCTAssertEqual(store.defaultWorkspace?.id, legacyDefault.id)
+        XCTAssertEqual(store.defaultWorkspace?.name, "Permanent Board")
+    }
+
+    func testDefaultWorkspaceRemainsFirstAndCannotBeRenamedOrDeleted() {
+        let service = FakeWorkspaceWindowService(windows: [])
+        let session = makeSession(service: service)
+        let defaultWorkspace = try! XCTUnwrap(session.workspaceStore.defaultWorkspace)
+
+        session.selectedWorkspaceID = defaultWorkspace.id
+        session.renameSelectedWorkspace(name: "Renamed Default")
+        session.deleteSelectedWorkspace()
+
+        XCTAssertEqual(session.workspaceStore.workspaces.first?.id, defaultWorkspace.id)
+        XCTAssertEqual(session.workspaceStore.defaultWorkspace?.name, WorkspaceStore.defaultWorkspaceName)
+        XCTAssertTrue(session.workspaceStore.workspaces.contains(where: { $0.id == defaultWorkspace.id }))
+    }
+
+    func testOverwritingDefaultUpdatesWindowsButKeepsDefaultIdentityAndName() {
+        let liveWindow = window(id: "default-live", title: "Default Tool")
+        let service = FakeWorkspaceWindowService(windows: [liveWindow])
+        let session = makeSession(service: service)
+        let defaultWorkspace = try! XCTUnwrap(session.workspaceStore.defaultWorkspace)
+        session.selectedWorkspaceID = defaultWorkspace.id
+        session.activeWorkspaceID = defaultWorkspace.id
+        session.attachedWindows = [
+            AttachedWindow(
+                window: liveWindow,
+                lastBoardOrigin: .zero,
+                lastWindowOrigin: CGPoint(x: 40, y: 60),
+                lastAppliedOrigin: nil,
+                pendingReleaseOrigin: nil
+            )
+        ]
+
+        session.overwriteSelectedWorkspace(name: "Renamed Default", boardOrigin: .zero)
+
+        let updatedDefault = try! XCTUnwrap(session.workspaceStore.defaultWorkspace)
+        XCTAssertEqual(updatedDefault.id, defaultWorkspace.id)
+        XCTAssertEqual(updatedDefault.name, WorkspaceStore.defaultWorkspaceName)
+        XCTAssertEqual(updatedDefault.windows.count, 1)
+        XCTAssertEqual(updatedDefault.windows.first?.title, liveWindow.title)
+    }
+
+    func testStatusItemSwitchPersistsPreviousPrimaryLayoutBeforeReplacement() async {
+        let firstReference = savedReference(title: "First", origin: CGPoint(x: 10, y: 20))
+        let firstWorkspace = makeWorkspace(name: "First Board", windows: [firstReference])
+        let secondWorkspace = makeWorkspace(name: "Second Board", windows: [])
+        let firstWindow = window(
+            id: "first-live",
+            title: "First",
+            position: CGPoint(x: 10, y: 20)
+        )
+        let service = FakeWorkspaceWindowService(windows: [firstWindow])
+        let session = makeSession(workspaces: [firstWorkspace, secondWorkspace], service: service)
+        let storedFirst = try! XCTUnwrap(
+            session.workspaceStore.workspaces.first { $0.name == firstWorkspace.name }
+        )
+        let storedSecond = try! XCTUnwrap(
+            session.workspaceStore.workspaces.first { $0.name == secondWorkspace.name }
+        )
+
+        session.switchWorkspace(
+            id: storedFirst.id,
+            boardOrigin: .zero,
+            source: .statusItem,
+            followMode: .none,
+            windowCache: [firstWindow]
+        )
+        await waitForWorkspaceSwitch(session)
+
+        let updatedOrigin = CGPoint(x: 420, y: 260)
+        session.attachedWindows[0].lastWindowOrigin = updatedOrigin
+        session.switchWorkspace(
+            id: storedSecond.id,
+            boardOrigin: .zero,
+            source: .statusItem,
+            followMode: .none,
+            windowCache: [firstWindow]
+        )
+        await waitForWorkspaceSwitch(session)
+
+        let persistedFirst = try! XCTUnwrap(
+            session.workspaceStore.workspaces.first { $0.id == storedFirst.id }
+        )
+        XCTAssertEqual(persistedFirst.windows.first?.savedOrigin, updatedOrigin)
+        XCTAssertEqual(session.activeWorkspaceID, storedSecond.id)
+        XCTAssertTrue(session.attachedWindows.isEmpty)
+    }
+
+    func testLegacyNeverMinimizeWindowsMigrateIntoPermanentBoard() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let legacyData = try! JSONSerialization.data(withJSONObject: [[
+            "bundleIdentifier": "com.example.permanent",
+            "appName": "Permanent Tool",
+            "title": "Document",
+            "documentURLString": "file:///document",
+            "windowNumber": 42,
+            "displayName": "Permanent Tool - Document"
+        ]])
+        defaults.set(legacyData, forKey: "neverMinimizeWindows")
+
+        let appState = WindowBoardAppState(defaults: defaults)
+        let permanentBoard = try! XCTUnwrap(appState.workspaceStore.defaultWorkspace)
+
+        XCTAssertEqual(permanentBoard.windows.count, 1)
+        XCTAssertEqual(permanentBoard.windows.first?.bundleIdentifier, "com.example.permanent")
+        XCTAssertEqual(permanentBoard.windows.first?.documentURLString, "file:///document")
+        XCTAssertTrue(permanentBoard.isDefault)
+        XCTAssertNil(defaults.data(forKey: "neverMinimizeWindows"))
+    }
+
+    func testBoardCompositionPersistsRootsWithoutDuplicates() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primaryID = UUID()
+        let boardID = UUID()
+        let available: Set<UUID> = [primaryID, boardID]
+
+        let firstStore = BoardCompositionStore(defaults: defaults)
+        XCTAssertEqual(firstStore.includeRoot(boardID, for: primaryID, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(firstStore.includeRoot(boardID, for: primaryID, availableBoardIDs: available), .duplicate)
+        let restoredStore = BoardCompositionStore(defaults: defaults)
+
+        XCTAssertEqual(restoredStore.rootBoardIDs(for: primaryID), [boardID])
+    }
+
+    func testBoardCompositionResolvesPrimaryRootAndChildHierarchy() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primary = makeWorkspace(name: "Primary", windows: [])
+        let included = makeWorkspace(name: "Included", windows: [])
+        let child = makeWorkspace(name: "Child", windows: [])
+        let store = BoardCompositionStore(defaults: defaults)
+        let available: Set<UUID> = [primary.id, included.id, child.id]
+        XCTAssertEqual(store.includeRoot(included.id, for: primary.id, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeChild(child.id, in: included.id, availableBoardIDs: available), .inserted)
+
+        let resolved = store.resolveCurrentBoard(primaryID: primary.id, workspaces: [primary, included, child])
+
+        XCTAssertEqual(resolved.roots.map(\.board.id), [primary.id, included.id])
+        XCTAssertEqual(resolved.roots[1].children.map(\.board.id), [child.id])
+    }
+
+    func testBoardCompositionKeepsDifferentRootSetsForEachPrimaryBoard() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primaryA = makeWorkspace(name: "Primary A", windows: [])
+        let primaryB = makeWorkspace(name: "Primary B", windows: [])
+        let rootA = makeWorkspace(name: "Root A", windows: [])
+        let rootB = makeWorkspace(name: "Root B", windows: [])
+        let workspaces = [primaryA, primaryB, rootA, rootB]
+        let available = Set(workspaces.map(\.id))
+        let store = BoardCompositionStore(defaults: defaults)
+        _ = store.includeRoot(rootA.id, for: primaryA.id, availableBoardIDs: available)
+        _ = store.includeRoot(rootB.id, for: primaryB.id, availableBoardIDs: available)
+
+        XCTAssertEqual(store.resolveCurrentBoard(primaryID: primaryA.id, workspaces: workspaces).roots.map(\.board.id), [primaryA.id, rootA.id])
+        XCTAssertEqual(store.resolveCurrentBoard(primaryID: primaryB.id, workspaces: workspaces).roots.map(\.board.id), [primaryB.id, rootB.id])
+    }
+
+    func testGlobalRootRemainsVisibleAcrossPrimaryBoardSwitches() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primaryA = makeWorkspace(name: "Primary A", windows: [])
+        let primaryB = makeWorkspace(name: "Primary B", windows: [])
+        let permanent = makeWorkspace(name: "Permanent Board", windows: [], isDefault: true)
+        let workspaces = [primaryA, primaryB, permanent]
+        let available = Set(workspaces.map(\.id))
+        let store = BoardCompositionStore(
+            defaults: defaults,
+            availableBoardIDs: available,
+            permanentBoardID: permanent.id
+        )
+
+        XCTAssertEqual(store.includeGlobalRoot(permanent.id, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(
+            store.resolveCurrentBoard(primaryID: primaryA.id, workspaces: workspaces).roots.map(\.board.id),
+            [primaryA.id, permanent.id]
+        )
+        XCTAssertEqual(
+            store.resolveCurrentBoard(primaryID: primaryB.id, workspaces: workspaces).roots.map(\.board.id),
+            [primaryB.id, permanent.id]
+        )
+        XCTAssertEqual(
+            store.resolveCurrentBoard(primaryID: permanent.id, workspaces: workspaces).roots.map(\.board.id),
+            [permanent.id]
+        )
+    }
+
+    func testExistingPermanentRootMigratesToGlobalComposition() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primaryA = UUID()
+        let primaryB = UUID()
+        let permanent = UUID()
+        let legacyData = BoardCompositionData(
+            version: 2,
+            rootBoardIDsByPrimaryID: [primaryA: [permanent]]
+        )
+        defaults.set(try! JSONEncoder().encode(legacyData), forKey: "boardComposition.v2")
+
+        let store = BoardCompositionStore(
+            defaults: defaults,
+            availableBoardIDs: [primaryA, primaryB, permanent],
+            permanentBoardID: permanent
+        )
+
+        XCTAssertTrue(store.isGloballyIncluded(permanent))
+        XCTAssertEqual(store.rootBoardIDs(for: primaryA), [])
+        XCTAssertEqual(store.displayedRootBoardIDs(for: primaryB), [permanent])
+    }
+
+    func testExcludingPermanentGlobalRootRemovesItFromEveryPrimary() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primary = UUID()
+        let permanent = UUID()
+        let available: Set<UUID> = [primary, permanent]
+        let store = BoardCompositionStore(defaults: defaults)
+        _ = store.includeGlobalRoot(permanent, availableBoardIDs: available)
+
+        XCTAssertEqual(store.excludeGlobalRoot(permanent), .removed)
+        XCTAssertFalse(store.isGloballyIncluded(permanent))
+        XCTAssertEqual(store.displayedRootBoardIDs(for: primary), [])
+    }
+
+    func testLegacyGlobalCompositionMigratesToActiveBoardRoots() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primaryID = UUID()
+        let includedID = UUID()
+        defaults.set([includedID.uuidString], forKey: "includedBoardIDs")
+
+        let store = BoardCompositionStore(
+            defaults: defaults,
+            migrationPrimaryID: primaryID,
+            availableBoardIDs: [primaryID, includedID]
+        )
+
+        XCTAssertEqual(store.rootBoardIDs(for: primaryID), [includedID])
+        XCTAssertNil(defaults.array(forKey: "includedBoardIDs"))
+    }
+
+    func testBoardCompositionRejectsSelfDuplicateAndCyclesButAllowsMultipleParents() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let store = BoardCompositionStore(defaults: defaults)
+        let a = UUID(), b = UUID(), c = UUID(), d = UUID()
+        let available: Set<UUID> = [a, b, c, d]
+        XCTAssertEqual(store.includeChild(a, in: a, availableBoardIDs: available), .selfReference)
+        XCTAssertEqual(store.includeChild(b, in: a, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeChild(b, in: a, availableBoardIDs: available), .duplicate)
+        XCTAssertEqual(store.includeChild(c, in: b, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeChild(a, in: c, availableBoardIDs: available), .cycle)
+        XCTAssertEqual(store.includeChild(c, in: d, availableBoardIDs: available), .inserted)
+    }
+
+    func testDeletingIncludedBoardRemovesCompositionReferenceImmediately() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let defaultBoard = try! XCTUnwrap(workspaceStore.defaultWorkspace)
+        let includedBoard = workspaceStore.saveWorkspace(name: "Included", windows: [])
+        let compositionStore = BoardCompositionStore(defaults: defaults)
+        _ = compositionStore.includeRoot(
+            includedBoard.id,
+            for: defaultBoard.id,
+            availableBoardIDs: Set(workspaceStore.workspaces.map(\.id))
+        )
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            boardCompositionStore: compositionStore,
+            windowServiceFactory: { FakeWorkspaceWindowService(windows: []) }
+        )
+        session.activeWorkspaceID = defaultBoard.id
+        session.selectedWorkspaceID = includedBoard.id
+
+        session.deleteSelectedWorkspace()
+
+        XCTAssertFalse(workspaceStore.workspaces.contains { $0.id == includedBoard.id })
+        XCTAssertFalse(compositionStore.rootBoardIDs(for: defaultBoard.id).contains(includedBoard.id))
+        XCTAssertEqual(session.activeWorkspaceID, defaultBoard.id)
+    }
+
+    func testNewBoardLoadsIncludedCompositionThroughWorkspaceSwitch() async {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let includedReference = savedReference(title: "Shared Window", origin: CGPoint(x: 160, y: 180))
+        let includedWindow = window(
+            id: "shared-live",
+            title: "Shared Window",
+            position: CGPoint(x: 160, y: 180)
+        )
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let defaultBoard = try! XCTUnwrap(workspaceStore.defaultWorkspace)
+        _ = workspaceStore.updateWorkspace(id: defaultBoard.id, windows: [includedReference])
+        let compositionStore = BoardCompositionStore(defaults: defaults)
+        let service = FakeWorkspaceWindowService(windows: [includedWindow])
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            boardCompositionStore: compositionStore,
+            windowServiceFactory: { service }
+        )
+
+        let newBoard = session.createWorkspace(boardOrigin: .zero)
+        _ = compositionStore.includeRoot(
+            defaultBoard.id,
+            for: newBoard.id,
+            availableBoardIDs: Set(workspaceStore.workspaces.map(\.id))
+        )
+        session.switchWorkspace(
+            id: newBoard.id,
+            boardOrigin: .zero,
+            source: .mainWindow,
+            followMode: .none,
+            windowCache: [includedWindow]
+        )
+        await waitForWorkspaceSwitch(session)
+
+        XCTAssertEqual(session.activeWorkspaceID, newBoard.id)
+        XCTAssertEqual(session.attachedWindows.map(\.window.id), [includedWindow.id])
+        _ = session.persistActiveWorkspaceSnapshotForSwitch(boardOrigin: .zero)
+        let persistedNewBoard = try! XCTUnwrap(
+            workspaceStore.workspaces.first { $0.id == newBoard.id }
+        )
+        XCTAssertTrue(persistedNewBoard.windows.isEmpty)
+    }
+
+    func testWorkspaceSwitchIncludesComposedBoardWithoutCopyingItsWindowsIntoPrimary() async {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primaryReference = savedReference(title: "Primary Window", origin: CGPoint(x: 20, y: 30))
+        let includedReference = savedReference(title: "Included Window", origin: CGPoint(x: 200, y: 240))
+        let primaryWindow = window(id: "primary-live", title: "Primary Window", position: CGPoint(x: 20, y: 30))
+        let includedWindow = window(id: "included-live", title: "Included Window", position: CGPoint(x: 200, y: 240))
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let defaultBoard = try! XCTUnwrap(workspaceStore.defaultWorkspace)
+        _ = workspaceStore.updateWorkspace(id: defaultBoard.id, windows: [includedReference])
+        let primaryBoard = workspaceStore.saveWorkspace(name: "Primary", windows: [primaryReference])
+        let compositionStore = BoardCompositionStore(defaults: defaults)
+        _ = compositionStore.includeRoot(
+            defaultBoard.id,
+            for: primaryBoard.id,
+            availableBoardIDs: Set(workspaceStore.workspaces.map(\.id))
+        )
+        let service = FakeWorkspaceWindowService(windows: [primaryWindow, includedWindow])
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            boardCompositionStore: compositionStore,
+            windowServiceFactory: { service }
+        )
+
+        session.switchWorkspace(
+            id: primaryBoard.id,
+            boardOrigin: .zero,
+            source: .statusItem,
+            followMode: .none,
+            windowCache: [primaryWindow, includedWindow]
+        )
+        await waitForWorkspaceSwitch(session)
+
+        XCTAssertEqual(session.attachedWindows.map(\.window.title), ["Primary Window", "Included Window"])
+
+        _ = session.persistActiveWorkspaceSnapshotForSwitch(boardOrigin: .zero)
+
+        let persistedPrimary = try! XCTUnwrap(workspaceStore.workspaces.first { $0.id == primaryBoard.id })
+        let persistedDefault = try! XCTUnwrap(workspaceStore.defaultWorkspace)
+        XCTAssertEqual(persistedPrimary.windows.map(\.title), ["Primary Window"])
+        XCTAssertEqual(persistedDefault.windows.map(\.title), ["Included Window"])
+    }
+
     func testBestExpectedFrontWindowRejectsDifferentAppAndUsesMatchingCandidate() {
         let unrelatedWindow = window(
             id: "unrelated",
@@ -151,7 +557,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertTrue(session.isUnavailable(reference.id))
     }
 
-    func testMinimizeUnattachedProtectsAttachedAndPermanentWindows() async {
+    func testMinimizeUnattachedProtectsOnlyAttachedWindows() async {
         let attached = window(id: "attached", title: "Attached", bundleIdentifier: "com.example.attached")
         let permanent = window(id: "permanent", title: "Permanent", bundleIdentifier: "com.example.permanent")
         let other = window(id: "other", title: "Other", bundleIdentifier: "com.example.other")
@@ -166,8 +572,6 @@ final class WindowMatchingTests: XCTestCase {
                 pendingReleaseOrigin: nil
             )
         ]
-        session.neverMinimizeWindows = [NeverMinimizeWindow(window: permanent)]
-
         session.minimizeUnattachedWindows(
             knownWindows: [attached, permanent, other],
             refreshWindowList: false
@@ -176,9 +580,9 @@ final class WindowMatchingTests: XCTestCase {
         await waitForMinimization(session)
 
         XCTAssertFalse(service.minimizedWindowIDs.contains(attached.id))
-        XCTAssertFalse(service.minimizedWindowIDs.contains(permanent.id))
+        XCTAssertTrue(service.minimizedWindowIDs.contains(permanent.id))
         XCTAssertTrue(service.minimizedWindowIDs.contains(other.id))
-        XCTAssertEqual(session.minimizedWindows.map(\.id), [other.id])
+        XCTAssertEqual(Set(session.minimizedWindows.map(\.id)), [permanent.id, other.id])
     }
 
     func testRestoreKeepsOnlyWindowsThatCouldNotBeRestored() async {
@@ -282,33 +686,6 @@ final class WindowMatchingTests: XCTestCase {
             WindowMatching.bestSavedWindow(for: reference, in: [documentMatch, titleMatch], excluding: [])?.id,
             titleMatch.id
         )
-    }
-
-    func testNeverMinimizeMatchPrefersWindowNumberForSameApp() {
-        let saved = NeverMinimizeWindow(
-            bundleIdentifier: "com.example.Editor",
-            appName: "Editor",
-            title: "Untitled",
-            documentURLString: "file:///document",
-            windowNumber: 42,
-            displayName: "Editor - Untitled"
-        )
-        let sameWindow = window(
-            title: "Other",
-            bundleIdentifier: "com.example.Editor",
-            documentURL: "file:///other",
-            windowNumber: 42
-        )
-        let anotherApp = window(
-            id: "other-app",
-            title: "Untitled",
-            bundleIdentifier: "com.example.Other",
-            documentURL: "file:///document",
-            windowNumber: 42
-        )
-
-        XCTAssertTrue(saved.matches(sameWindow))
-        XCTAssertTrue(saved.matches(anotherApp))
     }
 
     func testSavedReferenceUsesAbsoluteOriginAndValidSize() {
@@ -749,14 +1126,19 @@ final class WindowMatchingTests: XCTestCase {
         )
     }
 
-    private func makeWorkspace(name: String, windows: [SavedWindowReference]) -> SavedWorkspace {
+    private func makeWorkspace(
+        name: String,
+        windows: [SavedWindowReference],
+        isDefault: Bool = false
+    ) -> SavedWorkspace {
         SavedWorkspace(
             id: UUID(),
             name: name,
             statusItemSymbolName: nil,
             createdAt: Date(),
             updatedAt: Date(),
-            windows: windows
+            windows: windows,
+            isDefault: isDefault
         )
     }
 

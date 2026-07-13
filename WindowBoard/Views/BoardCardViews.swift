@@ -17,10 +17,10 @@ struct PinnedWindowCardGrid: View {
     let detach: (AttachedWindow.ID) -> Void
     let bringForward: (AttachedWindow) -> Void
     let bringAndMoveBelowCard: (AttachedWindow, CGPoint) -> Void
-    let isNeverMinimizedWindow: (WindowInfo) -> Bool
-    let addNeverMinimizeWindow: (WindowInfo) -> Void
-    let movePermanentWindowToMainBoard: (NeverMinimizeWindow.ID) -> Void
+    let sourceBoard: (AttachedWindow.ID) -> BoardCardSource?
+    let includeBoard: (SavedWorkspace.ID) -> Void
     let rejectDrop: () -> Void
+    let showsAddCard: Bool
     @State private var isDropTargeted = false
 
     private let columns = [
@@ -31,7 +31,7 @@ struct PinnedWindowCardGrid: View {
         let entranceToken = shouldAnimateWorkspaceEntrance ? workspaceTransitionToken : nil
 
         LazyVGrid(columns: columns, alignment: .leading, spacing: 18) {
-            if attachedWindows.isEmpty {
+            if attachedWindows.isEmpty && showsAddCard {
                 AddPinnedWindowCard(
                     canAttachFrontmost: canAttachFrontmost,
                     attachFrontmost: attachFromAddCard,
@@ -45,9 +45,6 @@ struct PinnedWindowCardGrid: View {
                     let isPinningIn = attachedWindow.id == recentlyAddedWindowID
                     let isDetaching = detachingAttachedWindowIDs.contains(attachedWindow.id)
                     let state = stateForWindow(attachedWindow)
-                    let canDragToPermanentBoard = attachedWindow.window.pid != 0
-                        && !isDetaching
-                        && state == .available
                     PinnedWindowCard(
                         attachedWindow: attachedWindow,
                         state: state,
@@ -62,23 +59,23 @@ struct PinnedWindowCardGrid: View {
                         useFrontWindow: { useFrontWindow(attachedWindow) },
                         update: { update(attachedWindow.id) },
                         detach: { detach(attachedWindow.id) },
-                        isNeverMinimizedWindow: isNeverMinimizedWindow(attachedWindow.window),
-                        addNeverMinimizeWindow: { addNeverMinimizeWindow(attachedWindow.window) },
-                        dragPayload: canDragToPermanentBoard ? DragPayload.mainBoardWindow(attachedWindow.id) : nil,
+                        sourceBoard: sourceBoard(attachedWindow.id),
                         bringAndMoveBelowCard: { cursorScreenLocation in
                             bringAndMoveBelowCard(attachedWindow, cursorScreenLocation)
                         }
                     )
                 }
 
-                AddPinnedWindowCard(
-                    canAttachFrontmost: canAttachFrontmost,
-                    attachFrontmost: attachFromAddCard,
-                    isEmptyState: false,
-                    appearanceGeneration: attachedWindows.count,
-                    workspaceTransitionToken: entranceToken,
-                    workspaceTransitionIndex: attachedWindows.count
-                )
+                if showsAddCard {
+                    AddPinnedWindowCard(
+                        canAttachFrontmost: canAttachFrontmost,
+                        attachFrontmost: attachFromAddCard,
+                        isEmptyState: false,
+                        appearanceGeneration: attachedWindows.count,
+                        workspaceTransitionToken: entranceToken,
+                        workspaceTransitionIndex: attachedWindows.count
+                    )
+                }
             }
         }
         .animation(
@@ -109,14 +106,18 @@ struct PinnedWindowCardGrid: View {
     }
 
     private func handleDrop(_ items: [String]) -> Bool {
-        guard let item = items.first,
-              let id = DragPayload.permanentBoardWindowID(from: item) else {
+        guard let item = items.first else {
             rejectDrop()
             return false
         }
 
-        movePermanentWindowToMainBoard(id)
-        return true
+        if let boardID = DragPayload.boardID(from: item) {
+            includeBoard(boardID)
+            return true
+        }
+
+        rejectDrop()
+        return false
     }
 }
 
@@ -479,9 +480,7 @@ private struct PinnedWindowCard: View {
     let useFrontWindow: () -> Void
     let update: () -> Void
     let detach: () -> Void
-    let isNeverMinimizedWindow: Bool
-    let addNeverMinimizeWindow: () -> Void
-    let dragPayload: String?
+    let sourceBoard: BoardCardSource?
     let bringAndMoveBelowCard: (CGPoint) -> Void
 
     private let baseCardSize = CGSize(width: 220, height: 308)
@@ -533,8 +532,6 @@ private struct PinnedWindowCard: View {
 
                 Spacer(minLength: 8)
 
-                CardDragHandle(payload: dragPayload)
-
                 actionsMenu
             }
             .padding(.horizontal, 14)
@@ -555,6 +552,17 @@ private struct PinnedWindowCard: View {
                     .lineLimit(2)
                     .truncationMode(.tail)
                     .frame(minHeight: 30, alignment: .topLeading)
+
+                if let sourceBoard {
+                    Label(
+                        sourceBoard.name,
+                        systemImage: sourceBoard.isPermanent ? "pin.fill" : "rectangle.stack.fill"
+                    )
+                        .font(.caption2.weight(.medium))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .help("Included from \(sourceBoard.name)")
+                }
 
                 StatusBadge(state: state)
 
@@ -616,7 +624,6 @@ private struct PinnedWindowCard: View {
             if shouldShowUseFrontWindow {
                 Button("Use Front Window", action: useFrontWindow)
             }
-            neverMinimizeMenuItem
             Divider()
             Button("Detach from Board", action: detach)
         } label: {
@@ -628,19 +635,6 @@ private struct PinnedWindowCard: View {
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
         .help("More window actions")
-    }
-
-    @ViewBuilder
-    private var neverMinimizeMenuItem: some View {
-        if attachedWindow.window.pid == 0 {
-            Button("Add to Permanent Board") {}
-                .disabled(true)
-        } else if isNeverMinimizedWindow {
-            Button("Already on Permanent Board") {}
-                .disabled(true)
-        } else {
-            Button("Add to Permanent Board", action: addNeverMinimizeWindow)
-        }
     }
 
     private var windowSubtitle: String {

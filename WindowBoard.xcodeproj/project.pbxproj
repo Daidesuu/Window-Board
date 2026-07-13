@@ -43,6 +43,7 @@
 		1D0000010000000000000005 /* AttachedWindowSnapshotCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000006 /* AttachedWindowSnapshotCoordinator.swift */; };
 		1D0000010000000000000007 /* AttachedWindowSnapshotCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000008 /* AttachedWindowSnapshotCoordinatorTests.swift */; };
 		1D0000010000000000000009 /* AttachedWindowSnapshotReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D000001000000000000000A /* AttachedWindowSnapshotReducer.swift */; };
+		1E0000010000000000000001 /* BoardCompositionStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1E0000010000000000000002 /* BoardCompositionStore.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -83,6 +84,7 @@
 		1D0000010000000000000006 /* AttachedWindowSnapshotCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowSnapshotCoordinator.swift; sourceTree = "<group>"; };
 		1D0000010000000000000008 /* AttachedWindowSnapshotCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowSnapshotCoordinatorTests.swift; sourceTree = "<group>"; };
 		1D000001000000000000000A /* AttachedWindowSnapshotReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowSnapshotReducer.swift; sourceTree = "<group>"; };
+		1E0000010000000000000002 /* BoardCompositionStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardCompositionStore.swift; sourceTree = "<group>"; };
 		1B0000010000000000000003 /* WindowBoardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowBoardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -189,6 +191,7 @@
 			isa = PBXGroup;
 			children = (
 				1A000001000000000000001D /* WorkspaceStore.swift */,
+				1E0000010000000000000002 /* BoardCompositionStore.swift */,
 			);
 			path = Stores;
 			sourceTree = "<group>";
@@ -368,6 +371,7 @@
 				1D0000010000000000000001 /* BoardFrontingCoordinator.swift in Sources */,
 				1D0000010000000000000005 /* AttachedWindowSnapshotCoordinator.swift in Sources */,
 				1D0000010000000000000009 /* AttachedWindowSnapshotReducer.swift in Sources */,
+				1E0000010000000000000001 /* BoardCompositionStore.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
