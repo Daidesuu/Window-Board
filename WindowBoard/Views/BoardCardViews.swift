@@ -6,7 +6,6 @@ struct PinnedWindowCardGrid: View {
     let stateForWindow: (AttachedWindow) -> AttachedWindowDisplayState
     let recoveryIssue: (AttachedWindow.ID) -> AttachedWindowRecoveryIssue?
     let canAttachFrontmost: Bool
-    let attachFrontmost: () -> Void
     let attachFromAddCard: () -> Void
     let recentlyAddedWindowID: AttachedWindow.ID?
     let clearRecentlyAddedWindowID: () -> Void
@@ -257,137 +256,57 @@ struct CardPinInModifier: ViewModifier {
 
 struct InteractiveCardMotion: ViewModifier {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var normalizedHover: CGPoint = .zero
     @State private var isHovering = false
-    @State private var cardSize: CGSize = .zero
 
     let cornerRadius: CGFloat
     let isEnabled: Bool
     let highlightOpacity: Double
 
-    private static let isInteractiveTiltEnabled = false
-    private let maxTiltDegrees: CGFloat = 5
     private let spring = Animation.interactiveSpring(
-        response: 0.28,
-        dampingFraction: 0.82,
-        blendDuration: 0.08
+        response: 0.24,
+        dampingFraction: 0.86,
+        blendDuration: 0.06
     )
 
     private var motionEnabled: Bool {
-        Self.isInteractiveTiltEnabled && isEnabled && !reduceMotion
-    }
-
-    private var x: CGFloat {
-        motionEnabled ? normalizedHover.x : 0
-    }
-
-    private var y: CGFloat {
-        motionEnabled ? normalizedHover.y : 0
+        isEnabled && !reduceMotion
     }
 
     private var hoverScale: CGFloat {
-        motionEnabled && isHovering ? 1.018 : 1
+        motionEnabled && isHovering ? 1.012 : 1
     }
 
-    @ViewBuilder
     func body(content: Content) -> some View {
-        if motionEnabled {
-            content
-                .background {
-                    GeometryReader { proxy in
-                        Color.clear
-                            .onAppear {
-                                cardSize = proxy.size
-                            }
-                            .onChange(of: proxy.size) { _, newSize in
-                                cardSize = newSize
-                            }
-                    }
-                }
-                .overlay {
-                    specularHighlight
-                        .allowsHitTesting(false)
-                }
-                .scaleEffect(hoverScale)
-                .rotation3DEffect(
-                    .degrees(-y * maxTiltDegrees),
-                    axis: (x: 1, y: 0, z: 0),
-                    perspective: 0.55
-                )
-                .rotation3DEffect(
-                    .degrees(x * maxTiltDegrees),
-                    axis: (x: 0, y: 1, z: 0),
-                    perspective: 0.55
-                )
-                .shadow(
-                    color: .black.opacity(isHovering ? 0.12 : 0.04),
-                    radius: isHovering ? 18 : 8,
-                    x: x * 7,
-                    y: y * 7 + (isHovering ? 10 : 5)
-                )
-                .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-                .onContinuousHover { phase in
-                    switch phase {
-                    case .active(let location):
-                        updateHover(at: location)
-                    case .ended:
-                        resetHover()
-                    }
-                }
-        } else {
-            content
-        }
-    }
-
-    private var specularHighlight: some View {
-        GeometryReader { proxy in
-            let width = proxy.size.width
-            let height = proxy.size.height
-            let activeOpacity = motionEnabled && isHovering ? highlightOpacity : 0
-
-            RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-                .fill(
-                    LinearGradient(
-                        stops: [
-                            .init(color: .clear, location: 0.28),
-                            .init(color: .white.opacity(0.48), location: 0.48),
-                            .init(color: .clear, location: 0.68)
-                        ],
-                        startPoint: .topLeading,
-                        endPoint: .bottomTrailing
+        content
+            .scaleEffect(hoverScale)
+            .shadow(
+                color: .black.opacity(motionEnabled && isHovering ? 0.12 : 0),
+                radius: motionEnabled && isHovering ? 16 : 0,
+                y: motionEnabled && isHovering ? 9 : 0
+            )
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
+                    .stroke(
+                        .white.opacity(motionEnabled && isHovering ? highlightOpacity : 0),
+                        lineWidth: 1
                     )
-                )
-                .frame(width: width * 0.76, height: height * 1.45)
-                .rotationEffect(.degrees(18))
-                .offset(
-                    x: width * 0.12 + x * width * 0.22,
-                    y: -height * 0.28 + y * height * 0.16
-                )
-                .opacity(activeOpacity)
-                .blur(radius: 0.35)
-        }
-        .clipShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
-    }
-
-    private func updateHover(at location: CGPoint) {
-        guard cardSize.width > 0, cardSize.height > 0 else { return }
-
-        let normalizedX = ((location.x / cardSize.width) - 0.5) * 2
-        let normalizedY = ((location.y / cardSize.height) - 0.5) * 2
-        let clamped = CGPoint(
-            x: min(max(normalizedX, -1), 1),
-            y: min(max(normalizedY, -1), 1)
-        )
-
-        isHovering = true
-        normalizedHover = clamped
-    }
-
-    private func resetHover() {
-        withAnimation(.easeOut(duration: 0.16)) {
-            isHovering = false
-            normalizedHover = .zero
-        }
+                    .allowsHitTesting(false)
+            }
+            .contentShape(RoundedRectangle(cornerRadius: cornerRadius, style: .continuous))
+            .onHover { hovering in
+                guard motionEnabled else {
+                    isHovering = false
+                    return
+                }
+                withAnimation(spring) {
+                    isHovering = hovering
+                }
+            }
+            .onChange(of: isEnabled) { _, enabled in
+                if !enabled {
+                    isHovering = false
+                }
+            }
     }
 }
 

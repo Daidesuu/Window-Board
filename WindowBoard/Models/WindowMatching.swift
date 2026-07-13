@@ -96,6 +96,20 @@ enum WindowMatching {
         return appNamesMatch(window.appName, expectedAppName)
     }
 
+    static func bestExpectedFrontWindow(
+        in candidates: [WindowInfo],
+        expectedBundleIdentifier: String?,
+        expectedAppName: String
+    ) -> WindowInfo? {
+        candidates.first {
+            matchesExpectedFrontWindow(
+                $0,
+                expectedBundleIdentifier: expectedBundleIdentifier,
+                expectedAppName: expectedAppName
+            )
+        }
+    }
+
     static func matchesNeverMinimizeWindow(
         bundleIdentifier: String?,
         appName: String,

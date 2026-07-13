@@ -20,7 +20,45 @@ enum WindowBoardAXError: LocalizedError {
     }
 }
 
-final class AccessibilityWindowService {
+protocol WorkspaceWindowOperating: AnyObject {
+    func listWindows() -> [WindowInfo]
+    func windows(matching window: WindowInfo) -> [WindowInfo]
+    func position(of window: WindowInfo) throws -> CGPoint
+    func size(of window: WindowInfo) throws -> CGSize
+    func setPosition(_ position: CGPoint, for window: WindowInfo) throws
+    func setSize(_ size: CGSize, for window: WindowInfo) throws
+    func isMinimized(_ window: WindowInfo) -> Bool
+    func setMinimized(_ minimized: Bool, for window: WindowInfo) throws
+    func raise(_ window: WindowInfo)
+    func openSavedWindowReference(_ reference: SavedWindowReference) -> Bool
+    func activateSavedApplication(_ reference: SavedWindowReference) -> Bool
+}
+
+protocol ContentWindowOperating: WorkspaceWindowOperating, Sendable {
+    func isTrusted() -> Bool
+    func requestAccessPrompt()
+    func openAccessibilitySettings()
+    func frontmostWindow(for application: NSRunningApplication) -> WindowInfo?
+    func frontmostVisibleExternalWindow(
+        excludingProcessID excludedPID: pid_t
+    ) -> WindowInfo?
+    func windows(for application: NSRunningApplication) -> [WindowInfo]
+    func title(of window: WindowInfo) -> String?
+    func raiseWindowOnly(_ window: WindowInfo)
+    func activateApplication(for window: WindowInfo)
+    @discardableResult func activateApplication(pid: pid_t) -> Bool
+    func openDocument(for window: WindowInfo) -> Bool
+    func activateOrOpenApplication(for window: WindowInfo) -> Bool
+    func focusWindow(_ window: WindowInfo)
+}
+
+extension ContentWindowOperating {
+    func frontmostVisibleExternalWindow() -> WindowInfo? {
+        frontmostVisibleExternalWindow(excludingProcessID: ProcessInfo.processInfo.processIdentifier)
+    }
+}
+
+final class AccessibilityWindowService: ContentWindowOperating, @unchecked Sendable {
     func isTrusted() -> Bool {
         AXIsProcessTrusted()
     }

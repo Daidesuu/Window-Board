@@ -10,41 +10,6 @@ private let contentEnergyLogger = Logger(
 )
 #endif
 
-private struct MinimizeWindowsResult {
-    let minimizedWindows: [WindowInfo]
-    let restoredAttachedWindows: [WindowInfo]
-    let failedCount: Int
-}
-
-private struct RestoreWindowsResult {
-    let restoredWindows: [WindowInfo]
-    let failedWindows: [WindowInfo]
-}
-
-private struct AttachedWindowSnapshot {
-    let attachmentID: AttachedWindow.ID
-    let windowID: WindowInfo.ID
-    let appName: String
-    let title: String
-    let pid: pid_t
-    let bundleIdentifier: String?
-    let documentURL: URL?
-    let windowNumber: CGWindowID?
-    let origin: CGPoint
-    let window: WindowInfo
-    let isUnavailable: Bool
-    let isReconnecting: Bool
-    let protectsSameApplicationFromMinimize: Bool
-}
-
-private struct AttachedWindowSnapshotResult {
-    let id: AttachedWindow.ID
-    let windowID: WindowInfo.ID
-    let title: String?
-    let origin: CGPoint?
-    let isMinimized: Bool
-}
-
 private enum AttachedWindowInsertion {
     case start
     case end
@@ -53,9 +18,10 @@ private enum AttachedWindowInsertion {
 private func raiseAttachedWindowsOffMainThread(
     _ windows: [AttachedWindow],
     activationSettleNanoseconds: UInt64,
-    windowSettleNanoseconds: UInt64
+    windowSettleNanoseconds: UInt64,
+    serviceFactory: @Sendable () -> any ContentWindowOperating
 ) async {
-    let service = AccessibilityWindowService()
+    let service = serviceFactory()
 
     for attachedWindow in windows {
         if Task.isCancelled {
@@ -94,25 +60,26 @@ private func waitForFrontmostApplicationOffMainThread(pid: pid_t, timeout: TimeI
 
 private final class BoardMotionState: ObservableObject {
     var currentOrigin: CGPoint?
-    var pendingReleaseOrigin: CGPoint?
-    var lastMoveDate = Date.distantPast
 }
 
 struct ContentView: View {
-    private static let attachedSnapshotInterval: Duration = .seconds(10)
     private static let baselineRefreshInterval: Duration = .seconds(3)
     private static let baselineIdleDelay: TimeInterval = 3.0
-    private static let releaseIdleDelay: TimeInterval = 0.20
-    private static let autoFrontIdleDelay: TimeInterval = 0.22
     private static let applicationRefreshDebounce: Duration = .milliseconds(180)
 
-    private let service = AccessibilityWindowService()
+    nonisolated private let windowServiceFactory: @Sendable () -> any ContentWindowOperating
+    private let service: any ContentWindowOperating
+    private let windowCatalog: ApplicationWindowCatalog
+    private let recoveryCoordinator: AttachedWindowRecoveryCoordinator
     private let moveScheduler = WindowMoveScheduler.shared
     @ObservedObject private var appState: WindowBoardAppState
     @ObservedObject private var workspaceStore: WorkspaceStore
     @ObservedObject private var session: WorkspaceSessionController
 
     @StateObject private var boardMotion = BoardMotionState()
+    @State private var followCoordinator: BoardFollowCoordinator
+    @State private var frontingCoordinator: BoardFrontingCoordinator
+    @State private var snapshotCoordinator: AttachedWindowSnapshotCoordinator
     @State private var isTrusted = false
     @State private var windows: [WindowInfo] = []
     @State private var selectedWindowID: WindowInfo.ID?
@@ -121,16 +88,6 @@ struct ContentView: View {
     @AppStorage("boardAlwaysOnTop") private var isBoardAlwaysOnTop = false
     @AppStorage("minimizeUnattachedOnWorkspaceSwitch") private var shouldMinimizeUnattachedOnWorkspaceSwitch = false
     @AppStorage("restoreMissingWindowsOnWorkspaceSwitch") private var shouldRestoreMissingWindowsOnWorkspaceSwitch = false
-    @State private var pendingAutoFront = false
-    @State private var pendingReleaseMoveTask: Task<Void, Never>?
-    @State private var pendingAutoFrontTask: Task<Void, Never>?
-    @State private var lastBoardClickFrontDate = Date.distantPast
-    @State private var boardSelectionTask: Task<Void, Never>?
-    @State private var frontingTask: Task<Void, Never>?
-    @State private var frontingRevision = 0
-    @State private var workspaceFrontingRevision = 0
-    @State private var attachedWindowSnapshotTask: Task<Void, Never>?
-    @State private var suppressExternalActivationUntil = Date.distantPast
     @State private var lastExternalApplication: NSRunningApplication?
     @State private var attachedWindowFailureCounts: [AttachedWindow.ID: Int] = [:]
     @State private var recoveryIssueByAttachmentID: [AttachedWindow.ID: AttachedWindowRecoveryIssue] = [:]
@@ -148,7 +105,19 @@ struct ContentView: View {
     @State private var permanentDetachAnimationTasks: [NeverMinimizeWindow.ID: Task<Void, Never>] = [:]
     @State private var applicationWindowRefreshTasksByPID: [pid_t: Task<Void, Never>] = [:]
 
-    init(appState: WindowBoardAppState) {
+    init(
+        appState: WindowBoardAppState,
+        windowServiceFactory: @escaping @Sendable () -> any ContentWindowOperating = { AccessibilityWindowService() }
+    ) {
+        self.windowServiceFactory = windowServiceFactory
+        service = windowServiceFactory()
+        windowCatalog = ApplicationWindowCatalog(serviceFactory: windowServiceFactory)
+        recoveryCoordinator = AttachedWindowRecoveryCoordinator(serviceFactory: windowServiceFactory)
+        _followCoordinator = State(initialValue: BoardFollowCoordinator())
+        _frontingCoordinator = State(initialValue: BoardFrontingCoordinator())
+        _snapshotCoordinator = State(
+            initialValue: AttachedWindowSnapshotCoordinator(serviceFactory: windowServiceFactory)
+        )
         _appState = ObservedObject(initialValue: appState)
         _workspaceStore = ObservedObject(initialValue: appState.workspaceStore)
         _session = ObservedObject(initialValue: appState.session)
@@ -336,48 +305,16 @@ struct ContentView: View {
 
     private var workspaceDetail: some View {
         WorkspaceDetailView(
-            selectedWorkspace: selectedWorkspace,
-            selectedWindowID: selectedWindowID,
-            windows: windows,
             attachedWindows: session.attachedWindows,
-            isLoadingWindows: isLoadingWindows,
             isLoadingWorkspace: session.isLoadingWorkspace,
             isMinimizingUnattached: session.isMinimizingUnattached,
             isRestoringMinimized: session.isRestoringMinimized,
-            canAttachSelected: selectedWindow != nil && boardWindow != nil,
             canAttachFrontmost: boardWindow != nil,
-            canSaveWorkspace: !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
-            canOverwriteWorkspace: selectedWorkspace != nil && !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
-            canEditWorkspaceName: selectedWorkspace?.isDefault != true,
-            canRenameWorkspace: selectedWorkspace != nil && selectedWorkspace?.isDefault != true && !trimmedWorkspaceName.isEmpty,
-            canReloadWorkspace: selectedWorkspace != nil && !session.isLoadingWorkspace && boardWindow != nil,
-            canDeleteWorkspace: selectedWorkspace != nil && selectedWorkspace?.isDefault != true && !session.isLoadingWorkspace,
-            canUpdatePositions: !session.attachedWindows.isEmpty && boardWindow != nil,
-            canBringToFront: !session.attachedWindows.isEmpty,
-            canMinimizeUnattached: !session.isMinimizingUnattached && !session.isRestoringMinimized && !windows.isEmpty,
-            canRestoreMinimized: !session.isMinimizingUnattached && !session.isRestoringMinimized && !session.minimizedWindows.isEmpty,
-            canDetachAll: !session.attachedWindows.isEmpty,
-            workspaceName: $session.workspaceName,
-            selectedWindow: $selectedWindowID,
-            workspaceStatusText: $workspaceStatusTextInput,
-            minimizeUnattachedOnSwitch: $shouldMinimizeUnattachedOnWorkspaceSwitch,
-            restoreMissingWindowsOnSwitch: $shouldRestoreMissingWindowsOnWorkspaceSwitch,
-            boardAlwaysOnTop: $isBoardAlwaysOnTop,
             attachedState: attachedDisplayState(for:),
             recoveryIssue: { recoveryIssueByAttachmentID[$0] },
             actions: WorkspaceDetailActions(
-                refreshWindows: refreshWindowsAsync,
-                attachSelected: attachSelectedWindow,
-                attachFrontmost: attachFrontmostWindow,
                 attachFromAddCard: attachFrontmostWindowFromAddCard,
                 clearRecentlyAddedWindowID: { recentlyAddedAttachedWindowID = nil },
-                saveWorkspace: saveCurrentWorkspace,
-                overwriteWorkspace: overwriteSelectedWorkspace,
-                renameWorkspace: renameSelectedWorkspace,
-                reloadWorkspace: loadSelectedWorkspace,
-                deleteWorkspace: deleteSelectedWorkspace,
-                updateStatusItemIcon: updateSelectedWorkspaceIcon,
-                updateStatusItemText: updateSelectedWorkspaceStatusText,
                 recoverAttached: recoverAttachedWindow,
                 useFrontWindowForAttached: useFrontWindowForAttached,
                 updateAttached: updateAttachedPositionFromMainView(id:),
@@ -393,12 +330,7 @@ struct ContentView: View {
                 removeNeverMinimizeWindow: removeNeverMinimizeWindowFromCard(id:),
                 clearRecentlyAddedNeverMinimizeWindowID: { recentlyAddedNeverMinimizeWindowID = nil },
                 showNeverMinimizeWindow: showNeverMinimizeWindow(_:),
-                showAndMoveNeverMinimizeWindowBelowCard: bringAndMovePermanentWindowBelowCard(_:cursorScreenLocation:),
-                updatePositions: updateAttachedPositionsFromMainView,
-                bringToFront: bringAllAttachedWindowsToFrontFromMainView,
-                minimizeUnattached: minimizeUnattachedWindows,
-                restoreMinimized: restoreMinimizedWindows,
-                detachAll: detachAllFromMainView
+                showAndMoveNeverMinimizeWindowBelowCard: bringAndMovePermanentWindowBelowCard(_:cursorScreenLocation:)
             ),
             recentlyAddedWindowID: recentlyAddedAttachedWindowID,
             workspaceTransitionToken: workspaceCardTransitionToken,
@@ -761,16 +693,6 @@ struct ContentView: View {
         .frame(maxWidth: 640, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Text("Window Board")
-                .font(.title2.weight(.semibold))
-            Text("Attach windows, then choose whether they follow this board.")
-                .font(.callout)
-                .foregroundStyle(.secondary)
-        }
-    }
-
     private var permissionView: some View {
         VStack(alignment: .leading, spacing: 12) {
             Label("Accessibility permission is required.", systemImage: "hand.raised")
@@ -796,371 +718,6 @@ struct ContentView: View {
         }
     }
 
-    private var windowPicker: some View {
-        sectionContainer {
-            HStack {
-                sectionTitle("Window Selection", systemImage: "macwindow")
-
-                Spacer()
-
-                Button {
-                    refreshWindowsAsync()
-                } label: {
-                    Label("Refresh", systemImage: "arrow.clockwise")
-                }
-                .labelStyle(.iconOnly)
-                .help("Refresh window list")
-                .disabled(isLoadingWindows)
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                if isLoadingWindows {
-                    progressRow("Loading windows...")
-                } else {
-                    Picker("Window", selection: $selectedWindowID) {
-                        Text("Choose a window").tag(WindowInfo.ID?.none)
-                        ForEach(windows) { window in
-                            Text(window.displayName).tag(WindowInfo.ID?.some(window.id))
-                        }
-                    }
-                }
-
-                HStack(spacing: 8) {
-                    Button("Attach Selected") {
-                        attachSelectedWindow()
-                    }
-                    .disabled(selectedWindow == nil || boardWindow == nil)
-
-                    Button("Attach Window") {
-                        attachFrontmostWindow()
-                    }
-                    .disabled(boardWindow == nil)
-
-                    Spacer()
-                }
-            }
-        }
-    }
-
-    private var attachedSection: some View {
-        sectionContainer {
-            HStack {
-                sectionTitle("Board Windows", systemImage: "rectangle.stack")
-                Spacer()
-                Text("\(session.attachedWindows.count)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-            }
-
-            if session.attachedWindows.isEmpty {
-                Text("No windows attached")
-                    .foregroundStyle(.secondary)
-            } else {
-                VStack(alignment: .leading, spacing: 10) {
-                    ForEach(session.attachedWindows, id: \.id) { attachedWindow in
-                        attachedWindowRow(attachedWindow)
-                    }
-                }
-            }
-        }
-    }
-
-    private func attachedWindowRow(_ attachedWindow: AttachedWindow) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack(alignment: .top, spacing: 8) {
-                VStack(alignment: .leading, spacing: 2) {
-                    Text(attachedWindow.window.appName)
-                        .font(.body.weight(.medium))
-                        .lineLimit(1)
-
-                    if !attachedWindow.window.title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Text(attachedWindow.window.title)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(2)
-                    }
-                }
-
-                Spacer(minLength: 8)
-
-                attachedStatusBadge(for: attachedWindow)
-            }
-
-            HStack(spacing: 8) {
-                if isUnavailable(attachedWindow.id) || isReconnecting(attachedWindow.id) {
-                    Button("Open / Reconnect") {
-                        recoverAttachedWindow(attachedWindow)
-                    }
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button("Open / Reconnect") {
-                        recoverAttachedWindow(attachedWindow)
-                    }
-                }
-
-                Button("Update") {
-                    updateAttachedPosition(for: attachedWindow.id)
-                }
-
-                Button("Detach") {
-                    detachWindow(id: attachedWindow.id)
-                }
-
-                Spacer()
-            }
-        }
-        .padding(.vertical, 4)
-    }
-
-    private var workspaceSection: some View {
-        sectionContainer {
-            HStack {
-                sectionTitle("Current Board", systemImage: "rectangle.on.rectangle")
-                Spacer()
-                if let selectedWorkspace {
-                    Text(selectedWorkspace.displayName)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
-            }
-
-            VStack(alignment: .leading, spacing: 10) {
-                HStack(spacing: 8) {
-                    Picker("Saved Board", selection: $session.selectedWorkspaceID) {
-                        Text("Choose a board").tag(SavedWorkspace.ID?.none)
-                        ForEach(workspaceStore.workspaces) { workspace in
-                            Text(workspace.displayName).tag(SavedWorkspace.ID?.some(workspace.id))
-                        }
-                    }
-                    .disabled(session.isLoadingWorkspace || boardWindow == nil)
-
-                    Button("Reload") {
-                        loadSelectedWorkspace()
-                    }
-                    .disabled(selectedWorkspace == nil || session.isLoadingWorkspace || boardWindow == nil)
-                }
-
-                HStack(spacing: 8) {
-                    TextField("Board Name", text: $session.workspaceName)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(minWidth: 160)
-
-                    Button("Save") {
-                        saveCurrentWorkspace()
-                    }
-                    .disabled(session.attachedWindows.isEmpty || boardMotion.currentOrigin == nil)
-
-                    Button("Overwrite") {
-                        overwriteSelectedWorkspace()
-                    }
-                    .disabled(selectedWorkspace == nil || session.attachedWindows.isEmpty || boardMotion.currentOrigin == nil)
-
-                    Button("Rename") {
-                        renameSelectedWorkspace()
-                    }
-                    .disabled(selectedWorkspace == nil || trimmedWorkspaceName.isEmpty)
-
-                    Spacer()
-
-                    Button("Delete") {
-                        deleteSelectedWorkspace()
-                    }
-                    .disabled(selectedWorkspace == nil || session.isLoadingWorkspace)
-                }
-            }
-
-            Divider()
-
-            VStack(alignment: .leading, spacing: 8) {
-                Text("Status Item Display")
-                    .font(.subheadline.weight(.medium))
-
-                HStack(spacing: 8) {
-                    statusItemPreview
-
-                    Spacer()
-
-                    TextField("Text", text: $workspaceStatusTextInput)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 96)
-                        .disabled(selectedWorkspace == nil)
-
-                    Button("Set Text") {
-                        updateSelectedWorkspaceStatusText()
-                    }
-                    .disabled(selectedWorkspace == nil)
-
-                    workspaceIconMenu
-                        .disabled(selectedWorkspace == nil)
-                }
-            }
-
-            if session.isLoadingWorkspace {
-                progressRow("Loading board...")
-            }
-
-            Toggle("Minimize Others When Switching Boards", isOn: $shouldMinimizeUnattachedOnWorkspaceSwitch)
-                .font(.caption)
-        }
-    }
-
-    private var workspaceIconMenu: some View {
-        Menu {
-            Section("Symbols") {
-                ForEach(WorkspaceStatusItemIcon.options) { icon in
-                    Button {
-                        updateSelectedWorkspaceIcon(icon.symbolName)
-                    } label: {
-                        Label(icon.label, systemImage: icon.symbolName)
-                    }
-                }
-            }
-
-            Section("Emoji") {
-                ForEach(WorkspaceStatusItemIcon.emojiOptions) { icon in
-                    Button {
-                        updateSelectedWorkspaceIcon(icon.symbolName)
-                    } label: {
-                        Text("\(icon.emoji ?? "") \(icon.label)")
-                    }
-                }
-            }
-        } label: {
-            workspaceIconLabel
-        }
-    }
-
-    private var statusItemPreview: some View {
-        HStack(spacing: 6) {
-            if let title = WorkspaceStatusItemIcon.title(from: selectedWorkspace?.statusItemSymbolName) {
-                Text(title)
-                    .font(.caption.weight(.semibold))
-                    .lineLimit(1)
-            } else {
-                Image(systemName: selectedWorkspace?.statusItemSymbolName ?? WorkspaceStatusItemIcon.defaultSymbolName)
-                    .font(.body)
-            }
-
-            Text("Current")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8)
-        .padding(.vertical, 4)
-        .background(.quaternary)
-        .clipShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
-    }
-
-    private var workspaceIconLabel: some View {
-        Group {
-            if let title = WorkspaceStatusItemIcon.title(from: selectedWorkspace?.statusItemSymbolName) {
-                Text("\(title) Display")
-            } else {
-                Label("Icon", systemImage: selectedWorkspace?.statusItemSymbolName ?? WorkspaceStatusItemIcon.defaultSymbolName)
-            }
-        }
-    }
-
-    private var boardAlwaysOnTopToggle: some View {
-        Toggle("Keep Window Board On Top", isOn: $isBoardAlwaysOnTop)
-    }
-
-    private var actionRow: some View {
-        sectionContainer {
-            HStack {
-                sectionTitle("Actions", systemImage: "bolt")
-                Spacer()
-            }
-
-            HStack {
-                Button("Update Position") {
-                    updateAttachedPosition()
-                }
-                .disabled(session.attachedWindows.isEmpty || boardWindow == nil)
-
-                Button("Show Attached") {
-                    bringAllAttachedWindowsToFront()
-                }
-                .disabled(session.attachedWindows.isEmpty)
-
-                Button("Minimize Others") {
-                    minimizeUnattachedWindows()
-                }
-                .disabled(session.isMinimizingUnattached || session.isRestoringMinimized || windows.isEmpty)
-
-                Button("Restore Windows") {
-                    restoreMinimizedWindows()
-                }
-                .disabled(session.isMinimizingUnattached || session.isRestoringMinimized || session.minimizedWindows.isEmpty)
-
-                Spacer()
-
-                Button("Detach All") {
-                    detachAll(message: "Detached all windows.")
-                }
-                .disabled(session.attachedWindows.isEmpty)
-            }
-        }
-    }
-
-    private var statusFooter: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            if session.isLoadingWorkspace {
-                progressRow("Restoring windows and reconnecting as needed...")
-            } else if session.isMinimizingUnattached {
-                progressRow("Minimizing other windows...")
-            } else if session.isRestoringMinimized {
-                progressRow("Restoring minimized windows...")
-            }
-
-            Text(session.statusMessage)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func sectionContainer<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-        VStack(alignment: .leading, spacing: 10) {
-            content()
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(12)
-        .background(.regularMaterial)
-        .clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
-    }
-
-    private func sectionTitle(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.headline)
-    }
-
-    private func progressRow(_ title: String) -> some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            Text(title)
-                .foregroundStyle(.secondary)
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    @ViewBuilder
-    private func attachedStatusBadge(for attachedWindow: AttachedWindow) -> some View {
-        if session.isLoadingWorkspace {
-            statusBadge("Resolving", systemImage: "arrow.triangle.2.circlepath")
-        } else if isReconnecting(attachedWindow.id) {
-            statusBadge("Reconnecting", systemImage: "arrow.triangle.2.circlepath")
-        } else if isUnavailable(attachedWindow.id) {
-            statusBadge("Unavailable", systemImage: "exclamationmark.triangle")
-        } else if isMinimized(attachedWindow.id) {
-            statusBadge("Minimized", systemImage: "minus.square")
-        } else {
-            statusBadge("Available", systemImage: "checkmark.circle")
-        }
-    }
-
     private func attachedDisplayState(for attachedWindow: AttachedWindow) -> AttachedWindowDisplayState {
         if session.isLoadingWorkspace {
             return .resolving
@@ -1179,16 +736,6 @@ struct ContentView: View {
         }
 
         return .available
-    }
-
-    private func statusBadge(_ title: String, systemImage: String) -> some View {
-        Label(title, systemImage: systemImage)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 3)
-            .background(.quaternary)
-            .clipShape(Capsule())
     }
 
     private var selectedWindow: WindowInfo? {
@@ -1292,7 +839,7 @@ struct ContentView: View {
         session.statusMessage = "Loading windows..."
 
         Task.detached(priority: .userInitiated) {
-            let loadedWindows = AccessibilityWindowService().listWindows()
+            let loadedWindows = windowCatalog.allWindows()
 
             await MainActor.run {
                 windows = loadedWindows
@@ -1339,24 +886,12 @@ struct ContentView: View {
             }
 
             let appWindows = await Task.detached(priority: .utility) {
-                let service = AccessibilityWindowService()
-                var appWindows: [WindowInfo] = []
                 let attempts = retry ? 3 : 1
-
-                for attempt in 0..<attempts {
-                    if Task.isCancelled {
-                        return appWindows
-                    }
-
-                    if attempt > 0 {
-                        try? await Task.sleep(for: .milliseconds(120))
-                    }
-
-                    appWindows = service.windows(for: application)
-                    if !appWindows.isEmpty {
-                        break
-                    }
-                }
+                let appWindows = await windowCatalog.windows(
+                    for: application,
+                    attempts: attempts,
+                    retryDelay: .milliseconds(120)
+                )
 
                 #if DEBUG
                 contentEnergyLogger.debug(
@@ -1553,12 +1088,7 @@ struct ContentView: View {
         activePositionReadIDs.removeAll()
         minimizedAttachedWindowIDs.removeAll()
         workspaceStatusTextInput = ""
-        boardMotion.pendingReleaseOrigin = nil
-        pendingReleaseMoveTask?.cancel()
-        pendingReleaseMoveTask = nil
-        pendingAutoFront = false
-        pendingAutoFrontTask?.cancel()
-        pendingAutoFrontTask = nil
+        followCoordinator.cancelAll()
     }
 
     private func overwriteSelectedWorkspace() {
@@ -1617,7 +1147,7 @@ struct ContentView: View {
     ) {
         let shouldTemporarilyFrontBoard = autoFrontMode == .off && shouldBringBoardToFrontAfterLoad
         let usesDeferredWindowApplication = true
-        let workspaceFrontingRevision = shouldTemporarilyFrontBoard
+        let workspaceFrontingToken = shouldTemporarilyFrontBoard
             ? beginTemporaryBoardWorkspaceFronting()
             : nil
         recentlyAddedAttachedWindowID = nil
@@ -1636,9 +1166,7 @@ struct ContentView: View {
                 recoveryIssueByAttachmentID.removeAll()
                 recoveryRevisionByAttachmentID.removeAll()
                 activePositionReadIDs.removeAll()
-                boardMotion.pendingReleaseOrigin = nil
-                pendingReleaseMoveTask?.cancel()
-                pendingReleaseMoveTask = nil
+                followCoordinator.cancelRelease()
                 if autoFrontMode == .off {
                     if shouldBringBoardToFrontAfterLoad && shouldBringBoardToFront {
                         bringBoardWindowToFront()
@@ -1647,19 +1175,19 @@ struct ContentView: View {
                     bringAllAttachedWindowsToFront(updateStatus: false)
                 }
 
-                if !usesDeferredWindowApplication, let workspaceFrontingRevision {
-                    endTemporaryBoardWorkspaceFronting(revision: workspaceFrontingRevision)
+                if !usesDeferredWindowApplication, let workspaceFrontingToken {
+                    endTemporaryBoardWorkspaceFronting(token: workspaceFrontingToken)
                 }
             },
             deferredWindowApplicationCompletion: {
                 guard autoFrontMode == .off,
                       shouldBringBoardToFrontAfterLoad,
-                      let workspaceFrontingRevision else {
+                      let workspaceFrontingToken else {
                     return
                 }
 
                 bringBoardWindowToFront()
-                endTemporaryBoardWorkspaceFronting(revision: workspaceFrontingRevision)
+                endTemporaryBoardWorkspaceFronting(token: workspaceFrontingToken)
             },
             minimizeAfterSwitchCompletion: {
                 guard shouldMinimizeUnattachedOnWorkspaceSwitch,
@@ -1695,7 +1223,7 @@ struct ContentView: View {
     }
 
     private func rememberActivatedApplication(from notification: Notification) {
-        guard Date() >= suppressExternalActivationUntil else {
+        guard frontingCoordinator.shouldAcceptExternalActivation() else {
             return
         }
 
@@ -1709,110 +1237,44 @@ struct ContentView: View {
 
     private func handleBoardOriginChanged(_ origin: CGPoint) {
         boardMotion.currentOrigin = origin
-        boardMotion.lastMoveDate = Date()
-
-        guard !session.attachedWindows.isEmpty else {
-            return
-        }
-
-        if followMode == .onRelease || followMode == .animatedRelease {
-            boardMotion.pendingReleaseOrigin = origin
-            schedulePendingReleaseMove()
-            return
-        }
-
-        if followMode == .none {
-            boardMotion.pendingReleaseOrigin = nil
-            pendingReleaseMoveTask?.cancel()
-            pendingReleaseMoveTask = nil
-            return
-        }
-
-        for index in session.attachedWindows.indices {
-            let attachedWindow = session.attachedWindows[index]
-
-            guard !isUnavailable(attachedWindow.id) else {
-                session.attachedWindows[index].lastBoardOrigin = origin
-                continue
+        followCoordinator.recordMovement(
+            to: origin,
+            mode: followMode,
+            hasAttachedWindows: !session.attachedWindows.isEmpty,
+            currentMode: { followMode },
+            applySmoothMove: { boardOrigin in
+                applyBoardFollowMovement(to: boardOrigin, style: .immediate)
+            },
+            applyReleaseMove: { boardOrigin, style in
+                applyBoardFollowMovement(to: boardOrigin, style: style)
             }
-
-            let boardDelta = CGPoint(
-                x: origin.x - attachedWindow.lastBoardOrigin.x,
-                y: origin.y - attachedWindow.lastBoardOrigin.y
-            )
-
-            let targetOrigin = CGPoint(
-                x: attachedWindow.lastWindowOrigin.x + boardDelta.x,
-                y: attachedWindow.lastWindowOrigin.y - boardDelta.y
-            )
-
-            if let lastAppliedOrigin = attachedWindow.lastAppliedOrigin,
-               abs(lastAppliedOrigin.x - targetOrigin.x) < 1,
-               abs(lastAppliedOrigin.y - targetOrigin.y) < 1 {
-                session.attachedWindows[index].lastBoardOrigin = origin
-                continue
-            }
-
-            session.attachedWindows[index].lastBoardOrigin = origin
-            session.attachedWindows[index].lastWindowOrigin = targetOrigin
-            session.attachedWindows[index].lastAppliedOrigin = targetOrigin
-
-            switch followMode {
-            case .none:
-                break
-            case .smooth:
-                moveAttachedWindow(attachedWindow.window, attachmentID: attachedWindow.id, to: targetOrigin)
-            case .onRelease, .animatedRelease:
-                break
-            }
-        }
+        )
     }
 
-    private func applyPendingReleaseMoveIfIdle() {
-        guard let pendingReleaseBoardOrigin = boardMotion.pendingReleaseOrigin,
-              (followMode == .onRelease || followMode == .animatedRelease),
-              Date().timeIntervalSince(boardMotion.lastMoveDate) > Self.releaseIdleDelay else {
-            return
-        }
+    private func applyBoardFollowMovement(to boardOrigin: CGPoint, style: BoardFollowMoveStyle) {
+        let updates = BoardFollowPlanner.updates(
+            for: boardOrigin,
+            attachedWindows: session.attachedWindows,
+            unavailableAttachmentIDs: session.unavailableAttachedWindowIDs
+        )
 
-        boardMotion.pendingReleaseOrigin = nil
-        pendingReleaseMoveTask = nil
-
-        for index in session.attachedWindows.indices {
-            let attachedWindow = session.attachedWindows[index]
-            guard !isUnavailable(attachedWindow.id) else {
-                session.attachedWindows[index].lastBoardOrigin = pendingReleaseBoardOrigin
+        for update in updates {
+            guard let index = session.attachedWindows.firstIndex(where: { $0.id == update.attachmentID }) else {
                 continue
             }
 
-            let boardDelta = CGPoint(
-                x: pendingReleaseBoardOrigin.x - attachedWindow.lastBoardOrigin.x,
-                y: pendingReleaseBoardOrigin.y - attachedWindow.lastBoardOrigin.y
-            )
-            let targetOrigin = CGPoint(
-                x: attachedWindow.lastWindowOrigin.x + boardDelta.x,
-                y: attachedWindow.lastWindowOrigin.y - boardDelta.y
-            )
+            session.attachedWindows[index].lastBoardOrigin = update.boardOrigin
+            guard let targetOrigin = update.targetOrigin else { continue }
 
-            if let lastAppliedOrigin = attachedWindow.lastAppliedOrigin,
-               abs(lastAppliedOrigin.x - targetOrigin.x) < 1,
-               abs(lastAppliedOrigin.y - targetOrigin.y) < 1 {
-                session.attachedWindows[index].lastBoardOrigin = pendingReleaseBoardOrigin
-                continue
-            }
-
-            let window = attachedWindow.window
-            session.attachedWindows[index].lastBoardOrigin = pendingReleaseBoardOrigin
+            let window = session.attachedWindows[index].window
             session.attachedWindows[index].lastWindowOrigin = targetOrigin
             session.attachedWindows[index].lastAppliedOrigin = targetOrigin
 
-            switch followMode {
-            case .onRelease:
-                moveAttachedWindow(window, attachmentID: attachedWindow.id, to: targetOrigin)
-            case .animatedRelease:
-                animateAttachedWindow(window, attachmentID: attachedWindow.id, to: targetOrigin)
-            case .none, .smooth:
-                break
+            switch style {
+            case .immediate:
+                moveAttachedWindow(window, attachmentID: update.attachmentID, to: targetOrigin)
+            case .animated:
+                animateAttachedWindow(window, attachmentID: update.attachmentID, to: targetOrigin)
             }
         }
     }
@@ -1844,67 +1306,16 @@ struct ContentView: View {
     }
 
     private func markAutoFrontPendingIfNeeded() {
-        guard autoFrontMode != .off else {
-            return
-        }
-
-        pendingAutoFront = true
-        schedulePendingAutoFront()
-    }
-
-    private func applyPendingAutoFrontIfIdle() {
-        guard pendingAutoFront,
-              autoFrontMode == .allAttached,
-              Date().timeIntervalSince(boardMotion.lastMoveDate) > Self.autoFrontIdleDelay,
-              !session.attachedWindows.isEmpty else {
-            return
-        }
-
-        pendingAutoFront = false
-        pendingAutoFrontTask = nil
-        bringAllAttachedWindowsToFront(updateStatus: false)
-    }
-
-    private func schedulePendingReleaseMove() {
-        pendingReleaseMoveTask?.cancel()
-        pendingReleaseMoveTask = Task { @MainActor in
-            while !Task.isCancelled {
-                let remainingDelay = Self.releaseIdleDelay - Date().timeIntervalSince(boardMotion.lastMoveDate)
-                if remainingDelay > 0 {
-                    try? await Task.sleep(for: .milliseconds(Int(ceil(remainingDelay * 1000))))
-                    continue
-                }
-
-                applyPendingReleaseMoveIfIdle()
-                if boardMotion.pendingReleaseOrigin == nil {
-                    pendingReleaseMoveTask = nil
-                    return
-                }
-            }
-        }
-    }
-
-    private func schedulePendingAutoFront() {
-        pendingAutoFrontTask?.cancel()
-        pendingAutoFrontTask = Task { @MainActor in
-            while !Task.isCancelled {
-                let remainingDelay = Self.autoFrontIdleDelay - Date().timeIntervalSince(boardMotion.lastMoveDate)
-                if remainingDelay > 0 {
-                    try? await Task.sleep(for: .milliseconds(Int(ceil(remainingDelay * 1000))))
-                    continue
-                }
-
-                applyPendingAutoFrontIfIdle()
-                if !pendingAutoFront {
-                    pendingAutoFrontTask = nil
-                    return
-                }
-            }
-        }
+        followCoordinator.markAutoFrontPending(
+            mode: autoFrontMode,
+            currentMode: { autoFrontMode },
+            hasAttachedWindows: { !session.attachedWindows.isEmpty },
+            applyAutoFront: { bringAllAttachedWindowsToFront(updateStatus: false) }
+        )
     }
 
     private func refreshAttachedWindowBaselineIfIdle() {
-        guard Date().timeIntervalSince(boardMotion.lastMoveDate) > Self.baselineIdleDelay,
+        guard followCoordinator.isIdle(for: Self.baselineIdleDelay),
               !session.attachedWindows.isEmpty else {
             return
         }
@@ -1921,9 +1332,7 @@ struct ContentView: View {
     }
 
     private func resetAttachedBoardBaselineToCurrentOrigin() {
-        boardMotion.pendingReleaseOrigin = nil
-        pendingReleaseMoveTask?.cancel()
-        pendingReleaseMoveTask = nil
+        followCoordinator.cancelRelease()
 
         guard let boardOrigin = boardMotion.currentOrigin else {
             return
@@ -1954,7 +1363,7 @@ struct ContentView: View {
 
         Task.detached(priority: .utility) {
             let result = Result {
-                try AccessibilityWindowService().position(of: attachedWindow.window)
+                try windowServiceFactory().position(of: attachedWindow.window)
             }
 
             await MainActor.run {
@@ -1991,37 +1400,33 @@ struct ContentView: View {
     }
 
     private func restartAttachedWindowSnapshotTask() {
-        stopAttachedWindowSnapshotTask()
-
-        guard !session.attachedWindows.isEmpty,
-              !session.isLoadingWorkspace,
-              !session.isApplyingWorkspaceWindows,
-              !session.isMinimizingUnattached,
-              !session.isRestoringMinimized else {
-            return
-        }
-
-        attachedWindowSnapshotTask = Task {
-            while !Task.isCancelled {
-                try? await Task.sleep(for: Self.attachedSnapshotInterval)
-                guard !Task.isCancelled else {
-                    return
+        snapshotCoordinator.restart(
+            activity: snapshotActivity,
+            requestProvider: {
+                guard !session.attachedWindows.isEmpty else {
+                    return nil
                 }
-                await refreshAttachedWindowSnapshots()
+
+                return AttachedWindowSnapshotBatch(
+                    workspaceID: session.activeWorkspaceID,
+                    requests: session.attachedWindows.map {
+                        AttachedWindowSnapshotRequest(attachmentID: $0.id, window: $0.window)
+                    }
+                )
+            },
+            consume: { result in
+                applyAttachedWindowSnapshots(result)
             }
-        }
+        )
     }
 
     private func stopAttachedWindowSnapshotTask() {
-        attachedWindowSnapshotTask?.cancel()
-        attachedWindowSnapshotTask = nil
+        snapshotCoordinator.stop()
     }
 
     private func cancelEnergyTasks() {
-        pendingReleaseMoveTask?.cancel()
-        pendingReleaseMoveTask = nil
-        pendingAutoFrontTask?.cancel()
-        pendingAutoFrontTask = nil
+        followCoordinator.cancelTasksForDisappearance()
+        frontingCoordinator.cancelTasksForDisappearance()
         applicationWindowRefreshTasksByPID.values.forEach { $0.cancel() }
         applicationWindowRefreshTasksByPID.removeAll()
     }
@@ -2037,84 +1442,75 @@ struct ContentView: View {
         }
     }
 
-    @MainActor
-    private func refreshAttachedWindowSnapshots() async {
-        guard !session.attachedWindows.isEmpty else {
-            stopAttachedWindowSnapshotTask()
+    private var snapshotActivity: AttachedWindowSnapshotCoordinator.Activity {
+        AttachedWindowSnapshotCoordinator.Activity(
+            hasAttachments: !session.attachedWindows.isEmpty,
+            isLoadingWorkspace: session.isLoadingWorkspace,
+            isApplyingWorkspaceWindows: session.isApplyingWorkspaceWindows,
+            isMinimizingUnattached: session.isMinimizingUnattached,
+            isRestoringMinimized: session.isRestoringMinimized
+        )
+    }
+
+    private func applyAttachedWindowSnapshots(_ result: AttachedWindowSnapshotBatchResult) {
+        guard result.workspaceID == session.activeWorkspaceID else {
             return
         }
 
-        let attachedWindows = session.attachedWindows
-        let results = await Task.detached(priority: .utility) {
-            let service = AccessibilityWindowService()
-            return attachedWindows.map { attachedWindow -> AttachedWindowSnapshotResult in
-                let origin = try? service.position(of: attachedWindow.window)
-                let title = service.title(of: attachedWindow.window)
-                let isMinimized = service.isMinimized(attachedWindow.window)
-                return AttachedWindowSnapshotResult(
-                    id: attachedWindow.id,
-                    windowID: attachedWindow.window.id,
-                    title: title,
-                    origin: origin,
-                    isMinimized: isMinimized
-                )
-            }
-        }.value
-
         #if DEBUG
-        contentEnergyLogger.debug("attached snapshot windows=\(results.count, privacy: .public)")
+        contentEnergyLogger.debug("attached snapshot windows=\(result.snapshots.count, privacy: .public)")
         #endif
 
         var didChange = false
 
-        for result in results {
-            guard let index = session.attachedWindows.firstIndex(where: { $0.id == result.id }) else {
+        for snapshot in result.snapshots {
+            guard let index = session.attachedWindows.firstIndex(where: { $0.id == snapshot.attachmentID }) else {
                 continue
             }
 
-            guard session.attachedWindows[index].window.id == result.windowID else {
+            guard session.attachedWindows[index].window.id == snapshot.windowID else {
                 continue
             }
 
-            guard !isReconnecting(result.id) else {
+            guard !isReconnecting(snapshot.attachmentID) else {
                 continue
             }
 
-            if let title = result.title,
+            if let title = snapshot.title,
                title != session.attachedWindows[index].window.title {
                 session.attachedWindows[index].window = session.attachedWindows[index].window.updatingTitle(title)
                 didChange = true
             }
 
-            if result.isMinimized {
-                minimizedAttachedWindowIDs.insert(result.id)
-                clearAttachedWindowAccessFailure(for: result.id)
-                markAttachedWindowAvailable(result.id)
+            if snapshot.isMinimized {
+                minimizedAttachedWindowIDs.insert(snapshot.attachmentID)
+                clearAttachedWindowAccessFailure(for: snapshot.attachmentID)
+                markAttachedWindowAvailable(snapshot.attachmentID)
                 continue
             } else {
-                minimizedAttachedWindowIDs.remove(result.id)
+                minimizedAttachedWindowIDs.remove(snapshot.attachmentID)
             }
 
-            if let origin = result.origin {
+            if let origin = snapshot.origin {
                 if !originsMatch(session.attachedWindows[index].lastWindowOrigin, origin) {
                     session.attachedWindows[index].lastWindowOrigin = origin
                     session.attachedWindows[index].lastAppliedOrigin = origin
                     session.attachedWindows[index].pendingReleaseOrigin = nil
                     didChange = true
                 }
-                clearAttachedWindowAccessFailure(for: result.id)
-                markAttachedWindowAvailable(result.id)
+                clearAttachedWindowAccessFailure(for: snapshot.attachmentID)
+                markAttachedWindowAvailable(snapshot.attachmentID)
             } else {
                 if session.attachedWindows[index].window.pid == 0 {
-                    session.unavailableAttachedWindowIDs.insert(result.id)
+                    session.unavailableAttachedWindowIDs.insert(snapshot.attachmentID)
                     didChange = true
                     continue
                 }
 
-                let failureCount = (attachedWindowFailureCounts[result.id] ?? 0) + 1
-                attachedWindowFailureCounts[result.id] = failureCount
-                if failureCount >= 3, !isUnavailable(result.id) {
-                    session.unavailableAttachedWindowIDs.insert(result.id)
+                let failureCount = (attachedWindowFailureCounts[snapshot.attachmentID] ?? 0) + 1
+                attachedWindowFailureCounts[snapshot.attachmentID] = failureCount
+                if failureCount >= 3, !isUnavailable(snapshot.attachmentID) {
+                    session.unavailableAttachedWindowIDs.insert(snapshot.attachmentID)
                     didChange = true
                 }
             }
@@ -2143,253 +1539,18 @@ struct ContentView: View {
         )
     }
 
-    private func minimizeUnattachedAfterWorkspaceSwitchIfNeeded() {
-        guard shouldMinimizeUnattachedOnWorkspaceSwitch,
-              !session.attachedWindows.isEmpty,
-              session.attachedWindows.contains(where: { !isUnavailable($0.id) }),
-              !session.isMinimizingUnattached,
-              !session.isRestoringMinimized else {
-            return
-        }
-
-        minimizeUnattachedWindows()
-    }
-
-    private func beginMinimizing(_ windowsToMinimize: [WindowInfo], attachedSnapshots: [AttachedWindowSnapshot]) {
-        session.statusMessage = "Minimizing \(windowsToMinimize.count) unattached window(s)..."
-
-        Task.detached(priority: .userInitiated) {
-            let service = AccessibilityWindowService()
-            var minimizedWindows: [WindowInfo] = []
-            var restoredAttachedWindows: [WindowInfo] = []
-            var failedCount = 0
-
-            for window in windowsToMinimize {
-                guard !service.isMinimized(window) else {
-                    continue
-                }
-
-                do {
-                    try service.setMinimized(true, for: window)
-                    minimizedWindows.append(window)
-                } catch {
-                    failedCount += 1
-                }
-            }
-
-            for snapshot in attachedSnapshots {
-                guard !snapshot.isUnavailable, !snapshot.isReconnecting else {
-                    continue
-                }
-
-                guard service.isMinimized(snapshot.window) else {
-                    continue
-                }
-
-                do {
-                    try service.setMinimized(false, for: snapshot.window)
-                    restoredAttachedWindows.append(snapshot.window)
-                } catch {
-                    failedCount += 1
-                }
-            }
-
-            let result = MinimizeWindowsResult(
-                minimizedWindows: minimizedWindows,
-                restoredAttachedWindows: restoredAttachedWindows,
-                failedCount: failedCount
-            )
-
-            await MainActor.run {
-                session.isMinimizingUnattached = false
-                let minimizedIDs = Set(result.minimizedWindows.map(\.id))
-
-                for window in result.minimizedWindows {
-                    rememberMinimizedWindow(window)
-                }
-
-                windows.removeAll { minimizedIDs.contains($0.id) }
-                if let selectedWindowID, minimizedIDs.contains(selectedWindowID) {
-                    self.selectedWindowID = nil
-                }
-
-                session.statusMessage = minimizeStatus(
-                    minimizedCount: result.minimizedWindows.count,
-                    restoredAttachedCount: result.restoredAttachedWindows.count,
-                    failedCount: result.failedCount
-                )
-            }
-        }
-    }
-
     private func restoreMinimizedWindows() {
         session.restoreMinimizedWindows { restoredWindows in
             appendRestoredWindows(restoredWindows)
         }
     }
 
-    private func rememberMinimizedWindow(_ window: WindowInfo) {
-        guard !session.minimizedWindows.contains(where: { $0.id == window.id }) else {
-            return
-        }
-
-        session.minimizedWindows.append(window)
-    }
-
-    private func attachedWindowSnapshots() -> [AttachedWindowSnapshot] {
-        session.attachedWindows.map { attachedWindow in
-            return AttachedWindowSnapshot(
-                attachmentID: attachedWindow.id,
-                windowID: attachedWindow.window.id,
-                appName: attachedWindow.window.appName,
-                title: attachedWindow.window.title,
-                pid: attachedWindow.window.pid,
-                bundleIdentifier: attachedWindow.window.bundleIdentifier,
-                documentURL: attachedWindow.window.documentURL,
-                windowNumber: attachedWindow.window.windowNumber,
-                origin: attachedWindow.lastWindowOrigin,
-                window: attachedWindow.window,
-                isUnavailable: isUnavailable(attachedWindow.id),
-                isReconnecting: isReconnecting(attachedWindow.id),
-                protectsSameApplicationFromMinimize: shouldProtectSameApplicationFromMinimize(attachedWindow)
-            )
-        }
-    }
-
-    private func shouldMinimizeWindow(
-        _ window: WindowInfo,
-        attachedSnapshots: [AttachedWindowSnapshot]
-    ) -> Bool {
-        guard !isAttachedWindow(window, attachedSnapshots: attachedSnapshots) else {
-            return false
-        }
-
-        return !isAmbiguousSameAppWindow(window, attachedSnapshots: attachedSnapshots)
-    }
-
-    private func isAttachedWindow(
-        _ window: WindowInfo,
-        attachedSnapshots: [AttachedWindowSnapshot]
-    ) -> Bool {
-        for snapshot in attachedSnapshots {
-            if snapshot.windowID == window.id {
-                return true
-            }
-
-            if let snapshotWindowNumber = snapshot.windowNumber,
-               let windowNumber = window.windowNumber,
-               snapshot.pid == window.pid,
-               snapshotWindowNumber == windowNumber {
-                return true
-            }
-
-            guard snapshot.pid == window.pid,
-                  snapshot.appName == window.appName,
-                  snapshot.title == window.title,
-                  let candidateOrigin = window.position else {
-                continue
-            }
-
-            if originsMatch(snapshot.origin, candidateOrigin) {
-                return true
-            }
-        }
-
-        return false
-    }
-
-    private func isAmbiguousSameAppWindow(
-        _ window: WindowInfo,
-        attachedSnapshots: [AttachedWindowSnapshot]
-    ) -> Bool {
-        attachedSnapshots.contains { snapshot in
-            guard isSameApplication(window, snapshot: snapshot) else {
-                return false
-            }
-
-            if isStrictMultiWindowApplication(window.bundleIdentifier)
-                || isStrictMultiWindowApplication(snapshot.bundleIdentifier) {
-                return false
-            }
-
-            if snapshot.protectsSameApplicationFromMinimize {
-                return true
-            }
-
-            if window.windowNumber != nil, snapshot.windowNumber != nil {
-                return false
-            }
-
-            if window.documentURL != nil, snapshot.documentURL != nil {
-                return false
-            }
-
-            let windowTitle = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            let snapshotTitle = snapshot.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !windowTitle.isEmpty,
-               !snapshotTitle.isEmpty,
-               windowTitle != snapshotTitle {
-                return false
-            }
-
-            return true
-        }
-    }
-
-    private func isSameApplication(_ window: WindowInfo, snapshot: AttachedWindowSnapshot) -> Bool {
-        if let windowBundleIdentifier = window.bundleIdentifier,
-           let snapshotBundleIdentifier = snapshot.bundleIdentifier {
-            return windowBundleIdentifier == snapshotBundleIdentifier
-        }
-
-        return window.pid == snapshot.pid || window.appName == snapshot.appName
-    }
-
-    private func isStrictMultiWindowApplication(_ bundleIdentifier: String?) -> Bool {
-        guard let bundleIdentifier else {
-            return false
-        }
-
-        return SavedWindowReference.isVisualStudioCode(bundleIdentifier: bundleIdentifier)
-    }
-
-    private func shouldProtectSameApplicationFromMinimize(_ attachedWindow: AttachedWindow) -> Bool {
-        let protectedBundleIdentifiers: Set<String> = [
-            "com.apple.Terminal"
-        ]
-
-        if let bundleIdentifier = attachedWindow.window.bundleIdentifier,
-           protectedBundleIdentifiers.contains(bundleIdentifier) {
-            return true
-        }
-
-        return isUnavailable(attachedWindow.id) || isReconnecting(attachedWindow.id)
-    }
-
     private func originsMatch(_ lhs: CGPoint, _ rhs: CGPoint) -> Bool {
         abs(lhs.x - rhs.x) < 3 && abs(lhs.y - rhs.y) < 3
     }
 
-    private func minimizeStatus(minimizedCount: Int, restoredAttachedCount: Int, failedCount: Int) -> String {
-        var message = "Minimized \(minimizedCount) unattached window(s)."
-
-        if restoredAttachedCount > 0 {
-            message += " Restored \(restoredAttachedCount) attached window(s)."
-        }
-
-        if failedCount > 0 {
-            message += " \(failedCount) operation(s) failed."
-        }
-
-        return message
-    }
-
     private func appendRestoredWindows(_ restoredWindows: [WindowInfo]) {
-        for window in restoredWindows where !windows.contains(where: { $0.id == window.id }) {
-            windows.append(window)
-        }
-
-        windows.sort { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        windows = windowCatalog.merging(restoredWindows, into: windows)
     }
 
     private func mergeWindows(_ appWindows: [WindowInfo], replacingApplication application: NSRunningApplication) {
@@ -2398,45 +1559,18 @@ struct ContentView: View {
     }
 
     private func mergeWindows(_ newWindows: [WindowInfo], into cachedWindows: [WindowInfo]) -> [WindowInfo] {
-        var mergedWindows = cachedWindows
-        for window in newWindows where !mergedWindows.contains(where: { $0.id == window.id }) {
-            mergedWindows.append(window)
-        }
-
-        return mergedWindows.sorted {
-            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
-    }
-
-    private func mergeWindows(_ appWindows: [WindowInfo], into cachedWindows: [WindowInfo], replacingApplication application: NSRunningApplication) -> [WindowInfo] {
-        var mergedWindows = cachedWindows.filter { !isWindow($0, from: application) }
-        for window in appWindows where !mergedWindows.contains(where: { $0.id == window.id }) {
-            mergedWindows.append(window)
-        }
-
-        return mergedWindows.sorted {
-            $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending
-        }
+        windowCatalog.merging(newWindows, into: cachedWindows)
     }
 
     private func removeCachedWindows(for application: NSRunningApplication) {
-        windows.removeAll { isWindow($0, from: application) }
+        windows = windowCatalog.removingWindows(for: application, from: windows)
+        clearInvalidSelectedWindow()
+    }
+
+    private func clearInvalidSelectedWindow() {
         if let selectedWindowID, !windows.contains(where: { $0.id == selectedWindowID }) {
             self.selectedWindowID = nil
         }
-    }
-
-    private func isWindow(_ window: WindowInfo, from application: NSRunningApplication) -> Bool {
-        if let bundleIdentifier = application.bundleIdentifier,
-           let windowBundleIdentifier = window.bundleIdentifier {
-            return bundleIdentifier == windowBundleIdentifier
-        }
-
-        if window.pid == application.processIdentifier {
-            return true
-        }
-
-        return application.localizedName == window.appName
     }
 
     private func isSameAttachedWindow(_ lhs: WindowInfo, as rhs: WindowInfo) -> Bool {
@@ -2492,31 +1626,22 @@ struct ContentView: View {
         let frontingWindows = windows
         let activationSettleNanoseconds: UInt64 = 45_000_000
         let windowSettleNanoseconds: UInt64 = 65_000_000
-        let suppressionDuration = 0.8 + (Double(frontingWindows.count) * 0.1)
-
-        frontingTask?.cancel()
-        frontingRevision += 1
-        let revision = frontingRevision
-        suppressExternalActivation(for: suppressionDuration)
-
-        frontingTask = Task.detached(priority: .utility) {
+        frontingCoordinator.frontAttachedWindows(
+            count: frontingWindows.count,
+            operation: {
             await raiseAttachedWindowsOffMainThread(
                 frontingWindows,
                 activationSettleNanoseconds: activationSettleNanoseconds,
-                windowSettleNanoseconds: windowSettleNanoseconds
+                windowSettleNanoseconds: windowSettleNanoseconds,
+                serviceFactory: windowServiceFactory
             )
-
-            await MainActor.run {
-                guard !Task.isCancelled, revision == frontingRevision else {
-                    return
-                }
-
+            },
+            completion: {
                 if updateStatus {
                     session.statusMessage = "Brought \(frontingWindows.count) attached window(s) to front."
                 }
-                frontingTask = nil
             }
-        }
+        )
     }
 
     private func bringBoardWindowToFront() {
@@ -2524,21 +1649,18 @@ struct ContentView: View {
         boardWindow?.makeKeyAndOrderFront(nil)
     }
 
-    private func beginTemporaryBoardWorkspaceFronting() -> Int {
-        workspaceFrontingRevision += 1
-        let revision = workspaceFrontingRevision
-        boardWindow?.level = .floating
-        bringBoardWindowToFront()
-        return revision
+    private func beginTemporaryBoardWorkspaceFronting() -> BoardFrontingCoordinator.WorkspaceToken {
+        frontingCoordinator.beginWorkspaceFronting {
+            boardWindow?.level = .floating
+            bringBoardWindowToFront()
+        }
     }
 
-    private func endTemporaryBoardWorkspaceFronting(revision: Int) {
-        guard revision == workspaceFrontingRevision else {
-            return
+    private func endTemporaryBoardWorkspaceFronting(token: BoardFrontingCoordinator.WorkspaceToken) {
+        frontingCoordinator.endWorkspaceFronting(token: token) {
+            bringBoardWindowToFront()
+            applyBoardWindowLevel()
         }
-
-        bringBoardWindowToFront()
-        applyBoardWindowLevel()
     }
 
     private func applyBoardWindowLevel(to window: NSWindow? = nil) {
@@ -2561,33 +1683,27 @@ struct ContentView: View {
     }
 
     private func scheduleBoardSelectedAction() {
-        cancelScheduledBoardSelectedAction()
-
-        boardSelectionTask = Task { @MainActor in
-            try? await Task.sleep(for: .milliseconds(180))
-            guard !Task.isCancelled else {
-                return
-            }
-
-            handleBoardSelected()
-            boardSelectionTask = nil
-        }
+        frontingCoordinator.scheduleBoardSelection(
+            isEnabled: { boardClickAction == .bringAttachedToFront },
+            hasAvailableWindows: {
+                session.attachedWindows.contains(where: { !isUnavailable($0.id) })
+            },
+            perform: { bringAllAttachedWindowsToFront(updateStatus: false) }
+        )
     }
 
     private func cancelScheduledBoardSelectedAction() {
-        boardSelectionTask?.cancel()
-        boardSelectionTask = nil
+        frontingCoordinator.cancelBoardSelection()
     }
 
     private func handleBoardSelected() {
-        guard boardClickAction == .bringAttachedToFront,
-              session.attachedWindows.contains(where: { !isUnavailable($0.id) }),
-              Date().timeIntervalSince(lastBoardClickFrontDate) > 0.3 else {
-            return
-        }
-
-        lastBoardClickFrontDate = Date()
-        bringAllAttachedWindowsToFront(updateStatus: false)
+        frontingCoordinator.performBoardSelection(
+            isEnabled: { boardClickAction == .bringAttachedToFront },
+            hasAvailableWindows: {
+                session.attachedWindows.contains(where: { !isUnavailable($0.id) })
+            },
+            perform: { bringAllAttachedWindowsToFront(updateStatus: false) }
+        )
     }
 
     private func suppressExternalActivationBriefly() {
@@ -2595,7 +1711,7 @@ struct ContentView: View {
     }
 
     private func suppressExternalActivation(for duration: TimeInterval) {
-        suppressExternalActivationUntil = Date().addingTimeInterval(duration)
+        frontingCoordinator.suppressExternalActivation(for: duration)
     }
 
     private func clearAttachedWindowAccessFailure(for id: AttachedWindow.ID) {
@@ -2631,6 +1747,45 @@ struct ContentView: View {
         activePositionReadIDs.remove(id)
     }
 
+    private func beginAttachedWindowRecovery(
+        for id: AttachedWindow.ID,
+        message: String,
+        marksReconnecting: Bool = true
+    ) -> Int {
+        let recoveryRevision = (recoveryRevisionByAttachmentID[id] ?? 0) + 1
+        recoveryRevisionByAttachmentID[id] = recoveryRevision
+        if marksReconnecting {
+            session.reconnectingAttachedWindowIDs.insert(id)
+        }
+        session.statusMessage = message
+        return recoveryRevision
+    }
+
+    private func finishAttachedWindowRecoveryAsUnavailable(
+        for id: AttachedWindow.ID,
+        revision: Int,
+        issue: AttachedWindowRecoveryIssue,
+        message: String
+    ) {
+        guard recoveryRevisionByAttachmentID[id] == revision else {
+            return
+        }
+
+        guard session.attachedWindows.contains(where: { $0.id == id }) else {
+            recoveryIssueByAttachmentID.removeValue(forKey: id)
+            clearAttachedWindowRecoveryActivity(for: id, matchingRevision: revision)
+            return
+        }
+
+        recoveryIssueByAttachmentID[id] = issue
+        handleAttachedWindowAccessFailure(
+            for: id,
+            error: WindowBoardAXError.operationFailed("Read window position", .invalidUIElement),
+            force: true
+        )
+        session.statusMessage = message
+    }
+
     private func recoverAttachedWindow(_ attachedWindow: AttachedWindow) {
         let attachmentID = attachedWindow.id
         let originalWindow = attachedWindow.window
@@ -2641,205 +1796,125 @@ struct ContentView: View {
             return
         }
 
-        if shouldTryMinimizedRestore {
-            session.statusMessage = "Restoring \(originalWindow.appName)..."
-        } else {
-            session.reconnectingAttachedWindowIDs.insert(attachmentID)
-            session.statusMessage = "Checking \(originalWindow.appName)..."
-        }
-        let recoveryRevision = (recoveryRevisionByAttachmentID[attachmentID] ?? 0) + 1
-        recoveryRevisionByAttachmentID[attachmentID] = recoveryRevision
+        let recoveryRevision = beginAttachedWindowRecovery(
+            for: attachmentID,
+            message: shouldTryMinimizedRestore
+                ? "Restoring \(originalWindow.appName)..."
+                : "Checking \(originalWindow.appName)...",
+            marksReconnecting: !shouldTryMinimizedRestore
+        )
 
+        let coordinator = recoveryCoordinator
         Task.detached(priority: .userInitiated) {
-            let service = AccessibilityWindowService()
-            if originalWindow.pid != 0, service.isMinimized(originalWindow) {
-                do {
-                    try service.setMinimized(false, for: originalWindow)
-                    service.activateApplication(pid: originalWindow.pid)
-                    try? await Task.sleep(for: .milliseconds(120))
-                    let restoredPosition = try? service.position(of: originalWindow)
-
-                    await MainActor.run {
-                        guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
-                              let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
-                            clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                            return
-                        }
-
-                        let boardOrigin = boardMotion.currentOrigin ?? session.attachedWindows[index].lastBoardOrigin
-                        let origin = restoredPosition ?? session.attachedWindows[index].lastWindowOrigin
-                        session.attachedWindows[index].lastBoardOrigin = boardOrigin
-                        session.attachedWindows[index].lastWindowOrigin = origin
-                        session.attachedWindows[index].lastAppliedOrigin = origin
-                        session.attachedWindows[index].pendingReleaseOrigin = nil
-                        minimizedAttachedWindowIDs.remove(attachmentID)
-                        clearAttachedWindowAccessFailure(for: attachmentID)
-                        activePositionReadIDs.remove(attachmentID)
-                        markAttachedWindowAvailable(attachmentID)
-                        session.statusMessage = "Restored \(originalWindow.displayName)."
-                    }
-                    return
-                } catch {
-                    await MainActor.run {
-                        session.reconnectingAttachedWindowIDs.insert(attachmentID)
-                        session.statusMessage = "Checking \(originalWindow.appName)..."
-                    }
-                }
-            }
-
-            let livePosition: CGPoint?
-            if originalWindow.pid == 0 {
-                livePosition = nil
-            } else {
-                livePosition = try? service.position(of: originalWindow)
-            }
-
-            if let livePosition {
-                service.activateApplication(pid: originalWindow.pid)
-
+            let result = await coordinator.recover(
+                AttachedWindowRecoveryRequest(
+                    originalWindow: originalWindow,
+                    savedReference: savedReference,
+                    shouldTryMinimizedRestore: shouldTryMinimizedRestore
+                )
+            ) { progress in
                 await MainActor.run {
-                    guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
-                          let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
-                        clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                        return
-                    }
-
-                    let boardOrigin = boardMotion.currentOrigin ?? session.attachedWindows[index].lastBoardOrigin
-                    session.attachedWindows[index].lastBoardOrigin = boardOrigin
-                    session.attachedWindows[index].lastWindowOrigin = livePosition
-                    session.attachedWindows[index].lastAppliedOrigin = livePosition
-                    session.attachedWindows[index].pendingReleaseOrigin = nil
-                    clearAttachedWindowAccessFailure(for: attachmentID)
-                    activePositionReadIDs.remove(attachmentID)
-                    minimizedAttachedWindowIDs.remove(attachmentID)
-                    markAttachedWindowAvailable(attachmentID)
-                    session.statusMessage = "\(originalWindow.appName) is already connected."
-                }
-                return
-            }
-
-            if shouldTryMinimizedRestore {
-                await MainActor.run {
-                    minimizedAttachedWindowIDs.remove(attachmentID)
-                    session.reconnectingAttachedWindowIDs.insert(attachmentID)
-                    session.statusMessage = "Checking \(originalWindow.appName)..."
-                }
-            }
-
-            var replacement: WindowInfo?
-            var latestWindows: [WindowInfo] = []
-            var didReopen = false
-            var didActivateApplication = false
-            let unavailableError = WindowBoardAXError.operationFailed("Read window position", .invalidUIElement)
-
-            for attempt in 0..<40 {
-                if Task.isCancelled {
-                    await MainActor.run {
-                        clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                    }
-                    return
-                }
-
-                if attempt == 0 {
-                    if let savedReference {
-                        didReopen = service.openSavedWindowReference(savedReference)
-                        if !didReopen {
-                            didActivateApplication = service.activateSavedApplication(savedReference)
-                        }
-                    } else {
-                        didReopen = service.openDocument(for: originalWindow)
-                        if !didReopen {
-                            didActivateApplication = service.activateOrOpenApplication(for: originalWindow)
-                        }
-                    }
-                    if didReopen || didActivateApplication {
-                        let issue: AttachedWindowRecoveryIssue = didReopen
-                            ? .openedButNotMatched
-                            : .activatedButNotMatched
-                        let recoveryStatusMessage = didReopen
-                            ? "App opened. Looking for a matching window..."
-                            : "App activated. Looking for a matching window..."
-                        await MainActor.run {
-                            guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
-                                  session.attachedWindows.contains(where: { $0.id == attachmentID }) else {
-                                return
-                            }
-
-                            recoveryIssueByAttachmentID[attachmentID] = issue
-                            session.statusMessage = recoveryStatusMessage
-                        }
-                    }
-                }
-
-                if attempt > 0 {
-                    let delayMilliseconds = attempt < 12 ? 35 : 90
-                    try? await Task.sleep(for: .milliseconds(delayMilliseconds))
-                }
-
-                if let savedReference {
-                    let candidates = service.listWindows()
-                    latestWindows = candidates
-                    replacement = WindowMatching.bestSavedWindow(
-                        for: savedReference,
-                        in: candidates,
-                        excluding: []
+                    applyAttachedWindowRecoveryProgress(
+                        progress,
+                        attachmentID: attachmentID,
+                        revision: recoveryRevision,
+                        appName: originalWindow.appName
                     )
-                } else {
-                    let candidates = service.windows(matching: originalWindow)
-                    latestWindows = candidates
-                    replacement = WindowMatching.bestReplacement(for: originalWindow, in: candidates)
-                }
-                if replacement != nil {
-                    break
                 }
             }
-
-            if let replacement, service.isMinimized(replacement) {
-                try? service.setMinimized(false, for: replacement)
-            }
-
-            let resolvedReplacement = replacement
-            let resolvedWindows = latestWindows
-            let resolvedDidReopen = didReopen
-            let resolvedDidActivateApplication = didActivateApplication
-
             await MainActor.run {
-                guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision,
-                      let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
-                    clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                    return
-                }
-
-                guard let replacement = resolvedReplacement else {
-                    let recoveryIssue: AttachedWindowRecoveryIssue = if resolvedDidReopen {
-                        .openedButNotMatched
-                    } else if resolvedDidActivateApplication {
-                        .activatedButNotMatched
-                    } else {
-                        .couldNotOpen
-                    }
-                    recoveryIssueByAttachmentID[attachmentID] = recoveryIssue
-                    handleAttachedWindowAccessFailure(for: attachmentID, error: unavailableError, force: true)
-                    session.statusMessage = recoveryIssue.failureMessage
-                    return
-                }
-
-                let boardOrigin = boardMotion.currentOrigin ?? session.attachedWindows[index].lastBoardOrigin
-                let origin = replacement.position ?? session.attachedWindows[index].lastWindowOrigin
-                session.attachedWindows[index].window = replacement
-                session.attachedWindows[index].savedReference = savedReference
-                session.attachedWindows[index].lastBoardOrigin = boardOrigin
-                session.attachedWindows[index].lastWindowOrigin = origin
-                session.attachedWindows[index].lastAppliedOrigin = origin
-                session.attachedWindows[index].pendingReleaseOrigin = nil
-                clearAttachedWindowAccessFailure(for: attachmentID)
-                activePositionReadIDs.remove(attachmentID)
-                minimizedAttachedWindowIDs.remove(attachmentID)
-                markAttachedWindowAvailable(attachmentID)
-                appendRestoredWindows(resolvedWindows)
-                session.statusMessage = "Reconnected \(replacement.displayName)."
+                applyAttachedWindowRecoveryResult(
+                    result,
+                    attachmentID: attachmentID,
+                    revision: recoveryRevision,
+                    originalWindow: originalWindow,
+                    savedReference: savedReference
+                )
             }
         }
+    }
+
+    private func applyAttachedWindowRecoveryProgress(
+        _ progress: AttachedWindowRecoveryProgress,
+        attachmentID: AttachedWindow.ID,
+        revision: Int,
+        appName: String
+    ) {
+        guard recoveryRevisionByAttachmentID[attachmentID] == revision,
+              session.attachedWindows.contains(where: { $0.id == attachmentID }) else {
+            return
+        }
+
+        switch progress {
+        case .checkingAfterRestoreFailure:
+            minimizedAttachedWindowIDs.remove(attachmentID)
+            session.reconnectingAttachedWindowIDs.insert(attachmentID)
+            session.statusMessage = "Checking \(appName)..."
+        case let .lookingForMatch(issue):
+            recoveryIssueByAttachmentID[attachmentID] = issue
+            session.statusMessage = issue == .openedButNotMatched
+                ? "App opened. Looking for a matching window..."
+                : "App activated. Looking for a matching window..."
+        }
+    }
+
+    private func applyAttachedWindowRecoveryResult(
+        _ result: AttachedWindowRecoveryResult,
+        attachmentID: AttachedWindow.ID,
+        revision: Int,
+        originalWindow: WindowInfo,
+        savedReference: SavedWindowReference?
+    ) {
+        if case .cancelled = result {
+            clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: revision)
+            return
+        }
+
+        guard recoveryRevisionByAttachmentID[attachmentID] == revision,
+              let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+            clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: revision)
+            return
+        }
+
+        let boardOrigin = boardMotion.currentOrigin ?? session.attachedWindows[index].lastBoardOrigin
+
+        switch result {
+        case let .restoredOriginal(position):
+            let origin = position ?? session.attachedWindows[index].lastWindowOrigin
+            updateRecoveredAttachment(at: index, boardOrigin: boardOrigin, origin: origin)
+            session.statusMessage = "Restored \(originalWindow.displayName)."
+        case let .alreadyConnected(position):
+            updateRecoveredAttachment(at: index, boardOrigin: boardOrigin, origin: position)
+            session.statusMessage = "\(originalWindow.appName) is already connected."
+        case let .reconnected(replacement, discoveredWindows):
+            let origin = replacement.position ?? session.attachedWindows[index].lastWindowOrigin
+            session.attachedWindows[index].window = replacement
+            session.attachedWindows[index].savedReference = savedReference
+            updateRecoveredAttachment(at: index, boardOrigin: boardOrigin, origin: origin)
+            appendRestoredWindows(discoveredWindows)
+            session.statusMessage = "Reconnected \(replacement.displayName)."
+        case let .notMatched(issue, _):
+            finishAttachedWindowRecoveryAsUnavailable(
+                for: attachmentID,
+                revision: revision,
+                issue: issue,
+                message: issue.failureMessage
+            )
+        case .cancelled:
+            break
+        }
+    }
+
+    private func updateRecoveredAttachment(at index: Int, boardOrigin: CGPoint, origin: CGPoint) {
+        let attachmentID = session.attachedWindows[index].id
+        session.attachedWindows[index].lastBoardOrigin = boardOrigin
+        session.attachedWindows[index].lastWindowOrigin = origin
+        session.attachedWindows[index].lastAppliedOrigin = origin
+        session.attachedWindows[index].pendingReleaseOrigin = nil
+        minimizedAttachedWindowIDs.remove(attachmentID)
+        clearAttachedWindowAccessFailure(for: attachmentID)
+        activePositionReadIDs.remove(attachmentID)
+        markAttachedWindowAvailable(attachmentID)
     }
 
     private func useFrontWindowForAttached(_ attachedWindow: AttachedWindow) {
@@ -2847,107 +1922,81 @@ struct ContentView: View {
         let application = frontWindowReplacementApplication(for: attachedWindow)
         let expectedBundleIdentifier = attachedWindow.savedReference?.bundleIdentifier ?? attachedWindow.window.bundleIdentifier
         let expectedAppName = attachedWindow.savedReference?.appName ?? attachedWindow.window.appName
-        let recoveryRevision = (recoveryRevisionByAttachmentID[attachmentID] ?? 0) + 1
-        recoveryRevisionByAttachmentID[attachmentID] = recoveryRevision
-        session.reconnectingAttachedWindowIDs.insert(attachmentID)
-        session.statusMessage = "Checking front window..."
+        let recoveryRevision = beginAttachedWindowRecovery(
+            for: attachmentID,
+            message: "Checking front window..."
+        )
 
+        let coordinator = recoveryCoordinator
         Task.detached(priority: .userInitiated) {
-            let service = AccessibilityWindowService()
-            var candidateWindows: [WindowInfo] = []
-            let visibleFrontWindow = service.frontmostVisibleExternalWindow()
-
-            if let visibleFrontWindow {
-                candidateWindows.append(visibleFrontWindow)
-            }
-
-            if let application {
-                if let frontmostWindow = service.frontmostWindow(for: application) {
-                    candidateWindows.append(frontmostWindow)
-                }
-                candidateWindows.append(contentsOf: service.windows(for: application))
-            }
-
-            candidateWindows.append(contentsOf: service.listWindows())
-
-            var seenWindowIDs = Set<WindowInfo.ID>()
-            let uniqueCandidateWindows = candidateWindows.filter { window in
-                seenWindowIDs.insert(window.id).inserted
-            }
-            let matchesExpectedApp: (WindowInfo) -> Bool = { window in
-                WindowMatching.matchesExpectedFrontWindow(
-                    window,
-                    expectedBundleIdentifier: expectedBundleIdentifier,
+            let result = await coordinator.findFrontWindow(
+                application: application,
+                expectedBundleIdentifier: expectedBundleIdentifier,
+                expectedAppName: expectedAppName
+            )
+            await MainActor.run {
+                applyFrontWindowRecoveryResult(
+                    result,
+                    attachmentID: attachmentID,
+                    revision: recoveryRevision,
                     expectedAppName: expectedAppName
                 )
             }
-            let replacementWindow = uniqueCandidateWindows.first(where: matchesExpectedApp)
-            let explicitFrontWindow = visibleFrontWindow.flatMap { matchesExpectedApp($0) ? $0 : nil } ?? replacementWindow
+        }
+    }
 
-            guard let replacementWindow = explicitFrontWindow else {
-                await MainActor.run {
-                    guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision else {
-                        return
-                    }
+    private func applyFrontWindowRecoveryResult(
+        _ result: AttachedFrontWindowResult,
+        attachmentID: AttachedWindow.ID,
+        revision: Int,
+        expectedAppName: String
+    ) {
+        guard recoveryRevisionByAttachmentID[attachmentID] == revision else {
+            return
+        }
 
-                    guard session.attachedWindows.contains(where: { $0.id == attachmentID }) else {
-                        recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
-                        clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                        session.statusMessage = "Attached window is no longer on this board."
-                        return
-                    }
+        guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
+            recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
+            clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: revision)
+            session.statusMessage = "Attached window is no longer on this board."
+            return
+        }
 
-                    clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                    session.unavailableAttachedWindowIDs.insert(attachmentID)
-                    if recoveryIssueByAttachmentID[attachmentID] == nil {
-                        recoveryIssueByAttachmentID[attachmentID] = .activatedButNotMatched
-                    }
-                    if visibleFrontWindow != nil {
-                        session.statusMessage = "Front window does not match this app."
-                    } else {
-                        session.statusMessage = "No matching front window found for \(expectedAppName). Checked \(uniqueCandidateWindows.count) window(s)."
-                    }
-                }
-                return
-            }
-
-            let position = (try? service.position(of: replacementWindow)) ?? replacementWindow.position
-            let size = try? service.size(of: replacementWindow)
-
-            await MainActor.run {
-                guard recoveryRevisionByAttachmentID[attachmentID] == recoveryRevision else {
-                    return
-                }
-
-                guard let index = session.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
-                    recoveryIssueByAttachmentID.removeValue(forKey: attachmentID)
-                    clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                    session.statusMessage = "Attached window is no longer on this board."
-                    return
-                }
-
-                let boardOrigin = boardMotion.currentOrigin ?? session.attachedWindows[index].lastBoardOrigin
-                let origin = position ?? session.attachedWindows[index].lastWindowOrigin
-                session.attachedWindows[index].window = replacementWindow
-                session.attachedWindows[index].lastBoardOrigin = boardOrigin
-                session.attachedWindows[index].lastWindowOrigin = origin
-                session.attachedWindows[index].lastAppliedOrigin = origin
-                session.attachedWindows[index].pendingReleaseOrigin = nil
-                session.attachedWindows[index].savedReference = SavedWindowReference.make(
-                    from: session.attachedWindows[index],
-                    boardOrigin: boardOrigin,
-                    size: size
-                )
-                clearAttachedWindowAccessFailure(for: attachmentID)
-                clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: recoveryRevision)
-                minimizedAttachedWindowIDs.remove(attachmentID)
-                markAttachedWindowAvailable(attachmentID)
-                _ = session.persistActiveWorkspaceSnapshot(
-                    sizeByAttachmentID: size.map { [attachmentID: $0] } ?? [:]
-                )
-                windows = mergeWindows([replacementWindow], into: windows)
-                session.statusMessage = "Using \(replacementWindow.displayName) for this board."
-            }
+        switch result {
+        case let .matched(replacementWindow, position, size):
+            let boardOrigin = boardMotion.currentOrigin ?? session.attachedWindows[index].lastBoardOrigin
+            let origin = position ?? session.attachedWindows[index].lastWindowOrigin
+            session.attachedWindows[index].window = replacementWindow
+            session.attachedWindows[index].lastBoardOrigin = boardOrigin
+            session.attachedWindows[index].lastWindowOrigin = origin
+            session.attachedWindows[index].lastAppliedOrigin = origin
+            session.attachedWindows[index].pendingReleaseOrigin = nil
+            session.attachedWindows[index].savedReference = SavedWindowReference.make(
+                from: session.attachedWindows[index],
+                boardOrigin: boardOrigin,
+                size: size
+            )
+            clearAttachedWindowAccessFailure(for: attachmentID)
+            clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: revision)
+            minimizedAttachedWindowIDs.remove(attachmentID)
+            markAttachedWindowAvailable(attachmentID)
+            _ = session.persistActiveWorkspaceSnapshot(
+                sizeByAttachmentID: size.map { [attachmentID: $0] } ?? [:]
+            )
+            windows = mergeWindows([replacementWindow], into: windows)
+            session.statusMessage = "Using \(replacementWindow.displayName) for this board."
+        case let .notMatched(hadVisibleFrontWindow, candidateCount):
+            let message = hadVisibleFrontWindow
+                ? "Front window does not match this app."
+                : "No matching front window found for \(expectedAppName). Checked \(candidateCount) window(s)."
+            finishAttachedWindowRecoveryAsUnavailable(
+                for: attachmentID,
+                revision: revision,
+                issue: recoveryIssueByAttachmentID[attachmentID] ?? .activatedButNotMatched,
+                message: message
+            )
+        case .cancelled:
+            clearAttachedWindowRecoveryActivity(for: attachmentID, matchingRevision: revision)
         }
     }
 
@@ -3011,12 +2060,7 @@ struct ContentView: View {
         detachAnimationTasks[id]?.cancel()
         detachAnimationTasks[id] = nil
         if session.attachedWindows.isEmpty {
-            boardMotion.pendingReleaseOrigin = nil
-            pendingAutoFront = false
-            pendingReleaseMoveTask?.cancel()
-            pendingReleaseMoveTask = nil
-            pendingAutoFrontTask?.cancel()
-            pendingAutoFrontTask = nil
+            followCoordinator.cancelAll()
         }
         if let message {
             session.statusMessage = message
@@ -3026,19 +2070,12 @@ struct ContentView: View {
     private func detachAll(message: String) {
         cancelDetachAnimations()
         session.detachAll(boardOrigin: boardMotion.currentOrigin, message: message)
-        frontingTask?.cancel()
-        frontingTask = nil
-        frontingRevision += 1
+        frontingCoordinator.cancelAttachedWindowFronting()
         attachedWindowFailureCounts.removeAll()
         recoveryIssueByAttachmentID.removeAll()
         recoveryRevisionByAttachmentID.removeAll()
         activePositionReadIDs.removeAll()
         minimizedAttachedWindowIDs.removeAll()
-        boardMotion.pendingReleaseOrigin = nil
-        pendingAutoFront = false
-        pendingReleaseMoveTask?.cancel()
-        pendingReleaseMoveTask = nil
-        pendingAutoFrontTask?.cancel()
-        pendingAutoFrontTask = nil
+        followCoordinator.cancelAll()
     }
 }

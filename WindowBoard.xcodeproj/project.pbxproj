@@ -22,7 +22,6 @@
 		1A000001000000000000000D /* WorkspaceStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001D /* WorkspaceStore.swift */; };
 		1A000001000000000000000E /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001E /* SettingsView.swift */; };
 		1A000001000000000000000F /* WindowBoardAppState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A000001000000000000001F /* WindowBoardAppState.swift */; };
-		1A0000010000000000000022 /* StatusMenuView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000021 /* StatusMenuView.swift */; };
 		1A0000010000000000000024 /* WindowBoardStatusItemController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000023 /* WindowBoardStatusItemController.swift */; };
 		1A0000010000000000000026 /* WorkspaceSessionController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000025 /* WorkspaceSessionController.swift */; };
 		1A000001000000000000002A /* WindowMatching.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000029 /* WindowMatching.swift */; };
@@ -34,7 +33,15 @@
 		1B000001000000000000000D /* BoardAppIconViews.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B000001000000000000000E /* BoardAppIconViews.swift */; };
 		1B000001000000000000000F /* BoardCardInteractionSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B0000010000000000000010 /* BoardCardInteractionSupport.swift */; };
 		1B0000010000000000000011 /* WorkspaceWindowResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B0000010000000000000012 /* WorkspaceWindowResolver.swift */; };
+		1C0000010000000000000001 /* AttachedWindowRecoveryResolver.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C0000010000000000000002 /* AttachedWindowRecoveryResolver.swift */; };
+		1C0000010000000000000003 /* ApplicationWindowCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C0000010000000000000004 /* ApplicationWindowCatalog.swift */; };
+		1C0000010000000000000005 /* AttachedWindowRecoveryCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C0000010000000000000006 /* AttachedWindowRecoveryCoordinator.swift */; };
+		1C0000010000000000000007 /* BoardFollowCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1C0000010000000000000008 /* BoardFollowCoordinator.swift */; };
+		1D0000010000000000000001 /* BoardFrontingCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000002 /* BoardFrontingCoordinator.swift */; };
 		1B0000010000000000000001 /* WindowMatchingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1B0000010000000000000002 /* WindowMatchingTests.swift */; };
+		1D0000010000000000000003 /* BoardFrontingCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000004 /* BoardFrontingCoordinatorTests.swift */; };
+		1D0000010000000000000005 /* AttachedWindowSnapshotCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000006 /* AttachedWindowSnapshotCoordinator.swift */; };
+		1D0000010000000000000007 /* AttachedWindowSnapshotCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000008 /* AttachedWindowSnapshotCoordinatorTests.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -54,7 +61,6 @@
 		1A000001000000000000001D /* WorkspaceStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceStore.swift; sourceTree = "<group>"; };
 		1A000001000000000000001E /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		1A000001000000000000001F /* WindowBoardAppState.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardAppState.swift; sourceTree = "<group>"; };
-		1A0000010000000000000021 /* StatusMenuView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusMenuView.swift; sourceTree = "<group>"; };
 		1A0000010000000000000023 /* WindowBoardStatusItemController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardStatusItemController.swift; sourceTree = "<group>"; };
 		1A0000010000000000000025 /* WorkspaceSessionController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceSessionController.swift; sourceTree = "<group>"; };
 		1A0000010000000000000029 /* WindowMatching.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowMatching.swift; sourceTree = "<group>"; };
@@ -66,7 +72,15 @@
 		1B000001000000000000000E /* BoardAppIconViews.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardAppIconViews.swift; sourceTree = "<group>"; };
 		1B0000010000000000000010 /* BoardCardInteractionSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardCardInteractionSupport.swift; sourceTree = "<group>"; };
 		1B0000010000000000000012 /* WorkspaceWindowResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceWindowResolver.swift; sourceTree = "<group>"; };
+		1C0000010000000000000002 /* AttachedWindowRecoveryResolver.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowRecoveryResolver.swift; sourceTree = "<group>"; };
+		1C0000010000000000000004 /* ApplicationWindowCatalog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ApplicationWindowCatalog.swift; sourceTree = "<group>"; };
+		1C0000010000000000000006 /* AttachedWindowRecoveryCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowRecoveryCoordinator.swift; sourceTree = "<group>"; };
+		1C0000010000000000000008 /* BoardFollowCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFollowCoordinator.swift; sourceTree = "<group>"; };
+		1D0000010000000000000002 /* BoardFrontingCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFrontingCoordinator.swift; sourceTree = "<group>"; };
 		1B0000010000000000000002 /* WindowMatchingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowMatchingTests.swift; sourceTree = "<group>"; };
+		1D0000010000000000000004 /* BoardFrontingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFrontingCoordinatorTests.swift; sourceTree = "<group>"; };
+		1D0000010000000000000006 /* AttachedWindowSnapshotCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowSnapshotCoordinator.swift; sourceTree = "<group>"; };
+		1D0000010000000000000008 /* AttachedWindowSnapshotCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowSnapshotCoordinatorTests.swift; sourceTree = "<group>"; };
 		1B0000010000000000000003 /* WindowBoardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowBoardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -119,6 +133,8 @@
 			isa = PBXGroup;
 			children = (
 				1B0000010000000000000002 /* WindowMatchingTests.swift */,
+				1D0000010000000000000004 /* BoardFrontingCoordinatorTests.swift */,
+				1D0000010000000000000008 /* AttachedWindowSnapshotCoordinatorTests.swift */,
 			);
 			path = WindowBoardTests;
 			sourceTree = "<group>";
@@ -146,7 +162,6 @@
 				1B000001000000000000000E /* BoardAppIconViews.swift */,
 				1B0000010000000000000010 /* BoardCardInteractionSupport.swift */,
 				1A000001000000000000001E /* SettingsView.swift */,
-				1A0000010000000000000021 /* StatusMenuView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -157,6 +172,7 @@
 				1A0000010000000000000013 /* WindowInfo.swift */,
 				1A0000010000000000000029 /* WindowMatching.swift */,
 				1B0000010000000000000012 /* WorkspaceWindowResolver.swift */,
+				1C0000010000000000000002 /* AttachedWindowRecoveryResolver.swift */,
 				1A0000010000000000000017 /* FollowMode.swift */,
 				1A0000010000000000000018 /* PositionUpdateMode.swift */,
 				1A0000010000000000000019 /* AutoFrontMode.swift */,
@@ -179,6 +195,11 @@
 			children = (
 				1A0000010000000000000014 /* AccessibilityWindowService.swift */,
 				1A0000010000000000000016 /* WindowMoveScheduler.swift */,
+				1C0000010000000000000004 /* ApplicationWindowCatalog.swift */,
+				1C0000010000000000000006 /* AttachedWindowRecoveryCoordinator.swift */,
+				1C0000010000000000000008 /* BoardFollowCoordinator.swift */,
+				1D0000010000000000000002 /* BoardFrontingCoordinator.swift */,
+				1D0000010000000000000006 /* AttachedWindowSnapshotCoordinator.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -326,7 +347,6 @@
 				1A000001000000000000000D /* WorkspaceStore.swift in Sources */,
 				1A000001000000000000000E /* SettingsView.swift in Sources */,
 				1A000001000000000000000F /* WindowBoardAppState.swift in Sources */,
-				1A0000010000000000000022 /* StatusMenuView.swift in Sources */,
 				1A0000010000000000000024 /* WindowBoardStatusItemController.swift in Sources */,
 				1A0000010000000000000026 /* WorkspaceSessionController.swift in Sources */,
 				1A000001000000000000002A /* WindowMatching.swift in Sources */,
@@ -338,6 +358,12 @@
 				1B000001000000000000000D /* BoardAppIconViews.swift in Sources */,
 				1B000001000000000000000F /* BoardCardInteractionSupport.swift in Sources */,
 				1B0000010000000000000011 /* WorkspaceWindowResolver.swift in Sources */,
+				1C0000010000000000000001 /* AttachedWindowRecoveryResolver.swift in Sources */,
+				1C0000010000000000000003 /* ApplicationWindowCatalog.swift in Sources */,
+				1C0000010000000000000005 /* AttachedWindowRecoveryCoordinator.swift in Sources */,
+				1C0000010000000000000007 /* BoardFollowCoordinator.swift in Sources */,
+				1D0000010000000000000001 /* BoardFrontingCoordinator.swift in Sources */,
+				1D0000010000000000000005 /* AttachedWindowSnapshotCoordinator.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -346,6 +372,8 @@
 			buildActionMask = 2147483647;
 			files = (
 				1B0000010000000000000001 /* WindowMatchingTests.swift in Sources */,
+				1D0000010000000000000003 /* BoardFrontingCoordinatorTests.swift in Sources */,
+				1D0000010000000000000007 /* AttachedWindowSnapshotCoordinatorTests.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -2,18 +2,8 @@ import AppKit
 import SwiftUI
 
 struct WorkspaceDetailActions {
-    let refreshWindows: () -> Void
-    let attachSelected: () -> Void
-    let attachFrontmost: () -> Void
     let attachFromAddCard: () -> Void
     let clearRecentlyAddedWindowID: () -> Void
-    let saveWorkspace: () -> Void
-    let overwriteWorkspace: () -> Void
-    let renameWorkspace: () -> Void
-    let reloadWorkspace: () -> Void
-    let deleteWorkspace: () -> Void
-    let updateStatusItemIcon: (String) -> Void
-    let updateStatusItemText: () -> Void
     let recoverAttached: (AttachedWindow) -> Void
     let useFrontWindowForAttached: (AttachedWindow) -> Void
     let updateAttached: (AttachedWindow.ID) -> Void
@@ -30,41 +20,14 @@ struct WorkspaceDetailActions {
     let clearRecentlyAddedNeverMinimizeWindowID: () -> Void
     let showNeverMinimizeWindow: (WindowInfo) -> Void
     let showAndMoveNeverMinimizeWindowBelowCard: (WindowInfo, CGPoint) -> Void
-    let updatePositions: () -> Void
-    let bringToFront: () -> Void
-    let minimizeUnattached: () -> Void
-    let restoreMinimized: () -> Void
-    let detachAll: () -> Void
 }
 
 struct WorkspaceDetailView: View {
-    let selectedWorkspace: SavedWorkspace?
-    let selectedWindowID: WindowInfo.ID?
-    let windows: [WindowInfo]
     let attachedWindows: [AttachedWindow]
-    let isLoadingWindows: Bool
     let isLoadingWorkspace: Bool
     let isMinimizingUnattached: Bool
     let isRestoringMinimized: Bool
-    let canAttachSelected: Bool
     let canAttachFrontmost: Bool
-    let canSaveWorkspace: Bool
-    let canOverwriteWorkspace: Bool
-    let canEditWorkspaceName: Bool
-    let canRenameWorkspace: Bool
-    let canReloadWorkspace: Bool
-    let canDeleteWorkspace: Bool
-    let canUpdatePositions: Bool
-    let canBringToFront: Bool
-    let canMinimizeUnattached: Bool
-    let canRestoreMinimized: Bool
-    let canDetachAll: Bool
-    let workspaceName: Binding<String>
-    let selectedWindow: Binding<WindowInfo.ID?>
-    let workspaceStatusText: Binding<String>
-    let minimizeUnattachedOnSwitch: Binding<Bool>
-    let restoreMissingWindowsOnSwitch: Binding<Bool>
-    let boardAlwaysOnTop: Binding<Bool>
     let attachedState: (AttachedWindow) -> AttachedWindowDisplayState
     let recoveryIssue: (AttachedWindow.ID) -> AttachedWindowRecoveryIssue?
     let actions: WorkspaceDetailActions
@@ -106,7 +69,6 @@ struct WorkspaceDetailView: View {
                         stateForWindow: attachedState,
                         recoveryIssue: recoveryIssue,
                         canAttachFrontmost: canAttachFrontmost,
-                        attachFrontmost: actions.attachFrontmost,
                         attachFromAddCard: actions.attachFromAddCard,
                         recentlyAddedWindowID: recentlyAddedWindowID,
                         clearRecentlyAddedWindowID: actions.clearRecentlyAddedWindowID,
@@ -622,88 +584,6 @@ private struct NeverMinimizeAddRunningWindowCard: View {
     }
 }
 
-struct WindowSelectionView: View {
-    let windows: [WindowInfo]
-    @Binding var selection: WindowInfo.ID?
-    let isLoading: Bool
-    let canAttachSelected: Bool
-    let canAttachFrontmost: Bool
-    let refreshWindows: () -> Void
-    let attachSelected: () -> Void
-    let attachFrontmost: () -> Void
-
-    var body: some View {
-        if isLoading {
-            ProgressView("Loading windows...")
-        } else {
-            Picker("Window", selection: $selection) {
-                Text("Choose a window").tag(WindowInfo.ID?.none)
-                ForEach(windows) { window in
-                    Text(window.displayName).tag(WindowInfo.ID?.some(window.id))
-                }
-            }
-        }
-
-        ViewThatFits(in: .horizontal) {
-            HStack {
-                windowActionButtons
-                Spacer()
-            }
-
-            VStack(alignment: .leading, spacing: 8) {
-                windowActionButtons
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var windowActionButtons: some View {
-        Button("Refresh", action: refreshWindows)
-            .disabled(isLoading)
-        Button("Attach Selected", action: attachSelected)
-            .disabled(!canAttachSelected)
-        Button("Attach Window", action: attachFrontmost)
-            .disabled(!canAttachFrontmost)
-    }
-}
-
-private struct RecoveryOverviewBar: View {
-    let liveCount: Int
-    let minimizedCount: Int
-    let missingCount: Int
-    let reconnectingCount: Int
-
-    var body: some View {
-        HStack(spacing: 8) {
-            OverviewChip(title: "\(liveCount) live", systemImage: "checkmark.circle.fill", tint: .green)
-            OverviewChip(title: "\(minimizedCount) minimized", systemImage: "minus.square.fill", tint: .orange)
-            OverviewChip(title: "\(missingCount) missing", systemImage: "exclamationmark.triangle.fill", tint: .red)
-
-            if reconnectingCount > 0 {
-                OverviewChip(title: "\(reconnectingCount) finding", systemImage: "arrow.triangle.2.circlepath", tint: .blue)
-            }
-
-            Spacer()
-        }
-    }
-}
-
-private struct OverviewChip: View {
-    let title: String
-    let systemImage: String
-    let tint: Color
-
-    var body: some View {
-        Label(title, systemImage: systemImage)
-            .font(.caption.weight(.medium))
-            .foregroundStyle(tint)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(tint.opacity(0.11))
-            .clipShape(Capsule())
-    }
-}
-
 struct BoardSectionHeader: View {
     let title: String
     let count: Int
@@ -728,134 +608,5 @@ struct BoardSectionHeader: View {
             Spacer()
         }
         .foregroundStyle(.secondary)
-    }
-}
-
-private struct BoardInspectorPanel: View {
-    let selectedWorkspace: SavedWorkspace?
-    let attachedWindows: [AttachedWindow]
-    let liveCount: Int
-    let minimizedCount: Int
-    let missingCount: Int
-    let reconnectingCount: Int
-    let recoverMissing: () -> Void
-    let restoreSnapshot: () -> Void
-    let canRecoverMissing: Bool
-    let canRestoreSnapshot: Bool
-    let canAttachFrontmost: Bool
-    let attachFrontmost: () -> Void
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            inspectorHeader
-
-            InspectorSection(title: "Board State") {
-                InspectorValueRow(title: "Pinned", value: "\(attachedWindows.count)")
-                InspectorValueRow(title: "Live", value: "\(liveCount)")
-                InspectorValueRow(title: "Minimized", value: "\(minimizedCount)")
-                InspectorValueRow(title: "Missing", value: "\(missingCount)")
-                if reconnectingCount > 0 {
-                    InspectorValueRow(title: "Finding", value: "\(reconnectingCount)")
-                }
-            }
-
-            InspectorSection(title: "Snapshot") {
-                InspectorValueRow(title: "Saved Windows", value: "\(selectedWorkspace?.windows.count ?? 0)")
-                InspectorValueRow(title: "Last Saved", value: snapshotTime)
-            }
-
-            VStack(spacing: 8) {
-                Button {
-                    attachFrontmost()
-                } label: {
-                    Label("Pin Frontmost Window", systemImage: "plus.rectangle.on.rectangle")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(!canAttachFrontmost)
-
-                Button {
-                    recoverMissing()
-                } label: {
-                    Label("Recover Missing", systemImage: "arrow.triangle.2.circlepath")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(!canRecoverMissing)
-
-                Button {
-                    restoreSnapshot()
-                } label: {
-                    Label("Restore Snapshot", systemImage: "arrow.counterclockwise")
-                        .frame(maxWidth: .infinity)
-                }
-                .disabled(!canRestoreSnapshot)
-            }
-            .buttonStyle(.bordered)
-
-            Spacer()
-        }
-        .padding(18)
-        .frame(width: 270)
-        .frame(maxHeight: .infinity, alignment: .top)
-        .background(.bar)
-    }
-
-    private var inspectorHeader: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            Label(selectedWorkspace?.name ?? "Board", systemImage: "rectangle.on.rectangle")
-                .font(.headline)
-                .lineLimit(2)
-
-            Text("\(attachedWindows.count) pinned \(attachedWindows.count == 1 ? "window" : "windows")")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    private var snapshotTime: String {
-        guard let updatedAt = selectedWorkspace?.updatedAt else {
-            return "Never"
-        }
-
-        return updatedAt.formatted(date: .omitted, time: .shortened)
-    }
-}
-
-private struct InspectorSection<Content: View>: View {
-    let title: String
-    @ViewBuilder let content: Content
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Text(title)
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
-
-            VStack(spacing: 0) {
-                content
-            }
-            .background(Color(nsColor: .controlBackgroundColor))
-            .clipShape(RoundedRectangle(cornerRadius: 9, style: .continuous))
-        }
-    }
-}
-
-private struct InspectorValueRow: View {
-    let title: String
-    let value: String
-
-    var body: some View {
-        HStack {
-            Text(title)
-                .foregroundStyle(.secondary)
-
-            Spacer()
-
-            Text(value)
-                .monospacedDigit()
-        }
-        .font(.callout)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
     }
 }
