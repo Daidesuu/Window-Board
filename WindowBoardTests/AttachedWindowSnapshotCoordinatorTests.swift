@@ -106,6 +106,111 @@ final class AttachedWindowSnapshotCoordinatorTests: XCTestCase {
         XCTAssertTrue(consumedTitles.contains("sample-2"))
     }
 
+    func testReducerUpdatesTitleAndOriginAndRequestsPersistence() {
+        let fixture = makeReducerFixture()
+        let newOrigin = CGPoint(x: 80, y: 90)
+        let reduction = AttachedWindowSnapshotReducer.reduce(
+            state: fixture.state,
+            snapshots: [fixture.snapshot(title: "Renamed", origin: newOrigin)]
+        )
+
+        XCTAssertEqual(reduction.state.attachedWindows[0].window.title, "Renamed")
+        XCTAssertEqual(reduction.state.attachedWindows[0].lastWindowOrigin, newOrigin)
+        XCTAssertEqual(reduction.state.attachedWindows[0].lastAppliedOrigin, newOrigin)
+        XCTAssertNil(reduction.state.attachedWindows[0].pendingReleaseOrigin)
+        XCTAssertTrue(reduction.didChangeAttachedWindows)
+        XCTAssertTrue(reduction.shouldPersistWorkspace)
+    }
+
+    func testReducerDoesNotPersistForEquivalentOriginAndTitle() {
+        let fixture = makeReducerFixture()
+        let reduction = AttachedWindowSnapshotReducer.reduce(
+            state: fixture.state,
+            snapshots: [fixture.snapshot(title: "Document", origin: CGPoint(x: 11, y: 21))]
+        )
+
+        XCTAssertFalse(reduction.didChangeAttachedWindows)
+        XCTAssertFalse(reduction.shouldPersistWorkspace)
+    }
+
+    func testReducerTreatsMinimizedWindowAsAvailableWithoutPosition() {
+        let fixture = makeReducerFixture(
+            unavailable: true,
+            failureCount: 2
+        )
+        let reduction = AttachedWindowSnapshotReducer.reduce(
+            state: fixture.state,
+            snapshots: [fixture.snapshot(origin: nil, isMinimized: true)]
+        )
+
+        XCTAssertTrue(reduction.state.minimizedAttachmentIDs.contains(fixture.attachmentID))
+        XCTAssertFalse(reduction.state.unavailableAttachmentIDs.contains(fixture.attachmentID))
+        XCTAssertNil(reduction.state.failureCounts[fixture.attachmentID])
+        XCTAssertTrue(reduction.availableAttachmentIDs.contains(fixture.attachmentID))
+        XCTAssertFalse(reduction.shouldPersistWorkspace)
+    }
+
+    func testReducerMarksWindowUnavailableAfterThirdFailure() {
+        let fixture = makeReducerFixture(failureCount: 2)
+        let reduction = AttachedWindowSnapshotReducer.reduce(
+            state: fixture.state,
+            snapshots: [fixture.snapshot(origin: nil)]
+        )
+
+        XCTAssertEqual(reduction.state.failureCounts[fixture.attachmentID], 3)
+        XCTAssertTrue(reduction.state.unavailableAttachmentIDs.contains(fixture.attachmentID))
+        XCTAssertTrue(reduction.shouldPersistWorkspace)
+    }
+
+    func testReducerSuccessResetsFailureAndUnavailableState() {
+        let fixture = makeReducerFixture(unavailable: true, failureCount: 2)
+        let reduction = AttachedWindowSnapshotReducer.reduce(
+            state: fixture.state,
+            snapshots: [fixture.snapshot(origin: CGPoint(x: 10, y: 20))]
+        )
+
+        XCTAssertNil(reduction.state.failureCounts[fixture.attachmentID])
+        XCTAssertFalse(reduction.state.unavailableAttachmentIDs.contains(fixture.attachmentID))
+        XCTAssertTrue(reduction.availableAttachmentIDs.contains(fixture.attachmentID))
+    }
+
+    func testReducerIgnoresReconnectingAndStaleWindows() {
+        let reconnectingFixture = makeReducerFixture(reconnecting: true)
+        let reconnectingReduction = AttachedWindowSnapshotReducer.reduce(
+            state: reconnectingFixture.state,
+            snapshots: [reconnectingFixture.snapshot(title: "Ignored", origin: CGPoint(x: 90, y: 90))]
+        )
+        XCTAssertEqual(reconnectingReduction.state.attachedWindows[0].window.title, "Document")
+        XCTAssertFalse(reconnectingReduction.shouldPersistWorkspace)
+
+        let staleFixture = makeReducerFixture()
+        let staleSnapshot = AttachedWindowSnapshot(
+            attachmentID: staleFixture.attachmentID,
+            windowID: "different-window",
+            title: "Ignored",
+            origin: CGPoint(x: 90, y: 90),
+            isMinimized: false
+        )
+        let staleReduction = AttachedWindowSnapshotReducer.reduce(
+            state: staleFixture.state,
+            snapshots: [staleSnapshot]
+        )
+        XCTAssertEqual(staleReduction.state.attachedWindows[0].window.title, "Document")
+        XCTAssertFalse(staleReduction.shouldPersistWorkspace)
+    }
+
+    func testReducerMarksPlaceholderUnavailableImmediately() {
+        let fixture = makeReducerFixture(pid: 0)
+        let reduction = AttachedWindowSnapshotReducer.reduce(
+            state: fixture.state,
+            snapshots: [fixture.snapshot(origin: nil)]
+        )
+
+        XCTAssertTrue(reduction.state.unavailableAttachmentIDs.contains(fixture.attachmentID))
+        XCTAssertNil(reduction.state.failureCounts[fixture.attachmentID])
+        XCTAssertTrue(reduction.shouldPersistWorkspace)
+    }
+
     private var activeSnapshotActivity: AttachedWindowSnapshotCoordinator.Activity {
         AttachedWindowSnapshotCoordinator.Activity(
             hasAttachments: true,
@@ -139,6 +244,66 @@ final class AttachedWindowSnapshotCoordinatorTests: XCTestCase {
                 requests: [AttachedWindowSnapshotRequest(attachmentID: attachmentID, window: window)]
             ),
             attachmentID
+        )
+    }
+
+    private func makeReducerFixture(
+        pid: pid_t = 100,
+        unavailable: Bool = false,
+        reconnecting: Bool = false,
+        failureCount: Int? = nil
+    ) -> ReducerFixture {
+        let attachmentID = UUID()
+        let window = WindowInfo(
+            id: UUID().uuidString,
+            appName: "Editor",
+            title: "Document",
+            pid: pid,
+            bundleIdentifier: "com.example.editor",
+            bundleURL: nil,
+            documentURL: nil,
+            axWindow: AXUIElementCreateSystemWide(),
+            windowNumber: 1,
+            position: CGPoint(x: 10, y: 20)
+        )
+        let attachedWindow = AttachedWindow(
+            attachmentID: attachmentID,
+            window: window,
+            lastBoardOrigin: .zero,
+            lastWindowOrigin: CGPoint(x: 10, y: 20),
+            lastAppliedOrigin: CGPoint(x: 10, y: 20),
+            pendingReleaseOrigin: CGPoint(x: 10, y: 20)
+        )
+        return ReducerFixture(
+            attachmentID: attachmentID,
+            windowID: window.id,
+            state: AttachedWindowSnapshotState(
+                attachedWindows: [attachedWindow],
+                unavailableAttachmentIDs: unavailable ? [attachmentID] : [],
+                reconnectingAttachmentIDs: reconnecting ? [attachmentID] : [],
+                minimizedAttachmentIDs: [],
+                failureCounts: failureCount.map { [attachmentID: $0] } ?? [:]
+            )
+        )
+    }
+}
+
+private struct ReducerFixture {
+    let attachmentID: AttachedWindow.ID
+    let windowID: WindowInfo.ID
+    let state: AttachedWindowSnapshotState
+
+    func snapshot(
+        title: String? = "Document",
+        origin: CGPoint? = CGPoint(x: 10, y: 20),
+        isMinimized: Bool = false
+    ) -> AttachedWindowSnapshot {
+        AttachedWindowSnapshot(
+            attachmentID: attachmentID,
+            windowID: windowID,
+            title: title,
+            origin: origin,
+            isMinimized: isMinimized
         )
     }
 }

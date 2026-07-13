@@ -42,6 +42,7 @@
 		1D0000010000000000000003 /* BoardFrontingCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000004 /* BoardFrontingCoordinatorTests.swift */; };
 		1D0000010000000000000005 /* AttachedWindowSnapshotCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000006 /* AttachedWindowSnapshotCoordinator.swift */; };
 		1D0000010000000000000007 /* AttachedWindowSnapshotCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D0000010000000000000008 /* AttachedWindowSnapshotCoordinatorTests.swift */; };
+		1D0000010000000000000009 /* AttachedWindowSnapshotReducer.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1D000001000000000000000A /* AttachedWindowSnapshotReducer.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -81,6 +82,7 @@
 		1D0000010000000000000004 /* BoardFrontingCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BoardFrontingCoordinatorTests.swift; sourceTree = "<group>"; };
 		1D0000010000000000000006 /* AttachedWindowSnapshotCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowSnapshotCoordinator.swift; sourceTree = "<group>"; };
 		1D0000010000000000000008 /* AttachedWindowSnapshotCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowSnapshotCoordinatorTests.swift; sourceTree = "<group>"; };
+		1D000001000000000000000A /* AttachedWindowSnapshotReducer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AttachedWindowSnapshotReducer.swift; sourceTree = "<group>"; };
 		1B0000010000000000000003 /* WindowBoardTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = WindowBoardTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
@@ -173,6 +175,7 @@
 				1A0000010000000000000029 /* WindowMatching.swift */,
 				1B0000010000000000000012 /* WorkspaceWindowResolver.swift */,
 				1C0000010000000000000002 /* AttachedWindowRecoveryResolver.swift */,
+				1D000001000000000000000A /* AttachedWindowSnapshotReducer.swift */,
 				1A0000010000000000000017 /* FollowMode.swift */,
 				1A0000010000000000000018 /* PositionUpdateMode.swift */,
 				1A0000010000000000000019 /* AutoFrontMode.swift */,
@@ -364,6 +367,7 @@
 				1C0000010000000000000007 /* BoardFollowCoordinator.swift in Sources */,
 				1D0000010000000000000001 /* BoardFrontingCoordinator.swift in Sources */,
 				1D0000010000000000000005 /* AttachedWindowSnapshotCoordinator.swift in Sources */,
+				1D0000010000000000000009 /* AttachedWindowSnapshotReducer.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

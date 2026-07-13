@@ -1461,62 +1461,34 @@ struct ContentView: View {
         contentEnergyLogger.debug("attached snapshot windows=\(result.snapshots.count, privacy: .public)")
         #endif
 
-        var didChange = false
+        let reduction = AttachedWindowSnapshotReducer.reduce(
+            state: AttachedWindowSnapshotState(
+                attachedWindows: session.attachedWindows,
+                unavailableAttachmentIDs: session.unavailableAttachedWindowIDs,
+                reconnectingAttachmentIDs: session.reconnectingAttachedWindowIDs,
+                minimizedAttachmentIDs: minimizedAttachedWindowIDs,
+                failureCounts: attachedWindowFailureCounts
+            ),
+            snapshots: result.snapshots
+        )
 
-        for snapshot in result.snapshots {
-            guard let index = session.attachedWindows.firstIndex(where: { $0.id == snapshot.attachmentID }) else {
-                continue
-            }
+        if reduction.didChangeAttachedWindows {
+            session.attachedWindows = reduction.state.attachedWindows
+        }
+        if session.unavailableAttachedWindowIDs != reduction.state.unavailableAttachmentIDs {
+            session.unavailableAttachedWindowIDs = reduction.state.unavailableAttachmentIDs
+        }
+        if minimizedAttachedWindowIDs != reduction.state.minimizedAttachmentIDs {
+            minimizedAttachedWindowIDs = reduction.state.minimizedAttachmentIDs
+        }
+        attachedWindowFailureCounts = reduction.state.failureCounts
 
-            guard session.attachedWindows[index].window.id == snapshot.windowID else {
-                continue
-            }
-
-            guard !isReconnecting(snapshot.attachmentID) else {
-                continue
-            }
-
-            if let title = snapshot.title,
-               title != session.attachedWindows[index].window.title {
-                session.attachedWindows[index].window = session.attachedWindows[index].window.updatingTitle(title)
-                didChange = true
-            }
-
-            if snapshot.isMinimized {
-                minimizedAttachedWindowIDs.insert(snapshot.attachmentID)
-                clearAttachedWindowAccessFailure(for: snapshot.attachmentID)
-                markAttachedWindowAvailable(snapshot.attachmentID)
-                continue
-            } else {
-                minimizedAttachedWindowIDs.remove(snapshot.attachmentID)
-            }
-
-            if let origin = snapshot.origin {
-                if !originsMatch(session.attachedWindows[index].lastWindowOrigin, origin) {
-                    session.attachedWindows[index].lastWindowOrigin = origin
-                    session.attachedWindows[index].lastAppliedOrigin = origin
-                    session.attachedWindows[index].pendingReleaseOrigin = nil
-                    didChange = true
-                }
-                clearAttachedWindowAccessFailure(for: snapshot.attachmentID)
-                markAttachedWindowAvailable(snapshot.attachmentID)
-            } else {
-                if session.attachedWindows[index].window.pid == 0 {
-                    session.unavailableAttachedWindowIDs.insert(snapshot.attachmentID)
-                    didChange = true
-                    continue
-                }
-
-                let failureCount = (attachedWindowFailureCounts[snapshot.attachmentID] ?? 0) + 1
-                attachedWindowFailureCounts[snapshot.attachmentID] = failureCount
-                if failureCount >= 3, !isUnavailable(snapshot.attachmentID) {
-                    session.unavailableAttachedWindowIDs.insert(snapshot.attachmentID)
-                    didChange = true
-                }
-            }
+        for id in reduction.availableAttachmentIDs {
+            recoveryIssueByAttachmentID.removeValue(forKey: id)
+            recoveryRevisionByAttachmentID.removeValue(forKey: id)
         }
 
-        if didChange {
+        if reduction.shouldPersistWorkspace {
             _ = session.persistActiveWorkspaceSnapshot()
         }
     }

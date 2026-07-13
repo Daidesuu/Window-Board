@@ -6,13 +6,25 @@
 - External window discovery, movement, minimization, focus, and raise behavior use Accessibility APIs through `AXUIElement`.
 - The original single-window MVP is complete. Current work is in the post-MVP workspace/session manager phase.
 - Workspace runtime state is centralized in `WorkspaceSessionController`; keep main-window and Status Item workspace switching on that shared path.
-- The current main UI direction is a card-board layout in `WindowBoardMainViews`, with pinned windows represented as app-tinted cards and a trailing Add Window card. Older list/inspector helpers may still exist but are not the primary composition.
+- User-facing UI uses the term **Board**, while internal persistence and session types still use `Workspace...`. Do not perform a global rename without a dedicated migration/refactor plan.
+- The current main UI is a card-board layout split across `BoardCardViews`, `BoardDetailViews`, `BoardSidebarViews`, `BoardSupportingViews`, and `BoardToolbarControls`. Pinned windows are app-tinted cards with a trailing Add Window card.
+- `ContentView` remains the main SwiftUI composition and routing layer, but asynchronous operation policy is split into focused internal components:
+  - `ApplicationWindowCatalog` for external-window listing and cache merging
+  - `AttachedWindowRecoveryCoordinator` and `AttachedWindowRecoveryResolver` for explicit recovery and matching
+  - `BoardFollowCoordinator` for follow timing and movement planning
+  - `BoardFrontingCoordinator` for fronting debounce, cancellation, and revision policy
+  - `AttachedWindowSnapshotCoordinator` for low-frequency off-main AX sampling
+  - `AttachedWindowSnapshotReducer` for pure snapshot-result state transitions
+- Keep these coordinators narrow. They must not independently own workspace/session state or bypass `AccessibilityWindowService` as the AX boundary.
 
 ## Build And Run
 - Prefer `./script/build_and_run.sh` for normal build/run verification.
 - Use `./script/build_and_run.sh --verify` when confirming that the app launches.
 - For compile-only checks, use:
   - `xcodebuild -project WindowBoard.xcodeproj -scheme WindowBoard -configuration Debug -derivedDataPath build/DerivedData build`
+- For the XCTest suite, use:
+  - `xcodebuild -project WindowBoard.xcodeproj -scheme WindowBoard -configuration Debug -derivedDataPath build/DerivedData test`
+- The test target covers pure matching/resolution logic, workspace-session transitions with fake window services, recovery, follow/fronting policy, and snapshot coordination/reduction. Add focused tests when changing these areas.
 - Launching the macOS GUI app may require elevated execution approval.
 
 ## Implementation Guidelines
@@ -28,7 +40,7 @@
 - Prefer assigning sub-agents by risk area, not by feature surface. WindowBoard bugs often cross UI, session state, and Accessibility behavior, so each sub-agent should have a clear ownership boundary.
 - Use a **Session / Workspace Agent** for `WorkspaceSessionController`, `WorkspaceStore`, workspace save/load/switch/recovery, and Status Item workspace switching. This agent should own state consistency and should be the only agent making primary changes to workspace switching logic.
 - Use an **AX / Window Operations Agent** for `AccessibilityWindowService`, window movement, minimize/restore, focus/raise, and AppKit/AX limitations. This agent should check that AX calls stay off the main thread and that failures leave windows recoverable rather than detached.
-- Use a **UI / UX Agent** for `ContentView`, `WindowBoardMainViews`, `SettingsView`, labels, toolbar/sidebar/card layout, and state presentation. This agent should avoid changing session semantics unless coordinated with the Session / Workspace Agent.
+- Use a **UI / UX Agent** for `ContentView`, `BoardCardViews`, `BoardDetailViews`, `BoardSidebarViews`, `BoardSupportingViews`, `BoardToolbarControls`, `SettingsView`, labels, layout, and state presentation. This agent should avoid changing session semantics unless coordinated with the Session / Workspace Agent.
 - Use a **Performance / Regression Agent** for timing-sensitive workspace switching, snapshot/minimize/restore contention, Status Item vs main-window path comparisons, and build/run verification. This agent should focus on investigation, measurement, and regression review.
 - For workspace switching, save/load, or Status Item behavior, assign **Session / Workspace Agent + Performance / Regression Agent**.
 - For minimize, restore, follow, fronting, or external window movement, assign **AX / Window Operations Agent + Performance / Regression Agent**.
@@ -90,7 +102,7 @@
 ## Current Behavior Expectations
 - Attached list order is user-visible state, but strict macOS z-order guarantees are not reliable with public APIs.
 - `Follow Mode: None` means attached windows remain selected but do not follow board movement.
-- `Open / Reconnect` should reopen the app/document when possible and reconnect to a matching new AX window.
+- `Find or Reopen` should reopen the app/document when possible and reconnect to a matching new AX window. `Use Front Window` is an explicit same-application fallback and must not silently attach a different app's window.
 - `Minimize Unattached` is best-effort and may not affect system, special, full-screen, cross-Space, or permission-limited windows.
 - Full-screen windows and windows on another Space are not reliable workspace targets. Do not present them as supported; public macOS APIs cannot reliably move another app's existing window into the current Space or control full-screen app Spaces.
 - `Minimize Unattached On Workspace Switch` runs after the workspace switch has been shown; do not make workspace loading wait for all minimize operations.
@@ -105,6 +117,9 @@
 - Workspace layout saves and restores both window position and optional window size. Size restore is best-effort and should not detach windows on failure.
 - Status Item workspace switches should save the active workspace first without opening the WindowBoard window, preserving existing relative offsets and updating saved absolute positions where possible.
 - Attached window position snapshots should stay low-frequency, run AX reads off the main thread, and persist only meaningful changes.
+- Snapshot scheduling and sampling belong in `AttachedWindowSnapshotCoordinator`; snapshot state transitions belong in `AttachedWindowSnapshotReducer`. Keep session mutation and persistence execution at the caller boundary.
+- Snapshot results from an old coordinator revision, a different active workspace, a stale window ID, or a reconnecting attachment must not overwrite current state.
+- Preserve snapshot state semantics: minimized windows are recoverable/available, normal live windows become unavailable only after repeated read failures, and `pid == 0` placeholders may become unavailable immediately.
 - Workspace-specific Status Item display may be an SF Symbol, emoji, or short text value saved on the workspace.
 - `setPosition`, `setSize`, minimize/restore, and fronting operations should skip no-op work where possible and run off the main thread.
 - Debug builds may include lightweight `Logger` timing around expensive workspace operations; keep this diagnostic logging low-noise and non-user-facing.
