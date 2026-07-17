@@ -55,14 +55,14 @@ final class WindowBoardAppState: ObservableObject {
     @Published private(set) var autoFrontMode: AutoFrontMode
     @Published private(set) var boardClickAction: BoardClickAction
     private let defaults: UserDefaults
-    private let neverMinimizeWindowsKey = "neverMinimizeWindows"
+    private let neverMinimizeWindowsKey = BoardStorageKeys.legacyNeverMinimizeWindows
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
         let workspaceStore = WorkspaceStore(defaults: defaults)
         self.workspaceStore = workspaceStore
         let availableBoardIDs = Set(workspaceStore.workspaces.map(\.id))
-        let storedActiveBoardID = defaults.string(forKey: "activeWorkspaceID").flatMap(UUID.init(uuidString:))
+        let storedActiveBoardID = defaults.string(forKey: BoardStorageKeys.activeBoardID).flatMap(UUID.init(uuidString:))
         let migrationPrimaryID = storedActiveBoardID.flatMap { availableBoardIDs.contains($0) ? $0 : nil }
             ?? workspaceStore.defaultWorkspace?.id
         let boardCompositionStore = BoardCompositionStore(

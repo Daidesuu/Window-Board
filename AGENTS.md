@@ -17,6 +17,12 @@
   - `AttachedWindowSnapshotReducer` for pure snapshot-result state transitions
 - Keep these coordinators narrow. They must not independently own workspace/session state or bypass `AccessibilityWindowService` as the AX boundary.
 
+## Requirements Documentation
+- `APP_REQUIREMENTS.md` is the consolidated user-facing requirements document for the current application.
+- Update `APP_REQUIREMENTS.md` when a change materially alters user-visible behavior, Board composition/persistence semantics, settings, Status Item behavior, supported operations, performance expectations, or documented macOS/Accessibility limitations.
+- Do not update it for internal-only refactors, bug fixes that restore an already documented behavior, or incidental implementation changes unless the document would otherwise become inaccurate.
+- Keep requirements written in user-facing `Board` terminology; implementation-only `Workspace` names may be noted only where needed for maintainers.
+
 ## Build And Run
 - Prefer `./script/build_and_run.sh` for normal build/run verification.
 - Use `./script/build_and_run.sh --verify` when confirming that the app launches.

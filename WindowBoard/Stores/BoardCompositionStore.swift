@@ -68,6 +68,11 @@ enum BoardCompositionMutationResult: Equatable {
     }
 }
 
+enum BoardRootInsertion: Equatable {
+    case before
+    case after
+}
+
 struct BoardCompositionNode: Identifiable, Equatable {
     let id: String
     let board: SavedWorkspace
@@ -90,6 +95,31 @@ struct ResolvedBoardComposition: Equatable {
     let uniqueWindowReferences: [BoardOwnedWindowReference]
 
     static let empty = ResolvedBoardComposition(roots: [], uniqueBoards: [], uniqueWindowReferences: [])
+}
+
+struct SidebarBoardSelection: Equatable {
+    let memberBoardID: SavedWorkspace.ID
+    let groupPrimaryID: SavedWorkspace.ID
+}
+
+enum SidebarSelection: Equatable {
+    case board(SavedWorkspace.ID)
+    case currentBoardGroup(primaryID: SavedWorkspace.ID)
+}
+
+struct SidebarBoardGroup: Identifiable, Equatable {
+    var id: SavedWorkspace.ID { primaryBoardID }
+    let primaryBoardID: SavedWorkspace.ID
+    let boards: [SavedWorkspace]
+
+    var displayTitle: String {
+        boards.map(\.name).joined(separator: " / ")
+    }
+}
+
+struct SidebarBoardProjection: Equatable {
+    let groups: [SidebarBoardGroup]
+    let standaloneBoards: [SavedWorkspace]
 }
 
 enum BoardCompositionResolver {
@@ -164,8 +194,8 @@ final class BoardCompositionStore: ObservableObject {
     @Published private(set) var data: BoardCompositionData
 
     private let defaults: UserDefaults
-    private let storageKey = "boardComposition.v2"
-    private let legacyStorageKey = "includedBoardIDs"
+    private let storageKey = BoardStorageKeys.legacyComposition
+    private let legacyStorageKey = BoardStorageKeys.legacyIncludedBoards
 
     init(
         defaults: UserDefaults = .standard,
@@ -230,13 +260,26 @@ final class BoardCompositionStore: ObservableObject {
     func includeRoot(
         _ boardID: SavedWorkspace.ID,
         for primaryID: SavedWorkspace.ID,
-        availableBoardIDs: Set<SavedWorkspace.ID>
+        availableBoardIDs: Set<SavedWorkspace.ID>,
+        relativeTo relativeBoardID: SavedWorkspace.ID? = nil,
+        insertion: BoardRootInsertion = .after
     ) -> BoardCompositionMutationResult {
         guard availableBoardIDs.contains(primaryID), availableBoardIDs.contains(boardID) else { return .missingBoard }
         guard boardID != primaryID else { return .selfReference }
         var roots = rootBoardIDs(for: primaryID)
         guard !roots.contains(boardID) else { return .duplicate }
-        roots.append(boardID)
+        if let relativeBoardID {
+            if let relativeIndex = roots.firstIndex(of: relativeBoardID) {
+                let insertionIndex = insertion == .before ? relativeIndex : roots.index(after: relativeIndex)
+                roots.insert(boardID, at: insertionIndex)
+            } else if relativeBoardID == primaryID {
+                roots.insert(boardID, at: 0)
+            } else {
+                roots.append(boardID)
+            }
+        } else {
+            roots.append(boardID)
+        }
         data.rootBoardIDsByPrimaryID[primaryID] = roots
         persist()
         return .inserted
@@ -281,6 +324,26 @@ final class BoardCompositionStore: ObservableObject {
 
     func resolveCurrentBoard(primaryID: SavedWorkspace.ID, workspaces: [SavedWorkspace]) -> ResolvedBoardComposition {
         BoardCompositionResolver.resolve(primaryID: primaryID, data: data, workspaces: workspaces)
+    }
+
+    func sidebarProjection(workspaces: [SavedWorkspace]) -> SidebarBoardProjection {
+        let permanentBoardIDs = Set(workspaces.filter(\.isDefault).map(\.id))
+        let groups = workspaces.compactMap { workspace -> SidebarBoardGroup? in
+            guard !workspace.isDefault else { return nil }
+            let resolved = resolveCurrentBoard(primaryID: workspace.id, workspaces: workspaces)
+            let boards = resolved.roots
+                .map(\.board)
+                .filter { !permanentBoardIDs.contains($0.id) }
+            guard boards.count > 1 else { return nil }
+            return SidebarBoardGroup(primaryBoardID: workspace.id, boards: boards)
+        }
+        let groupedBoardIDs = Set(groups.flatMap { $0.boards.map(\.id) })
+        let groupPrimaryIDs = Set(groups.map(\.primaryBoardID))
+        let standaloneBoards = workspaces.filter { workspace in
+            workspace.isDefault
+                || (!groupedBoardIDs.contains(workspace.id) && !groupPrimaryIDs.contains(workspace.id))
+        }
+        return SidebarBoardProjection(groups: groups, standaloneBoards: standaloneBoards)
     }
 
     func removeBoardReferences(_ boardID: SavedWorkspace.ID) {

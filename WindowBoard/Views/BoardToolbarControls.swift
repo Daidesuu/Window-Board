@@ -1,7 +1,14 @@
 import SwiftUI
 
+struct BoardToolbarSettingsTarget: Identifiable {
+    let id: SavedWorkspace.ID
+    let title: String
+}
+
 struct BoardToolbarState {
     let boardTitle: String
+    let defaultSettingsTargetID: SavedWorkspace.ID?
+    let settingsTargets: [BoardToolbarSettingsTarget]
     let isTrusted: Bool
     let hasSelectedBoard: Bool
     let canAttachFrontmost: Bool
@@ -26,6 +33,7 @@ struct BoardToolbarActions {
     let refreshWindowList: () -> Void
     let restoreLayout: () -> Void
     let removeAllWindows: () -> Void
+    let showBoardSettings: (SavedWorkspace.ID) -> Void
 
 }
 
@@ -57,7 +65,9 @@ struct BoardToolbarControls<SettingsContent: View>: ToolbarContent {
             .disabled(!state.isTrusted)
 
             BoardToolbarTitleBadge(title: state.boardTitle) {
-                isSettingsPresented = true
+                if let targetID = state.defaultSettingsTargetID {
+                    actions.showBoardSettings(targetID)
+                }
             }
             .disabled(!state.hasSelectedBoard)
         }
@@ -115,12 +125,26 @@ struct BoardToolbarControls<SettingsContent: View>: ToolbarContent {
 
                 Divider()
 
-                Button {
-                    isSettingsPresented = true
-                } label: {
-                    Label("Board Settings", systemImage: "slider.horizontal.3")
+                if state.settingsTargets.count > 1 {
+                    Menu {
+                        ForEach(state.settingsTargets) { target in
+                            Button(target.title) {
+                                actions.showBoardSettings(target.id)
+                            }
+                        }
+                    } label: {
+                        Label("Board Settings", systemImage: "slider.horizontal.3")
+                    }
+                } else {
+                    Button {
+                        if let targetID = state.defaultSettingsTargetID {
+                            actions.showBoardSettings(targetID)
+                        }
+                    } label: {
+                        Label("Board Settings", systemImage: "slider.horizontal.3")
+                    }
+                    .disabled(!state.hasSelectedBoard)
                 }
-                .disabled(!state.hasSelectedBoard)
 
                 Divider()
 
@@ -154,7 +178,7 @@ private struct BoardToolbarTitleBadge: View {
         }
         .buttonStyle(.bordered)
         .controlSize(.regular)
-        .help("Board Settings")
+        .help("Board Settings: \(title)")
         .accessibilityLabel(title)
     }
 }

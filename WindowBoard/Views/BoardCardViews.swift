@@ -19,9 +19,10 @@ struct PinnedWindowCardGrid: View {
     let bringAndMoveBelowCard: (AttachedWindow, CGPoint) -> Void
     let sourceBoard: (AttachedWindow.ID) -> BoardCardSource?
     let includeBoard: (SavedWorkspace.ID) -> Void
+    let handleWindowDrop: (AttachedWindow.ID, AttachedWindow.ID?) -> BoardWindowMutationResult
     let rejectDrop: () -> Void
     let showsAddCard: Bool
-    @State private var isDropTargeted = false
+    @State private var isBoardDropTargeted = false
 
     private let columns = [
         GridItem(.adaptive(minimum: 200, maximum: 240), spacing: 18, alignment: .top)
@@ -64,6 +65,17 @@ struct PinnedWindowCardGrid: View {
                             bringAndMoveBelowCard(attachedWindow, cursorScreenLocation)
                         }
                     )
+                    .onDrop(
+                        of: [WindowBoardDragKind.window.type.identifier],
+                        delegate: WindowBoardDropDelegate(
+                            acceptedKinds: [.window],
+                            setTargeted: { _ in },
+                            perform: { payload, _ in
+                                guard case let .window(windowID) = payload else { return }
+                                _ = handleWindowDrop(windowID, attachedWindow.id)
+                            }
+                        )
+                    )
                 }
 
                 if showsAddCard {
@@ -94,30 +106,34 @@ struct PinnedWindowCardGrid: View {
                     style: StrokeStyle(lineWidth: 1.2, dash: [6, 5])
                 )
         }
-        .dropDestination(for: String.self) { items, _ in
-            handleDrop(items)
-        } isTargeted: { isTargeted in
-            isDropTargeted = isTargeted
-        }
+        .onDrop(
+            of: [
+                WindowBoardDragKind.board.type.identifier,
+                WindowBoardDragKind.window.type.identifier
+            ],
+            delegate: WindowBoardDropDelegate(
+                acceptedKinds: [.board, .window],
+                setTargeted: { isBoardDropTargeted = $0 },
+                perform: handleDrop
+            )
+        )
     }
 
     private var shouldAnimateWorkspaceEntrance: Bool {
         attachedWindows.count < 4
     }
 
-    private func handleDrop(_ items: [String]) -> Bool {
-        guard let item = items.first else {
-            rejectDrop()
-            return false
-        }
+    private var isDropTargeted: Bool {
+        isBoardDropTargeted
+    }
 
-        if let boardID = DragPayload.boardID(from: item) {
+    private func handleDrop(_ payload: WindowBoardDragPayload, _: CGPoint) {
+        switch payload {
+        case let .board(boardID):
             includeBoard(boardID)
-            return true
+        case let .window(windowID):
+            _ = handleWindowDrop(windowID, nil)
         }
-
-        rejectDrop()
-        return false
     }
 }
 
@@ -322,6 +338,7 @@ private struct AddPinnedWindowCard: View {
     let workspaceTransitionIndex: Int
     @State private var isPresenting = true
     @State private var lastAppearanceGeneration = 0
+    @State private var presentationTask: Task<Void, Never>?
 
     private let baseCardSize = CGSize(width: 220, height: 308)
     private var presentationOpacity: Double {
@@ -363,8 +380,7 @@ private struct AddPinnedWindowCard: View {
         }
         .overlay(addCardSurfaceOverlay)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: .black.opacity(0.10), radius: 10, y: 3)
-        .shadow(color: .black.opacity(0.08), radius: 22, y: 10)
+        .shadow(color: .black.opacity(0.10), radius: 12, y: 5)
         .opacity(presentationOpacity)
         .scaleEffect(reduceMotion || isPresenting ? 1 : 0.96)
         .offset(y: reduceMotion || isPresenting ? 0 : 8)
@@ -378,13 +394,11 @@ private struct AddPinnedWindowCard: View {
         )
         .onAppear {
             lastAppearanceGeneration = appearanceGeneration
-            if !isEmptyState, appearanceGeneration > 0 {
-                isPresenting = false
-                presentAfterDelay(milliseconds: 150)
-            } else {
-                isPresenting = true
-            }
+            // Scrolling can recreate a lazy-grid cell. Only a count change should
+            // animate this card; ordinary reappearance must remain static.
+            isPresenting = true
         }
+        .onDisappear { presentationTask?.cancel() }
         .onChange(of: appearanceGeneration) { _, newGeneration in
             animateNewAddCardIfNeeded(newGeneration)
         }
@@ -402,8 +416,10 @@ private struct AddPinnedWindowCard: View {
     }
 
     private func presentAfterDelay(milliseconds: UInt64) {
-        Task { @MainActor in
+        presentationTask?.cancel()
+        presentationTask = Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(milliseconds))
+            guard !Task.isCancelled else { return }
             withAnimation(.easeOut(duration: 0.24)) {
                 isPresenting = true
             }
@@ -500,9 +516,11 @@ private struct PinnedWindowCard: View {
         .background(cardBackground)
         .overlay(cardSurfaceOverlay)
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
-        .shadow(color: .black.opacity(state.needsAttention ? 0.16 : 0.12), radius: 11, y: 4)
-        .shadow(color: .black.opacity(state.needsAttention ? 0.10 : 0.08), radius: 24, y: 11)
-        .shadow(color: appAccentColor.opacity(state == .available ? 0.12 : 0.05), radius: 20, y: 9)
+        .shadow(
+            color: .black.opacity(state.needsAttention ? 0.15 : 0.11),
+            radius: state.needsAttention ? 14 : 12,
+            y: state.needsAttention ? 6 : 5
+        )
         .scaleEffect(primaryActionCardScale)
         .animation(.spring(response: 0.20, dampingFraction: 0.82), value: primaryActionCardScale)
         .interactiveCardMotion(
@@ -519,6 +537,11 @@ private struct PinnedWindowCard: View {
             isEnabled: !isPinningIn && !isDetaching
         )
         .cardDetachExit(isActive: isDetaching)
+        .contentShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .windowDraggable(
+            id: attachedWindow.id,
+            enabled: isWindowDragEnabled
+        )
     }
 
     private var cardContent: some View {
@@ -597,6 +620,10 @@ private struct PinnedWindowCard: View {
     }
 
     private var isPrimaryActionEnabled: Bool {
+        state != .reconnecting && state != .resolving && !isDetaching
+    }
+
+    private var isWindowDragEnabled: Bool {
         state != .reconnecting && state != .resolving && !isDetaching
     }
 

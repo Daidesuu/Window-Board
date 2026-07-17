@@ -230,7 +230,7 @@ struct SavedWindowReference: Codable, Identifiable, Equatable {
 
         let window = attachedWindow.window
         return SavedWindowReference(
-            id: UUID(),
+            id: attachedWindow.id,
             displayName: window.displayName,
             appName: window.appName,
             title: window.title,

@@ -16,6 +16,32 @@ enum WorkspaceSwitchSource {
     case statusItem
 }
 
+enum BoardWindowMutationResult: Equatable {
+    case moved
+    case reordered
+    case missingWindow
+    case missingBoard
+    case duplicate
+    case busy
+
+    var userMessage: String {
+        switch self {
+        case .moved:
+            "Moved window to board."
+        case .reordered:
+            "Updated window order."
+        case .missingWindow:
+            "Window is no longer attached."
+        case .missingBoard:
+            "Board not found."
+        case .duplicate:
+            "That window is already on this board."
+        case .busy:
+            "Wait for window recovery to finish."
+        }
+    }
+}
+
 private struct SessionAttachedWindowSnapshot {
     let windowID: WindowInfo.ID
     let appName: String
@@ -58,15 +84,28 @@ private enum LayoutOperationResult {
 }
 
 final class WorkspaceSessionController: ObservableObject {
+    private struct PendingWorkspaceSwitch {
+        let workspaceID: SavedWorkspace.ID
+        let selectedBoardID: SavedWorkspace.ID?
+        let boardOrigin: CGPoint?
+        let source: WorkspaceSwitchSource
+        let followMode: FollowMode
+        let windowCache: [WindowInfo]?
+        let mergeWindows: @MainActor ([WindowInfo]) -> Void
+        let completion: @MainActor (_ shouldBringBoardToFront: Bool) -> Void
+        let deferredWindowApplicationCompletion: @MainActor () -> Void
+        let minimizeAfterSwitchCompletion: @MainActor () -> Void
+    }
+
     let workspaceStore: WorkspaceStore
 
     @Published var selectedWorkspaceID: SavedWorkspace.ID?
     @Published var activeWorkspaceID: SavedWorkspace.ID? {
         didSet {
             if let activeWorkspaceID {
-                defaults.set(activeWorkspaceID.uuidString, forKey: "activeWorkspaceID")
+                defaults.set(activeWorkspaceID.uuidString, forKey: BoardStorageKeys.activeBoardID)
             } else {
-                defaults.removeObject(forKey: "activeWorkspaceID")
+                defaults.removeObject(forKey: BoardStorageKeys.activeBoardID)
             }
         }
     }
@@ -84,7 +123,7 @@ final class WorkspaceSessionController: ObservableObject {
     @Published private(set) var attachmentOwnerBoardIDs: [AttachedWindow.ID: SavedWorkspace.ID] = [:]
 
     private var loadedWindowIDsByWorkspaceID: [SavedWorkspace.ID: [SavedWindowReference.ID: WindowInfo.ID]] = [:]
-    private var pendingWorkspaceID: SavedWorkspace.ID?
+    private var pendingWorkspaceSwitch: PendingWorkspaceSwitch?
     private let defaults: UserDefaults
     private let minimizeUnattachedOnWorkspaceSwitchKey = "minimizeUnattachedOnWorkspaceSwitch"
     private let restoreMissingWindowsOnWorkspaceSwitchKey = "restoreMissingWindowsOnWorkspaceSwitch"
@@ -103,7 +142,7 @@ final class WorkspaceSessionController: ObservableObject {
         self.boardCompositionStore = boardCompositionStore ?? BoardCompositionStore(defaults: defaults)
         self.windowServiceFactory = windowServiceFactory
         workspaceStore.ensureDefaultWorkspace()
-        let storedActiveWorkspaceID = defaults.string(forKey: "activeWorkspaceID").flatMap(UUID.init(uuidString:))
+        let storedActiveWorkspaceID = defaults.string(forKey: BoardStorageKeys.activeBoardID).flatMap(UUID.init(uuidString:))
         activeWorkspaceID = storedActiveWorkspaceID
 
         if let activeWorkspaceID,
@@ -136,6 +175,47 @@ final class WorkspaceSessionController: ObservableObject {
 
     var canRestoreMinimized: Bool {
         !minimizedWindows.isEmpty && !isMinimizingUnattached && !isRestoringMinimized
+    }
+
+    @discardableResult
+    func selectMemberBoard(_ boardID: SavedWorkspace.ID) -> Bool {
+        guard currentBoardComposition.uniqueBoards.contains(where: { $0.id == boardID }),
+              let workspace = workspaceStore.workspaces.first(where: { $0.id == boardID }) else {
+            return false
+        }
+        selectedWorkspaceID = boardID
+        workspaceName = workspace.name
+        return true
+    }
+
+    @discardableResult
+    func requestMemberSelection(
+        memberBoardID: SavedWorkspace.ID,
+        groupPrimaryID: SavedWorkspace.ID
+    ) -> Bool {
+        guard activeWorkspaceID == groupPrimaryID,
+              currentBoardComposition.uniqueBoards.contains(where: { $0.id == memberBoardID }),
+              let workspace = workspaceStore.workspaces.first(where: { $0.id == memberBoardID }) else {
+            return false
+        }
+        if isLoadingWorkspace {
+            pendingWorkspaceSwitch = PendingWorkspaceSwitch(
+                workspaceID: groupPrimaryID,
+                selectedBoardID: memberBoardID,
+                boardOrigin: nil,
+                source: .statusItem,
+                followMode: .none,
+                windowCache: nil,
+                mergeWindows: { _ in },
+                completion: { _ in },
+                deferredWindowApplicationCompletion: {},
+                minimizeAfterSwitchCompletion: {}
+            )
+            selectedWorkspaceID = memberBoardID
+            workspaceName = workspace.name
+            return true
+        }
+        return selectMemberBoard(memberBoardID)
     }
 
     private var primaryAttachedWindows: [AttachedWindow] {
@@ -185,21 +265,30 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     func overwriteSelectedWorkspace(name: String, boardOrigin: CGPoint?) {
-        guard let selectedWorkspaceID,
+        guard let selectedWorkspaceID else { return }
+        overwriteWorkspace(id: selectedWorkspaceID, name: name, boardOrigin: boardOrigin)
+    }
+
+    func overwriteWorkspace(id workspaceID: SavedWorkspace.ID, name: String, boardOrigin: CGPoint?) {
+        guard !isLoadingWorkspace,
               !attachedWindows.isEmpty,
-              let references = currentWorkspaceReferences(boardOrigin: boardOrigin) else {
+              let references = currentWorkspaceReferences(
+                ownerBoardID: workspaceID,
+                boardOrigin: boardOrigin
+              ) else {
             return
         }
 
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetWorkspace = workspaceStore.workspaces.first { $0.id == workspaceID }
         let resolvedName: String?
-        if selectedWorkspace?.isDefault == true {
+        if targetWorkspace?.isDefault == true {
             resolvedName = WorkspaceStore.defaultWorkspaceName
         } else {
-            resolvedName = trimmedName.isEmpty ? selectedWorkspace?.name : trimmedName
+            resolvedName = trimmedName.isEmpty ? targetWorkspace?.name : trimmedName
         }
         guard let workspace = workspaceStore.updateWorkspace(
-            id: selectedWorkspaceID,
+            id: workspaceID,
             name: resolvedName,
             windows: references
         ) else {
@@ -207,25 +296,37 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         workspaceName = workspace.name
-        activeWorkspaceID = workspace.id
-        rememberLoadedWindowIDs(for: workspace.id, attachedWindows: primaryAttachedWindows)
+        let ownerAttachments = attachedWindows.filter {
+            (attachmentOwnerBoardIDs[$0.id] ?? activeWorkspaceID) == workspace.id
+        }
+        rememberLoadedWindowIDs(for: workspace.id, attachedWindows: ownerAttachments)
+        if let activeWorkspaceID {
+            currentBoardComposition = boardCompositionStore.resolveCurrentBoard(
+                primaryID: activeWorkspaceID,
+                workspaces: workspaceStore.workspaces
+            )
+        }
         statusMessage = "Overwrote \(workspace.displayName)."
     }
 
     func renameSelectedWorkspace(name: String) {
+        guard let selectedWorkspaceID else { return }
+        renameWorkspace(id: selectedWorkspaceID, name: name)
+    }
+
+    func renameWorkspace(id workspaceID: SavedWorkspace.ID, name: String) {
         let trimmedName = name.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard let selectedWorkspaceID,
-              !trimmedName.isEmpty else {
+        guard !trimmedName.isEmpty else {
             return
         }
 
-        guard selectedWorkspace?.isDefault != true else {
+        guard workspaceStore.workspaces.first(where: { $0.id == workspaceID })?.isDefault != true else {
             workspaceName = WorkspaceStore.defaultWorkspaceName
             statusMessage = "Permanent Board cannot be renamed."
             return
         }
 
-        guard let workspace = workspaceStore.updateWorkspace(id: selectedWorkspaceID, name: trimmedName) else {
+        guard let workspace = workspaceStore.updateWorkspace(id: workspaceID, name: trimmedName) else {
             return
         }
 
@@ -245,23 +346,32 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     func deleteSelectedWorkspace() {
-        guard let selectedWorkspaceID else {
-            return
-        }
+        guard let selectedWorkspaceID else { return }
+        deleteWorkspace(id: selectedWorkspaceID)
+    }
 
-        guard selectedWorkspace?.isDefault != true else {
+    func deleteWorkspace(id workspaceID: SavedWorkspace.ID) {
+        guard workspaceStore.workspaces.first(where: { $0.id == workspaceID })?.isDefault != true else {
             statusMessage = "Permanent Board cannot be deleted."
             return
         }
 
-        boardCompositionStore.removeBoardReferences(selectedWorkspaceID)
-        loadedWindowIDsByWorkspaceID[selectedWorkspaceID] = nil
-        workspaceStore.deleteWorkspace(id: selectedWorkspaceID)
-        if activeWorkspaceID == selectedWorkspaceID {
+        boardCompositionStore.removeBoardReferences(workspaceID)
+        loadedWindowIDsByWorkspaceID[workspaceID] = nil
+        workspaceStore.deleteWorkspace(id: workspaceID)
+        if activeWorkspaceID == workspaceID {
             activeWorkspaceID = nil
+            attachedWindows = []
+            includedAttachmentIDs = []
+            attachmentOwnerBoardIDs = [:]
+            currentBoardComposition = .empty
+            unavailableAttachedWindowIDs = []
+            reconnectingAttachedWindowIDs = []
         }
-        self.selectedWorkspaceID = workspaceStore.defaultWorkspace?.id
-        workspaceName = workspaceStore.defaultWorkspace?.name ?? ""
+        if selectedWorkspaceID == workspaceID || activeWorkspaceID == nil {
+            selectedWorkspaceID = workspaceStore.defaultWorkspace?.id
+            workspaceName = workspaceStore.defaultWorkspace?.name ?? ""
+        }
         statusMessage = "Deleted board."
     }
 
@@ -275,6 +385,10 @@ final class WorkspaceSessionController: ObservableObject {
         let workspace = workspaceStore.updateWorkspace(id: activeWorkspaceID, windows: references)
         if let workspace {
             rememberLoadedWindowIDs(for: workspace.id, attachedWindows: primaryAttachedWindows)
+            currentBoardComposition = boardCompositionStore.resolveCurrentBoard(
+                primaryID: workspace.id,
+                workspaces: workspaceStore.workspaces
+            )
         }
         return workspace
     }
@@ -340,6 +454,7 @@ final class WorkspaceSessionController: ObservableObject {
 
     func switchWorkspace(
         id workspaceID: SavedWorkspace.ID,
+        selectedBoardID: SavedWorkspace.ID? = nil,
         boardOrigin: CGPoint?,
         source: WorkspaceSwitchSource,
         followMode: FollowMode,
@@ -356,9 +471,18 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         if isLoadingWorkspace {
-            pendingWorkspaceID = workspaceID
-            selectedWorkspaceID = workspaceID
-            workspaceName = workspace.name
+            pendingWorkspaceSwitch = PendingWorkspaceSwitch(
+                workspaceID: workspaceID,
+                selectedBoardID: selectedBoardID,
+                boardOrigin: boardOrigin,
+                source: source,
+                followMode: followMode,
+                windowCache: windowCache,
+                mergeWindows: mergeWindows,
+                completion: completion,
+                deferredWindowApplicationCompletion: deferredWindowApplicationCompletion,
+                minimizeAfterSwitchCompletion: minimizeAfterSwitchCompletion
+            )
             statusMessage = "Queued \(workspace.name)."
             return
         }
@@ -366,8 +490,10 @@ final class WorkspaceSessionController: ObservableObject {
         if persistCurrentWorkspaceBeforeSwitch, !attachedWindows.isEmpty {
             persistActiveWorkspaceSnapshotForSwitch(boardOrigin: boardOrigin)
         }
-        selectedWorkspaceID = workspaceID
-        workspaceName = workspace.name
+        let requestedSelectedBoardID = selectedBoardID ?? workspaceID
+        selectedWorkspaceID = requestedSelectedBoardID
+        workspaceName = workspaceStore.workspaces.first(where: { $0.id == requestedSelectedBoardID })?.name
+            ?? workspace.name
         isApplyingWorkspaceWindows = false
         isLoadingWorkspace = true
         statusMessage = "Loading \(workspace.name)..."
@@ -378,6 +504,9 @@ final class WorkspaceSessionController: ObservableObject {
             primaryID: workspaceID,
             workspaces: workspaceStore.workspaces
         )
+        let resolvedSelectedBoardID = boardComposition.uniqueBoards.contains(where: { $0.id == requestedSelectedBoardID })
+            ? requestedSelectedBoardID
+            : workspaceID
         let composedReferences = boardComposition.uniqueWindowReferences.map(\.reference)
         let ownerBoardIDByReferenceID = Dictionary(
             uniqueKeysWithValues: boardComposition.uniqueWindowReferences.map { ($0.reference.id, $0.ownerBoardID) }
@@ -409,7 +538,7 @@ final class WorkspaceSessionController: ObservableObject {
         unavailableAttachedWindowIDs = plannedAttachmentIDs
         reconnectingAttachedWindowIDs = []
         activeWorkspaceID = workspace.id
-        selectedWorkspaceID = workspace.id
+        selectedWorkspaceID = resolvedSelectedBoardID
         loadedWindowIDsByWorkspaceID[workspace.id] = [:]
 
         Task.detached(priority: .userInitiated) {
@@ -470,23 +599,31 @@ final class WorkspaceSessionController: ObservableObject {
 
             let batchUpdateStart = Date()
             await MainActor.run {
-                if let pendingWorkspaceID = self.pendingWorkspaceID,
-                   pendingWorkspaceID != workspace.id {
-                    self.pendingWorkspaceID = nil
-                    self.isLoadingWorkspace = false
-                    self.switchWorkspace(
-                        id: pendingWorkspaceID,
-                        boardOrigin: boardOrigin,
-                        source: source,
-                        followMode: followMode,
-                        windowCache: windowCache,
-                        mergeWindows: mergeWindows,
-                        completion: completion,
-                        deferredWindowApplicationCompletion: deferredWindowApplicationCompletion,
-                        minimizeAfterSwitchCompletion: minimizeAfterSwitchCompletion,
-                        persistCurrentWorkspaceBeforeSwitch: false
-                    )
-                    return
+                var selectedBoardIDForBatch = resolvedSelectedBoardID
+                if let pendingSwitch = self.pendingWorkspaceSwitch {
+                    self.pendingWorkspaceSwitch = nil
+                    if pendingSwitch.workspaceID == workspace.id {
+                        if let pendingSelectedWorkspaceID = pendingSwitch.selectedBoardID,
+                           boardComposition.uniqueBoards.contains(where: { $0.id == pendingSelectedWorkspaceID }) {
+                            selectedBoardIDForBatch = pendingSelectedWorkspaceID
+                        }
+                    } else {
+                        self.isLoadingWorkspace = false
+                        self.switchWorkspace(
+                            id: pendingSwitch.workspaceID,
+                            selectedBoardID: pendingSwitch.selectedBoardID,
+                            boardOrigin: pendingSwitch.boardOrigin,
+                            source: pendingSwitch.source,
+                            followMode: pendingSwitch.followMode,
+                            windowCache: pendingSwitch.windowCache,
+                            mergeWindows: pendingSwitch.mergeWindows,
+                            completion: pendingSwitch.completion,
+                            deferredWindowApplicationCompletion: pendingSwitch.deferredWindowApplicationCompletion,
+                            minimizeAfterSwitchCompletion: pendingSwitch.minimizeAfterSwitchCompletion,
+                            persistCurrentWorkspaceBeforeSwitch: false
+                        )
+                        return
+                    }
                 }
 
                 self.attachedWindows = resolvedAttachedWindows
@@ -494,8 +631,9 @@ final class WorkspaceSessionController: ObservableObject {
                 self.reconnectingAttachedWindowIDs.subtract(resolvedLoadedWindowIDs.keys)
                 self.isLoadingWorkspace = false
                 self.activeWorkspaceID = workspace.id
-                self.selectedWorkspaceID = workspace.id
-                self.workspaceName = workspace.name
+                self.selectedWorkspaceID = selectedBoardIDForBatch
+                self.workspaceName = self.workspaceStore.workspaces.first(where: { $0.id == selectedBoardIDForBatch })?.name
+                    ?? workspace.name
                 self.loadedWindowIDsByWorkspaceID[workspace.id] = resolvedLoadedWindowIDs
                 self.attachmentOwnerBoardIDs = ownerBoardIDByReferenceID
                 self.currentBoardComposition = boardComposition
@@ -517,7 +655,7 @@ final class WorkspaceSessionController: ObservableObject {
                 mergeWindows(resolvedAvailableWindows)
                 completion(source == .mainWindow)
 
-                self.pendingWorkspaceID = nil
+                self.pendingWorkspaceSwitch = nil
             }
             Self.logDuration("workspace mainActor batch update", since: batchUpdateStart)
             let shouldContinueSwitch = await MainActor.run {
@@ -828,7 +966,85 @@ final class WorkspaceSessionController: ObservableObject {
                 )
             }
         }
-        statusMessage = "Detached window."
+        statusMessage = "Removed window from board."
+    }
+
+    @discardableResult
+    func moveAttachedWindow(
+        id: AttachedWindow.ID,
+        toBoardID destinationBoardID: SavedWorkspace.ID
+    ) -> BoardWindowMutationResult {
+        guard !reconnectingAttachedWindowIDs.contains(id) else {
+            return .busy
+        }
+        guard let attachedWindow = attachedWindows.first(where: { $0.id == id }) else {
+            return .missingWindow
+        }
+        guard let sourceBoardID = attachmentOwnerBoardIDs[id] ?? activeWorkspaceID,
+              let sourceBoard = workspaceStore.workspaces.first(where: { $0.id == sourceBoardID }),
+              let destinationBoard = workspaceStore.workspaces.first(where: { $0.id == destinationBoardID }) else {
+            return .missingBoard
+        }
+        guard sourceBoardID != destinationBoardID else {
+            return .duplicate
+        }
+
+        let reference = attachedWindow.savedReference
+            ?? sourceBoard.windows.first(where: { $0.id == id })
+            ?? SavedWindowReference.makePreservingOffset(from: attachedWindow)
+        guard !destinationBoard.windows.contains(where: { candidate in
+            candidate.id == reference.id || Self.referencesDescribeSameWindow(candidate, reference)
+        }) else {
+            return .duplicate
+        }
+
+        let sourceReferences = sourceBoard.windows.filter { $0.id != reference.id }
+        var destinationReferences = destinationBoard.windows
+        destinationReferences.append(reference)
+        guard workspaceStore.updateWorkspace(id: sourceBoardID, windows: sourceReferences) != nil,
+              workspaceStore.updateWorkspace(id: destinationBoardID, windows: destinationReferences) != nil else {
+            return .missingBoard
+        }
+
+        if let index = attachedWindows.firstIndex(where: { $0.id == id }) {
+            attachedWindows[index].savedReference = reference
+        }
+        loadedWindowIDsByWorkspaceID[sourceBoardID]?[reference.id] = nil
+        loadedWindowIDsByWorkspaceID[destinationBoardID, default: [:]][reference.id] = attachedWindow.window.id
+        refreshCurrentCompositionAfterBoardWindowMutation()
+        statusMessage = BoardWindowMutationResult.moved.userMessage
+        return .moved
+    }
+
+    @discardableResult
+    func reorderAttachedWindow(
+        id: AttachedWindow.ID,
+        before destinationID: AttachedWindow.ID?
+    ) -> BoardWindowMutationResult {
+        guard !reconnectingAttachedWindowIDs.contains(id) else {
+            return .busy
+        }
+        guard let sourceBoardID = attachmentOwnerBoardIDs[id] ?? activeWorkspaceID,
+              let sourceBoard = workspaceStore.workspaces.first(where: { $0.id == sourceBoardID }),
+              let sourceIndex = sourceBoard.windows.firstIndex(where: { $0.id == id }) else {
+            return .missingWindow
+        }
+
+        var references = sourceBoard.windows
+        let reference = references.remove(at: sourceIndex)
+        if let destinationID,
+           let destinationIndex = references.firstIndex(where: { $0.id == destinationID }) {
+            references.insert(reference, at: destinationIndex)
+        } else {
+            references.append(reference)
+        }
+        guard workspaceStore.updateWorkspace(id: sourceBoardID, windows: references) != nil else {
+            return .missingBoard
+        }
+
+        refreshCurrentCompositionAfterBoardWindowMutation()
+        statusMessage = BoardWindowMutationResult.reordered.userMessage
+        return .reordered
     }
 
     func detachAll(boardOrigin: CGPoint?, message: String) {
@@ -845,6 +1061,51 @@ final class WorkspaceSessionController: ObservableObject {
             )
         }
         statusMessage = message
+    }
+
+    private func refreshCurrentCompositionAfterBoardWindowMutation() {
+        guard let activeWorkspaceID else { return }
+        let composition = boardCompositionStore.resolveCurrentBoard(
+            primaryID: activeWorkspaceID,
+            workspaces: workspaceStore.workspaces
+        )
+        let ownerByReferenceID = Dictionary(
+            uniqueKeysWithValues: composition.uniqueWindowReferences.map { ($0.reference.id, $0.ownerBoardID) }
+        )
+        let visibleReferenceIDs = Set(ownerByReferenceID.keys)
+        let removedAttachmentIDs = Set(attachedWindows.map(\.id)).subtracting(visibleReferenceIDs)
+        attachedWindows.removeAll { !visibleReferenceIDs.contains($0.id) }
+        unavailableAttachedWindowIDs.subtract(removedAttachmentIDs)
+        reconnectingAttachedWindowIDs.subtract(removedAttachmentIDs)
+        attachmentOwnerBoardIDs = ownerByReferenceID
+        includedAttachmentIDs = Set(attachedWindows.compactMap { attachedWindow in
+            guard let ownerBoardID = ownerByReferenceID[attachedWindow.id],
+                  ownerBoardID != activeWorkspaceID else {
+                return nil
+            }
+            return attachedWindow.id
+        })
+        currentBoardComposition = composition
+    }
+
+    private static func referencesDescribeSameWindow(
+        _ lhs: SavedWindowReference,
+        _ rhs: SavedWindowReference
+    ) -> Bool {
+        if lhs.bundleIdentifier != nil,
+           lhs.bundleIdentifier == rhs.bundleIdentifier,
+           let lhsDocumentURL = lhs.documentURLString,
+           !lhsDocumentURL.isEmpty,
+           lhsDocumentURL == rhs.documentURLString {
+            return true
+        }
+        if lhs.bundleIdentifier != nil,
+           lhs.bundleIdentifier == rhs.bundleIdentifier,
+           !lhs.title.isEmpty,
+           lhs.title == rhs.title {
+            return true
+        }
+        return lhs.appName == rhs.appName && !lhs.title.isEmpty && lhs.title == rhs.title
     }
 
     func markAttachedWindowAvailable(_ id: AttachedWindow.ID) {
@@ -1010,9 +1271,18 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     private func currentWorkspaceReferences(boardOrigin: CGPoint?) -> [SavedWindowReference]? {
+        guard let activeWorkspaceID else { return nil }
+        return currentWorkspaceReferences(ownerBoardID: activeWorkspaceID, boardOrigin: boardOrigin)
+    }
+
+    private func currentWorkspaceReferences(
+        ownerBoardID: SavedWorkspace.ID,
+        boardOrigin: CGPoint?
+    ) -> [SavedWindowReference]? {
         let service = windowServiceFactory()
         return attachedWindows.compactMap { attachedWindow in
-            guard !includedAttachmentIDs.contains(attachedWindow.id) else {
+            let attachmentOwnerID = attachmentOwnerBoardIDs[attachedWindow.id] ?? activeWorkspaceID
+            guard attachmentOwnerID == ownerBoardID else {
                 return nil
             }
             var snapshot = attachedWindow

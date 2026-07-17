@@ -97,6 +97,8 @@ struct ContentView: View {
     @State private var minimizedAttachedWindowIDs: Set<AttachedWindow.ID> = []
     @State private var workspaceStatusTextInput = ""
     @State private var isWorkspaceSettingsPresented = false
+    @State private var settingsWorkspaceID: SavedWorkspace.ID?
+    @State private var settingsWorkspaceName = ""
     @State private var recentlyAddedAttachedWindowID: AttachedWindow.ID?
     @State private var workspaceCardTransitionToken: UUID?
     @State private var detachingAttachedWindowIDs: Set<AttachedWindow.ID> = []
@@ -162,6 +164,7 @@ struct ContentView: View {
             refreshTrustAndWindows()
             syncStatusMenuState()
             restartAttachedWindowSnapshotTask()
+            prepareBoardSettings(for: session.activeWorkspaceID)
         }
         .onDisappear {
             stopAttachedWindowSnapshotTask()
@@ -187,10 +190,10 @@ struct ContentView: View {
         .onChange(of: appState.followMode) { _, _ in
             resetAttachedBoardBaselineToCurrentOrigin()
         }
-        .onChange(of: session.selectedWorkspaceID) { _, _ in
-            session.workspaceName = selectedWorkspace?.name ?? ""
-            workspaceStatusTextInput = WorkspaceStatusItemIcon.title(from: selectedWorkspace?.statusItemSymbolName) ?? ""
-            loadSelectedWorkspaceIfNeeded()
+        .onChange(of: session.activeWorkspaceID) { _, newID in
+            if !isWorkspaceSettingsPresented {
+                prepareBoardSettings(for: newID)
+            }
         }
         .onChange(of: session.attachedWindows.count) { _, _ in
             syncStatusMenuState()
@@ -239,9 +242,11 @@ struct ContentView: View {
     private var toolbarContent: some ToolbarContent {
             BoardToolbarControls(
                 state: BoardToolbarState(
-                    boardTitle: selectedWorkspace?.name ?? "Window Board",
+                    boardTitle: currentBoardTitle,
+                    defaultSettingsTargetID: session.activeWorkspaceID,
+                    settingsTargets: currentBoardSettingsTargets,
                     isTrusted: isTrusted,
-                    hasSelectedBoard: selectedWorkspace != nil,
+                    hasSelectedBoard: session.activeWorkspaceID != nil,
                     canAttachFrontmost: boardWindow != nil,
                     hasAttachedWindows: !session.attachedWindows.isEmpty,
                     hasMinimizedWindows: !session.minimizedWindows.isEmpty,
@@ -261,30 +266,34 @@ struct ContentView: View {
                     restoreWindows: restoreMinimizedWindows,
                     refreshWindowList: refreshWindowsAsync,
                     restoreLayout: loadSelectedWorkspace,
-                    removeAllWindows: detachAllFromMainView
+                    removeAllWindows: detachAllFromMainView,
+                    showBoardSettings: showBoardSettings
                 ),
                 isSettingsPresented: $isWorkspaceSettingsPresented
             ) {
                 WorkspaceSettingsControls(
-                    selectedWorkspace: selectedWorkspace,
-                    workspaceName: $session.workspaceName,
+                    selectedWorkspace: settingsWorkspace,
+                    workspaceName: $settingsWorkspaceName,
                     workspaceStatusText: $workspaceStatusTextInput,
                     minimizeUnattachedOnSwitch: $shouldMinimizeUnattachedOnWorkspaceSwitch,
                     restoreMissingWindowsOnSwitch: $shouldRestoreMissingWindowsOnWorkspaceSwitch,
                     boardAlwaysOnTop: $isBoardAlwaysOnTop,
                     canSaveWorkspace: !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
-                    canOverwriteWorkspace: selectedWorkspace != nil && !session.attachedWindows.isEmpty && boardMotion.currentOrigin != nil,
-                    canEditWorkspaceName: selectedWorkspace?.isDefault != true,
-                    canRenameWorkspace: selectedWorkspace != nil && selectedWorkspace?.isDefault != true && !trimmedWorkspaceName.isEmpty,
-                    canDeleteWorkspace: selectedWorkspace != nil && selectedWorkspace?.isDefault != true && !session.isLoadingWorkspace,
-                    canDetachAll: !session.attachedWindows.isEmpty,
+                    canOverwriteWorkspace: settingsWorkspace != nil
+                        && !session.isLoadingWorkspace
+                        && !session.attachedWindows.isEmpty
+                        && boardMotion.currentOrigin != nil,
+                    canEditWorkspaceName: settingsWorkspace?.isDefault != true,
+                    canRenameWorkspace: settingsWorkspace != nil && settingsWorkspace?.isDefault != true && !trimmedSettingsWorkspaceName.isEmpty,
+                    canDeleteWorkspace: settingsWorkspace != nil && settingsWorkspace?.isDefault != true && !session.isLoadingWorkspace,
+                    canDetachAll: settingsWorkspace?.windows.isEmpty == false,
                     saveWorkspace: saveCurrentWorkspace,
                     overwriteWorkspace: overwriteSelectedWorkspace,
                     renameWorkspace: renameSelectedWorkspace,
                     deleteWorkspace: deleteSelectedWorkspace,
                     updateStatusItemIcon: updateSelectedWorkspaceIcon,
                     updateStatusItemText: updateSelectedWorkspaceStatusText,
-                    detachAll: detachAllFromMainView
+                    detachAll: removeSettingsWorkspaceWindows
                 )
                 .padding(18)
                 .frame(width: 420)
@@ -295,17 +304,69 @@ struct ContentView: View {
         WorkspaceSidebarView(
             workspaces: workspaceStore.workspaces,
             activeWorkspaceID: session.activeWorkspaceID,
-            includedWorkspaceIDs: Set(
-                session.activeWorkspaceID.map { boardCompositionStore.displayedRootBoardIDs(for: $0) } ?? []
-            ),
+            selection: sidebarSelection,
+            currentBoardIDs: session.currentBoardComposition.uniqueBoards.map(\.id),
+            projection: sidebarProjection,
+            selectBoard: selectBoardFromSidebar,
             includeBoard: { _ = includeBoardInCurrentBoard($0) },
             excludeBoard: excludeBoardFromCurrentBoard,
             showBoardSettings: showBoardSettingsFromSidebar,
             restoreBoardLayout: restoreBoardLayoutFromSidebar,
             removeBoardWindows: removeBoardWindowsFromSidebar,
             deleteBoard: deleteBoardFromSidebar,
-            selection: $session.selectedWorkspaceID
+            separateBoard: separateBoardFromSidebar,
+            dropBoard: dropBoardInSidebar(_:onto:position:),
+            moveWindow: moveAttachedWindowToBoard(_:destinationBoardID:)
         )
+    }
+
+    private func selectBoardFromSidebar(_ selection: SidebarBoardSelection) {
+        if session.activeWorkspaceID == selection.groupPrimaryID {
+            _ = session.requestMemberSelection(
+                memberBoardID: selection.groupPrimaryID,
+                groupPrimaryID: selection.groupPrimaryID
+            )
+            return
+        }
+        loadWorkspace(
+            id: selection.groupPrimaryID,
+            selectedBoardID: selection.groupPrimaryID
+        )
+    }
+
+    private var sidebarProjection: SidebarBoardProjection {
+        boardCompositionStore.sidebarProjection(workspaces: workspaceStore.workspaces)
+    }
+
+    private var sidebarSelection: SidebarSelection? {
+        guard let activeWorkspaceID = session.activeWorkspaceID else {
+            return nil
+        }
+        if sidebarProjection.groups.contains(where: { $0.primaryBoardID == activeWorkspaceID }) {
+            return .currentBoardGroup(primaryID: activeWorkspaceID)
+        }
+        return .board(activeWorkspaceID)
+    }
+
+    private var currentBoardTitle: String {
+        guard let activeWorkspaceID = session.activeWorkspaceID else {
+            return "Window Board"
+        }
+        if let group = sidebarProjection.groups.first(where: { $0.primaryBoardID == activeWorkspaceID }) {
+            return group.displayTitle
+        }
+        return workspaceStore.workspaces.first(where: { $0.id == activeWorkspaceID })?.name ?? "Window Board"
+    }
+
+    private var currentBoardSettingsTargets: [BoardToolbarSettingsTarget] {
+        guard let activeWorkspaceID = session.activeWorkspaceID else { return [] }
+        if let group = sidebarProjection.groups.first(where: { $0.primaryBoardID == activeWorkspaceID }) {
+            return group.boards.map { BoardToolbarSettingsTarget(id: $0.id, title: $0.name) }
+        }
+        guard let workspace = workspaceStore.workspaces.first(where: { $0.id == activeWorkspaceID }) else {
+            return []
+        }
+        return [BoardToolbarSettingsTarget(id: workspace.id, title: workspace.name)]
     }
 
     private var workspaceDetail: some View {
@@ -318,6 +379,7 @@ struct ContentView: View {
             canAttachFrontmost: boardWindow != nil,
             attachedState: attachedDisplayState(for:),
             recoveryIssue: { recoveryIssueByAttachmentID[$0] },
+            ownerBoardID: { session.attachmentOwnerBoardIDs[$0] },
             actions: WorkspaceDetailActions(
                 attachFromAddCard: attachFrontmostWindowFromAddCard,
                 clearRecentlyAddedWindowID: { recentlyAddedAttachedWindowID = nil },
@@ -327,6 +389,8 @@ struct ContentView: View {
                 detachAttached: detachWindowFromMainView(id:),
                 bringForwardAttached: { bringAttachedWindowToFrontFromMainView($0) },
                 bringAndMoveAttachedBelowCard: bringAndMoveAttachedWindowBelowCard(_:cursorScreenLocation:),
+                moveAttachedWindow: moveAttachedWindowToBoard(_:destinationBoardID:),
+                reorderAttachedWindow: reorderAttachedWindow(_:before:),
                 rejectMainBoardDrop: rejectMainBoardDrop,
                 includeRootBoard: includeBoardInCurrentBoard,
                 excludeRootBoard: excludeBoardFromCurrentBoard,
@@ -394,6 +458,59 @@ struct ContentView: View {
         return result
     }
 
+    @discardableResult
+    private func dropBoardInSidebar(
+        _ sourceBoardID: SavedWorkspace.ID,
+        onto targetBoardID: SavedWorkspace.ID,
+        position: SidebarBoardDropPosition
+    ) -> BoardCompositionMutationResult {
+        let availableBoardIDs = Set(workspaceStore.workspaces.map(\.id))
+        let result: BoardCompositionMutationResult
+        let affectedPrimaryID: SavedWorkspace.ID
+
+        switch position {
+        case .child:
+            affectedPrimaryID = targetBoardID
+            result = boardCompositionStore.includeChild(
+                sourceBoardID,
+                in: targetBoardID,
+                availableBoardIDs: availableBoardIDs
+            )
+
+        case .before, .after:
+            let targetGroup = sidebarProjection.groups.first { group in
+                group.boards.contains(where: { $0.id == targetBoardID })
+            }
+            affectedPrimaryID = targetGroup?.primaryBoardID ?? targetBoardID
+            if isPermanentBoard(sourceBoardID) {
+                result = boardCompositionStore.includeGlobalRoot(
+                    sourceBoardID,
+                    availableBoardIDs: availableBoardIDs
+                )
+            } else {
+                result = boardCompositionStore.includeRoot(
+                    sourceBoardID,
+                    for: affectedPrimaryID,
+                    availableBoardIDs: availableBoardIDs,
+                    relativeTo: targetBoardID,
+                    insertion: position == .before ? .before : .after
+                )
+            }
+        }
+
+        session.statusMessage = result.userMessage
+        guard result == .inserted else { return result }
+
+        let activeCompositionContainsTarget = session.currentBoardComposition.uniqueBoards.contains {
+            $0.id == targetBoardID
+        }
+        if session.activeWorkspaceID == affectedPrimaryID || activeCompositionContainsTarget {
+            compositionStatusAfterReload = result.userMessage
+            reloadCurrentBoardComposition()
+        }
+        return result
+    }
+
     private func isPermanentBoard(_ boardID: SavedWorkspace.ID) -> Bool {
         workspaceStore.workspaces.first(where: { $0.id == boardID })?.isDefault == true
     }
@@ -411,13 +528,31 @@ struct ContentView: View {
         session.statusMessage = "Drag a board from the sidebar to include it."
     }
 
+    private func moveAttachedWindowToBoard(
+        _ attachmentID: AttachedWindow.ID,
+        destinationBoardID: SavedWorkspace.ID
+    ) -> BoardWindowMutationResult {
+        session.moveAttachedWindow(id: attachmentID, toBoardID: destinationBoardID)
+    }
+
+    private func reorderAttachedWindow(
+        _ attachmentID: AttachedWindow.ID,
+        before destinationID: AttachedWindow.ID?
+    ) -> BoardWindowMutationResult {
+        session.reorderAttachedWindow(id: attachmentID, before: destinationID)
+    }
+
     private func reloadCurrentBoardComposition() {
         guard let activeWorkspaceID = session.activeWorkspaceID,
               !session.isLoadingWorkspace else {
             return
         }
 
-        loadWorkspace(id: activeWorkspaceID, shouldBringBoardToFrontAfterLoad: false)
+        loadWorkspace(
+            id: activeWorkspaceID,
+            selectedBoardID: session.selectedWorkspaceID,
+            shouldBringBoardToFrontAfterLoad: false
+        )
     }
 
     private var recoverableAttachedWindows: [AttachedWindow] {
@@ -432,7 +567,7 @@ struct ContentView: View {
     }
 
     private var canReloadSelectedWorkspace: Bool {
-        selectedWorkspace != nil && !session.isLoadingWorkspace && boardWindow != nil
+        session.activeWorkspaceID != nil && !session.isLoadingWorkspace && boardWindow != nil
     }
 
     private func recoverMissingAttachedWindows() {
@@ -441,41 +576,82 @@ struct ContentView: View {
         }
     }
 
-    private func selectWorkspaceForSidebarAction(_ workspace: SavedWorkspace) {
-        session.selectedWorkspaceID = workspace.id
-        session.workspaceName = workspace.name
+    private func prepareBoardSettings(for workspaceID: SavedWorkspace.ID?) {
+        guard let workspaceID,
+              let workspace = workspaceStore.workspaces.first(where: { $0.id == workspaceID }) else {
+            settingsWorkspaceID = nil
+            settingsWorkspaceName = ""
+            workspaceStatusTextInput = ""
+            return
+        }
+        settingsWorkspaceID = workspace.id
+        settingsWorkspaceName = workspace.name
         workspaceStatusTextInput = WorkspaceStatusItemIcon.title(from: workspace.statusItemSymbolName) ?? ""
     }
 
-    private func showBoardSettingsFromSidebar(_ workspace: SavedWorkspace) {
-        selectWorkspaceForSidebarAction(workspace)
+    private func showBoardSettings(_ workspaceID: SavedWorkspace.ID) {
+        prepareBoardSettings(for: workspaceID)
         isWorkspaceSettingsPresented = true
     }
 
-    private func restoreBoardLayoutFromSidebar(_ workspace: SavedWorkspace) {
-        selectWorkspaceForSidebarAction(workspace)
+    private func showBoardSettingsFromSidebar(_ workspace: SavedWorkspace) {
+        showBoardSettings(workspace.id)
+    }
+
+    private func restoreBoardLayoutFromSidebar(_ selection: SidebarBoardSelection) {
+        guard workspaceStore.workspaces.contains(where: { $0.id == selection.memberBoardID }) else {
+            return
+        }
         guard boardWindow != nil, !session.isLoadingWorkspace else {
             return
         }
 
-        loadWorkspace(id: workspace.id)
+        loadWorkspace(
+            id: selection.groupPrimaryID,
+            selectedBoardID: selection.memberBoardID
+        )
     }
 
     private func removeBoardWindowsFromSidebar(_ workspace: SavedWorkspace) {
         if workspace.id == session.activeWorkspaceID {
-            selectWorkspaceForSidebarAction(workspace)
             detachAllFromMainView()
             return
         }
 
         _ = workspaceStore.updateWorkspace(id: workspace.id, windows: [])
-        selectWorkspaceForSidebarAction(workspace)
         session.statusMessage = "Removed all windows from \(workspace.name)."
     }
 
+    private func removeSettingsWorkspaceWindows() {
+        guard let workspace = settingsWorkspace else { return }
+        removeBoardWindowsFromSidebar(workspace)
+        if workspace.id != session.activeWorkspaceID,
+           session.currentBoardComposition.uniqueBoards.contains(where: { $0.id == workspace.id }) {
+            compositionStatusAfterReload = "Removed all windows from \(workspace.name)."
+            reloadCurrentBoardComposition()
+        }
+    }
+
     private func deleteBoardFromSidebar(_ workspace: SavedWorkspace) {
-        selectWorkspaceForSidebarAction(workspace)
-        deleteSelectedWorkspace()
+        deleteWorkspace(workspace.id)
+    }
+
+    private func separateBoardFromSidebar(_ payload: SidebarBoardDragPayload) -> Bool {
+        guard payload.canRemoveFromCurrentBoard,
+              let primaryBoardID = payload.sourcePrimaryBoardID else {
+            session.statusMessage = "Drag a parallel board tab here to remove it from its Current Board."
+            return false
+        }
+
+        let result = boardCompositionStore.excludeRoot(payload.boardID, for: primaryBoardID)
+        session.statusMessage = result.userMessage
+        guard result == .removed else { return false }
+
+        if session.activeWorkspaceID == primaryBoardID {
+            compositionStatusAfterReload = result.userMessage
+            reloadCurrentBoardComposition()
+        }
+        return true
     }
 
     private func detachAllFromMainView() {
@@ -684,15 +860,13 @@ struct ContentView: View {
         return windows.first { $0.id == selectedWindowID }
     }
 
-    private var selectedWorkspace: SavedWorkspace? {
-        guard let selectedWorkspaceID = session.selectedWorkspaceID else {
-            return nil
-        }
-        return workspaceStore.workspaces.first { $0.id == selectedWorkspaceID }
+    private var settingsWorkspace: SavedWorkspace? {
+        guard let settingsWorkspaceID else { return nil }
+        return workspaceStore.workspaces.first { $0.id == settingsWorkspaceID }
     }
 
-    private var trimmedWorkspaceName: String {
-        session.workspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
+    private var trimmedSettingsWorkspaceName: String {
+        settingsWorkspaceName.trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
     private var followMode: FollowMode {
@@ -935,15 +1109,12 @@ struct ContentView: View {
     }
 
     private func attachableFrontmostWindow() -> WindowInfo? {
-        if let visibleFrontWindow = service.frontmostVisibleExternalWindow() {
-            return visibleFrontWindow
+        if let lastExternalApplication,
+           let selectedApplicationWindow = service.frontmostWindow(for: lastExternalApplication) {
+            return selectedApplicationWindow
         }
 
-        guard let lastExternalApplication else {
-            return nil
-        }
-
-        return service.frontmostWindow(for: lastExternalApplication)
+        return service.frontmostVisibleExternalWindow()
     }
 
     @discardableResult
@@ -1005,7 +1176,8 @@ struct ContentView: View {
     }
 
     private func saveCurrentWorkspace() {
-        session.saveCurrentWorkspace(name: session.workspaceName, boardOrigin: boardMotion.currentOrigin)
+        session.saveCurrentWorkspace(name: settingsWorkspaceName, boardOrigin: boardMotion.currentOrigin)
+        prepareBoardSettings(for: session.activeWorkspaceID)
     }
 
     private func createWorkspace() {
@@ -1017,35 +1189,42 @@ struct ContentView: View {
         minimizedAttachedWindowIDs.removeAll()
         workspaceStatusTextInput = ""
         followCoordinator.cancelAll()
+        prepareBoardSettings(for: workspace.id)
         loadWorkspace(id: workspace.id, shouldBringBoardToFrontAfterLoad: false)
     }
 
     private func overwriteSelectedWorkspace() {
-        session.overwriteSelectedWorkspace(name: session.workspaceName, boardOrigin: boardMotion.currentOrigin)
+        guard let settingsWorkspaceID else { return }
+        session.overwriteWorkspace(
+            id: settingsWorkspaceID,
+            name: settingsWorkspaceName,
+            boardOrigin: boardMotion.currentOrigin
+        )
     }
 
     private func renameSelectedWorkspace() {
-        session.renameSelectedWorkspace(name: session.workspaceName)
+        guard let settingsWorkspaceID else { return }
+        session.renameWorkspace(id: settingsWorkspaceID, name: settingsWorkspaceName)
     }
 
     private func updateSelectedWorkspaceIcon(_ symbolName: String) {
-        guard let selectedWorkspaceID = session.selectedWorkspaceID else {
+        guard let settingsWorkspaceID else {
             return
         }
 
         let resolvedSymbolName = symbolName == WorkspaceStatusItemIcon.defaultSymbolName ? nil : symbolName
-        _ = workspaceStore.updateWorkspaceIcon(id: selectedWorkspaceID, statusItemSymbolName: resolvedSymbolName)
+        _ = workspaceStore.updateWorkspaceIcon(id: settingsWorkspaceID, statusItemSymbolName: resolvedSymbolName)
         workspaceStatusTextInput = WorkspaceStatusItemIcon.title(from: resolvedSymbolName) ?? ""
     }
 
     private func updateSelectedWorkspaceStatusText() {
-        guard let selectedWorkspaceID = session.selectedWorkspaceID else {
+        guard let settingsWorkspaceID else {
             return
         }
 
         let trimmedText = workspaceStatusTextInput.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmedText.isEmpty else {
-            _ = workspaceStore.updateWorkspaceIcon(id: selectedWorkspaceID, statusItemSymbolName: nil)
+            _ = workspaceStore.updateWorkspaceIcon(id: settingsWorkspaceID, statusItemSymbolName: nil)
             workspaceStatusTextInput = ""
             return
         }
@@ -1053,24 +1232,14 @@ struct ContentView: View {
         let statusText = String(trimmedText.prefix(8))
         workspaceStatusTextInput = statusText
         _ = workspaceStore.updateWorkspaceIcon(
-            id: selectedWorkspaceID,
+            id: settingsWorkspaceID,
             statusItemSymbolName: WorkspaceStatusItemIcon.textPrefix + statusText
         )
     }
 
-    private func loadSelectedWorkspaceIfNeeded() {
-        guard let selectedWorkspaceID = session.selectedWorkspaceID,
-              selectedWorkspaceID != session.activeWorkspaceID,
-              !session.isLoadingWorkspace,
-              boardWindow != nil else {
-            return
-        }
-
-        loadSelectedWorkspace()
-    }
-
     private func loadWorkspace(
         id workspaceID: SavedWorkspace.ID,
+        selectedBoardID: SavedWorkspace.ID? = nil,
         restoreSavedOrigin: Bool = false,
         shouldBringBoardToFrontAfterLoad: Bool = true
     ) {
@@ -1083,6 +1252,7 @@ struct ContentView: View {
         cancelDetachAnimations()
         session.switchWorkspace(
             id: workspaceID,
+            selectedBoardID: selectedBoardID,
             boardOrigin: boardMotion.currentOrigin,
             source: .mainWindow,
             followMode: restoreSavedOrigin ? .none : followMode,
@@ -1142,27 +1312,40 @@ struct ContentView: View {
     }
 
     private func loadSelectedWorkspace() {
-        guard let workspaceID = session.selectedWorkspaceID,
+        guard let workspaceID = session.activeWorkspaceID,
               boardMotion.currentOrigin != nil,
               !session.isLoadingWorkspace else {
             return
         }
 
-        loadWorkspace(id: workspaceID)
+        loadWorkspace(id: workspaceID, selectedBoardID: session.selectedWorkspaceID)
     }
 
     private func deleteSelectedWorkspace() {
-        let deletedWorkspaceID = session.selectedWorkspaceID
+        guard let settingsWorkspaceID else { return }
+        deleteWorkspace(settingsWorkspaceID)
+    }
+
+    private func deleteWorkspace(_ workspaceID: SavedWorkspace.ID) {
+        let deletedWorkspaceID: SavedWorkspace.ID? = workspaceID
         let activeWorkspaceID = session.activeWorkspaceID
         let removedIncludedBoard = deletedWorkspaceID.map { deletedID in
             boardCompositionStore.data.rootBoardIDsByPrimaryID.values.contains { $0.contains(deletedID) }
                 || boardCompositionStore.data.childBoardIDsByBoardID.values.contains { $0.contains(deletedID) }
         } ?? false
-        session.deleteSelectedWorkspace()
+        session.deleteWorkspace(id: workspaceID)
+        isWorkspaceSettingsPresented = false
 
-        if removedIncludedBoard, deletedWorkspaceID != activeWorkspaceID {
+        if deletedWorkspaceID == activeWorkspaceID,
+           let fallbackWorkspaceID = workspaceStore.defaultWorkspace?.id {
+            prepareBoardSettings(for: fallbackWorkspaceID)
+            loadWorkspace(id: fallbackWorkspaceID)
+        } else if removedIncludedBoard {
+            prepareBoardSettings(for: activeWorkspaceID)
             compositionStatusAfterReload = "Board removed from Current Board."
             reloadCurrentBoardComposition()
+        } else {
+            prepareBoardSettings(for: activeWorkspaceID)
         }
     }
 

@@ -30,6 +30,13 @@ final class WindowBoardStatusItemController: NSObject {
             }
             .store(in: &cancellables)
 
+        appState.session.$selectedWorkspaceID
+            .receive(on: RunLoop.main)
+            .sink { [weak self] _ in
+                self?.rebuildMenu()
+            }
+            .store(in: &cancellables)
+
         appState.workspaceStore.$workspaces
             .receive(on: RunLoop.main)
             .sink { [weak self] _ in
@@ -87,10 +94,39 @@ final class WindowBoardStatusItemController: NSObject {
             emptyItem.isEnabled = false
             workspacesMenu.addItem(emptyItem)
         } else {
-            for workspace in appState.workspaceStore.workspaces {
+            let projection = appState.boardCompositionStore.sidebarProjection(
+                workspaces: appState.workspaceStore.workspaces
+            )
+            for group in projection.groups {
+                let primaryName = group.boards.first(where: { $0.id == group.primaryBoardID })?.name
+                    ?? "Board Group"
+                let item = NSMenuItem(title: primaryName, action: nil, keyEquivalent: "")
+                let groupMenu = NSMenu()
+                groupMenu.autoenablesItems = false
+                for workspace in group.boards {
+                    let memberItem = menuItem(workspace.displayName, action: #selector(loadWorkspace(_:)))
+                    memberItem.representedObject = SidebarBoardSelection(
+                        memberBoardID: workspace.id,
+                        groupPrimaryID: group.primaryBoardID
+                    )
+                    memberItem.state = appState.session.activeWorkspaceID == group.primaryBoardID
+                        && appState.session.selectedWorkspaceID == workspace.id ? .on : .off
+                    groupMenu.addItem(memberItem)
+                }
+                item.submenu = groupMenu
+                workspacesMenu.addItem(item)
+            }
+            if !projection.groups.isEmpty, !projection.standaloneBoards.isEmpty {
+                workspacesMenu.addItem(.separator())
+            }
+            for workspace in projection.standaloneBoards {
                 let item = menuItem(workspace.displayName, action: #selector(loadWorkspace(_:)))
-                item.representedObject = workspace.id
-                item.state = workspace.id == appState.session.activeWorkspaceID ? .on : .off
+                item.representedObject = SidebarBoardSelection(
+                    memberBoardID: workspace.id,
+                    groupPrimaryID: workspace.id
+                )
+                item.state = workspace.id == appState.session.activeWorkspaceID
+                    && workspace.id == appState.session.selectedWorkspaceID ? .on : .off
                 workspacesMenu.addItem(item)
             }
         }
@@ -134,11 +170,12 @@ final class WindowBoardStatusItemController: NSObject {
     }
 
     private var activeWorkspace: SavedWorkspace? {
-        guard let activeWorkspaceID = appState.session.activeWorkspaceID else {
+        let displayedWorkspaceID = appState.session.selectedWorkspaceID ?? appState.session.activeWorkspaceID
+        guard let displayedWorkspaceID else {
             return appState.workspaceStore.defaultWorkspace
         }
 
-        return appState.workspaceStore.workspaces.first { $0.id == activeWorkspaceID }
+        return appState.workspaceStore.workspaces.first { $0.id == displayedWorkspaceID }
             ?? appState.workspaceStore.defaultWorkspace
     }
 
@@ -153,12 +190,21 @@ final class WindowBoardStatusItemController: NSObject {
     }
 
     @objc private func loadWorkspace(_ sender: NSMenuItem) {
-        guard let workspaceID = sender.representedObject as? SavedWorkspace.ID else {
+        guard let selection = sender.representedObject as? SidebarBoardSelection else {
+            return
+        }
+
+        if appState.session.activeWorkspaceID == selection.groupPrimaryID,
+           appState.session.requestMemberSelection(
+               memberBoardID: selection.memberBoardID,
+               groupPrimaryID: selection.groupPrimaryID
+           ) {
             return
         }
 
         appState.session.switchWorkspace(
-            id: workspaceID,
+            id: selection.groupPrimaryID,
+            selectedBoardID: selection.memberBoardID,
             boardOrigin: nil,
             source: .statusItem,
             followMode: appState.followMode

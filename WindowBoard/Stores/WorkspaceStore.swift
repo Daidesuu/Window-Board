@@ -6,10 +6,17 @@ final class WorkspaceStore: ObservableObject {
     @Published private(set) var workspaces: [SavedWorkspace] = []
 
     private let defaults: UserDefaults
-    private let storageKey = "savedWorkspaces"
+    private let storageKey: String
+    private let defaultWorkspaceName: String
 
-    init(defaults: UserDefaults = .standard) {
+    init(
+        defaults: UserDefaults = .standard,
+        storageKey: String = BoardStorageKeys.workspaces,
+        defaultWorkspaceName: String = WorkspaceStore.defaultWorkspaceName
+    ) {
         self.defaults = defaults
+        self.storageKey = storageKey
+        self.defaultWorkspaceName = defaultWorkspaceName
         load()
         ensureDefaultWorkspace()
     }
@@ -89,8 +96,8 @@ final class WorkspaceStore: ObservableObject {
         var didChange = false
 
         if let firstDefaultIndex = workspaces.firstIndex(where: \.isDefault) {
-            if workspaces[firstDefaultIndex].name != Self.defaultWorkspaceName {
-                workspaces[firstDefaultIndex].name = Self.defaultWorkspaceName
+            if workspaces[firstDefaultIndex].name != defaultWorkspaceName {
+                workspaces[firstDefaultIndex].name = defaultWorkspaceName
                 didChange = true
             }
 
@@ -102,7 +109,7 @@ final class WorkspaceStore: ObservableObject {
             workspaces.insert(
                 SavedWorkspace(
                     id: UUID(),
-                    name: Self.defaultWorkspaceName,
+                    name: defaultWorkspaceName,
                     statusItemSymbolName: nil,
                     createdAt: now,
                     updatedAt: now,
