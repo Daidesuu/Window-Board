@@ -4,10 +4,12 @@ import AppKit
 @MainActor
 private enum WindowBoardSharedObjects {
     static let appState = WindowBoardAppState()
+    static let updateController = WindowBoardUpdateController()
     static let quickLauncherController = QuickLauncherWindowController(appState: appState)
     static let statusItemController = WindowBoardStatusItemController(
         appState: appState,
-        showQuickLauncher: { quickLauncherController.show() }
+        showQuickLauncher: { quickLauncherController.show() },
+        checkForUpdates: { updateController.checkForUpdates() }
     )
 }
 
@@ -30,6 +32,13 @@ struct WindowBoardApp: App {
 
         Settings {
             SettingsView(appState: appState)
+        }
+        .commands {
+            CommandGroup(after: .appInfo) {
+                Button("Check for Updates…") {
+                    WindowBoardSharedObjects.updateController.checkForUpdates()
+                }
+            }
         }
     }
 }

@@ -286,6 +286,13 @@ The macOS Settings scene provides persistent behavior settings:
 
 These settings must apply immediately to the main window behavior and persist across app launches.
 
+### 14.1 Software Updates
+
+- WindowBoard uses Sparkle 2 for in-app software updates with its configured HTTPS update feed and Sparkle EdDSA public key.
+- The user can choose `Check for Updates…` from the application menu or the Status Item menu.
+- If a development build has no feed URL or public key configured, WindowBoard must not begin update checks or make update-network requests. The update action must explain that the distribution feed has not yet been configured.
+- Update archives and appcasts are signed outside the application with the corresponding private EdDSA key. The private key must never be shipped in the application bundle or committed to the repository.
+
 ## 15. Status Item Requirements
 
 - WindowBoard provides a Status Item while remaining visible in the Dock as a normal app.

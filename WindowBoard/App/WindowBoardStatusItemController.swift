@@ -4,13 +4,19 @@ import Combine
 final class WindowBoardStatusItemController: NSObject {
     private let appState: WindowBoardAppState
     private let showQuickLauncherAction: () -> Void
+    private let checkForUpdatesAction: () -> Void
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private var cancellables: Set<AnyCancellable> = []
 
-    init(appState: WindowBoardAppState, showQuickLauncher: @escaping () -> Void = {}) {
+    init(
+        appState: WindowBoardAppState,
+        showQuickLauncher: @escaping () -> Void = {},
+        checkForUpdates: @escaping () -> Void = {}
+    ) {
         self.appState = appState
         self.showQuickLauncherAction = showQuickLauncher
+        self.checkForUpdatesAction = checkForUpdates
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -152,6 +158,7 @@ final class WindowBoardStatusItemController: NSObject {
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(menuItem("Settings...", action: #selector(openSettings)))
+        menu.addItem(menuItem("Check for Updates...", action: #selector(checkForUpdates)))
         menu.addItem(menuItem("Quit WindowBoard", action: #selector(quit)))
 
         statusItem.menu = menu
@@ -194,6 +201,10 @@ final class WindowBoardStatusItemController: NSObject {
 
     @objc private func showQuickLauncher() {
         showQuickLauncherAction()
+    }
+
+    @objc private func checkForUpdates() {
+        checkForUpdatesAction()
     }
 
     @objc private func loadWorkspace(_ sender: NSMenuItem) {

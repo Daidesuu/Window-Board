@@ -1,202 +1,146 @@
-# Window Board
+# WindowBoard
 
-Window Board is a macOS utility app for organizing normal app windows into reusable boards.
+WindowBoard is a native macOS utility for organizing ordinary windows from external applications into reusable **Boards**.
 
-It does not embed other apps. External windows remain regular macOS windows, and Window Board controls them through Accessibility APIs for best-effort discovery, movement, resize, minimize, restore, and fronting.
+It does not embed or replace other applications' windows. WindowBoard uses macOS Accessibility APIs to discover and control them on a best-effort basis: moving, resizing, minimizing, restoring, activating, focusing, and raising them.
 
-## Features
+The user-facing product term is **Board**. Some implementation types still use the older `Workspace` name.
 
-- Pin multiple external app windows to a board
-- Add the frontmost external window from the toolbar or Add Window card
-- Refresh the external window list and attach a selected window when needed
-- Save, rename, overwrite, delete, and switch boards
-- Restore saved window positions and sizes
-- Optional follow modes: `None`, `Smooth`, and `On Release`
-- Configurable position update behavior for attached windows
-- Optional auto-front behavior for attached windows
-- Optional board-click action for bringing board windows forward
-- Optional Keep Window Board On Top behavior
-- Reconnect closed, minimized, or stale windows where macOS/app behavior allows it
-- Main Board for windows that belong only to the selected board
-- Permanent Board as a fixed reusable board that can be included in the current board
-- Combine multiple saved boards by dragging them from the sidebar into the current board
-- Bring a window forward from its card
-- Double-click a card's icon area to bring the window forward and place it below the cursor
-- Save an individual card's current position and size as its layout
-- Reconnect an unavailable card to the current front window when the app/window cannot be matched automatically
-- Minimize other windows and restore windows minimized by Window Board
-- Optional minimize-other-windows behavior when switching boards
-- Optional restore-missing-windows behavior when switching boards
-- macOS menu bar Status Item for board switching and common actions
-- Per-board Status Item display using an SF Symbol, emoji, or short text
-- Settings window for behavior options
+## What It Does
+
+- Attach multiple external windows to a Board and save their positions and optional sizes.
+- Create, rename, overwrite, delete, and switch Boards.
+- Build a Current Board from a hierarchy of Boards: a Primary Board, parallel included Boards, and child Boards.
+- Keep a non-deletable **Permanent Board** for reusable windows that can be included like any other Board.
+- Show attached windows as Board-owned cards, including `Available`, `Resolving`, `Minimized`, `Unavailable`, and `Reconnecting` states.
+- Recover minimized or unavailable windows when macOS and the external application expose enough information.
+- Move, reorder, or detach a saved window reference without closing the external application window.
+- Restore a Board layout, focus its windows, minimize unrelated windows, and restore only windows minimized by WindowBoard.
+- Switch Boards from the main window, the menu-bar Status Item, or the Quick Launcher through one shared session path.
+
+## Quick Launcher
+
+Press `Command-Shift-Space`, or choose **Show Quick Launcher** from the Status Item menu.
+
+- Search Boards, attached windows, saved windows, and commands locally and immediately.
+- Search ignores case, width, diacritics, and Hiragana/Katakana variation. Japanese Kanji Board names are indexed by Japanese readings, so `じゅ` can find `授業`.
+- Add optional comma-separated Board search aliases in Board Settings.
+- Use `#` for Boards, `@` for Windows, and `>` for Actions.
+- Use Up/Down to select, Return to run, and Escape to dismiss.
+- A Window result brings an available window forward, restores a minimized window, or finds/reopens an unavailable window.
+- Use the `Detach` control on a live Window result to remove it from its owning Board. This does not close, minimize, move, raise, or reconnect the external window.
 
 ## Requirements
 
-- macOS
+- macOS 14 or later
 - Xcode
-- Accessibility permission for Window Board
+- Accessibility permission for WindowBoard
 
-Window Board needs Accessibility permission to read and control other apps' windows. Without that permission, the app can launch but cannot list, move, resize, minimize, restore, or raise external windows.
+WindowBoard remains launchable without Accessibility permission, but cannot list or control other apps' windows until permission is granted.
 
-## Build And Run
+## Build and Run
 
-Build with Xcode:
+Build only:
 
 ```bash
 xcodebuild -project WindowBoard.xcodeproj -scheme WindowBoard -configuration Debug -derivedDataPath build/DerivedData build
 ```
 
-Build and run with the project script:
+Build and run:
 
 ```bash
 ./script/build_and_run.sh
 ```
 
-Verify that the app launches:
+Build, run, and confirm that the app launched:
 
 ```bash
 ./script/build_and_run.sh --verify
 ```
 
-The built app is placed under:
+The runnable app is staged at `dist/WindowBoard.app`.
 
-```text
-dist/WindowBoard.app
+## Software Updates
+
+WindowBoard includes Sparkle 2 for in-app updates. Its public update URL and EdDSA public key are already configured in the project:
+
+- `SPARKLE_FEED_URL`: `https://daidesuu.github.io/Window-Board/appcast.xml`
+- `SPARKLE_PUBLIC_ED_KEY`: built into the application for verifying update archives.
+
+The matching private key is stored only in the macOS Keychain account `com.local.WindowBoard`; never export or commit it. To prepare a release archive and its signed appcast, run:
+
+```bash
+./script/prepare_sparkle_release.sh v1.0
 ```
 
-## Usage
+Upload the generated ZIP in `release/sparkle/` to that GitHub Release, then commit `docs/appcast.xml` and publish the repository's `docs/` folder through GitHub Pages. The feed contains no updates until the first signed archive is published.
 
-1. Launch Window Board.
-2. Grant Accessibility permission when prompted.
-3. Use the Add Window card or toolbar `Attach Window` to pin the frontmost external window.
-4. Use the board sidebar to switch between saved boards.
-5. Use `Board Settings` to save, overwrite, rename, delete, or configure the selected board.
-6. Drag another board from the sidebar into the current board when you want to display both window sets together.
-7. Include Permanent Board when its windows should remain part of the current composition while switching boards.
-8. Use `Save Layout` on a card when you want to persist that window's current position and size.
-9. Use `Find or Reopen` or `Use Front Window` when a saved window cannot be matched automatically.
+Run the test suite:
+
+```bash
+xcodebuild -project WindowBoard.xcodeproj -scheme WindowBoard -configuration Debug -derivedDataPath build/DerivedData test
+```
+
+## Basic Use
+
+1. Launch WindowBoard and grant Accessibility permission.
+2. Create or select a Board from the sidebar.
+3. Use **Attach Window** or the Add Window card to attach the frontmost eligible external window. Refresh the window list and choose a candidate when needed.
+4. Arrange the external windows, then use **Save Layout** to preserve one card or save/overwrite the Board from Board Settings.
+5. Drag a Board onto another Board to create a child relationship, or onto its upper/lower edge to add it as a parallel root.
+6. Use **Restore Layout**, **Focus Board**, **Minimize Others**, or **Restore Windows** when needed.
+7. Use **Find or Reopen** for an unavailable or minimized saved window. Use **Detach from Board** to remove only its saved Board membership.
 
 ## Main UI
 
-The main window is a card board.
+- **Sidebar:** saved Boards, Current Board groups, Board contextual actions, and Board drag-and-drop.
+- **Current Board:** an explicit hierarchy of Board lanes and their owned window cards. Parallel roots and child Boards remain visually distinct.
+- **Window cards:** application identity, title, status, card actions, layout save, recovery, move/reorder, and detach affordances.
+- **Toolbar:** Board navigation/creation plus attach, focus, recover, minimize, restore, and More actions. Actions are disabled when their state or Accessibility permission makes them unsafe.
+- **Board Settings:** save, overwrite, rename, delete, search aliases, Status Item display, switch behavior, on-top behavior, and remove-all-windows.
+- **Status Item:** show WindowBoard, open Quick Launcher, switch Boards, focus Board windows, minimize others, restore WindowBoard-minimized windows, open Settings, or quit.
 
-- Sidebar: saved boards, active board indicator, Status Item glyph, and `New Board`.
-- Main Board: windows from the selected board and any boards included in its current composition, plus an Add Window card.
-- Included Boards: the boards currently combined with the selected board and controls for removing them from the composition.
-- Processing overlay: temporary loading, minimize, and restore progress when work is active.
+## Board Switching and Recovery
 
-Toolbar actions:
+Board switching is staged for responsiveness:
 
-- `Refresh`: refresh the external window list.
-- `Attach Window`: pin the current frontmost external window.
-- `Focus Board`: bring the selected board's windows forward.
-- `Minimize Others`: minimize windows not attached to the current board composition.
-- `Restore Windows`: restore windows minimized by Window Board.
+1. Save the outgoing Board state when possible.
+2. Show target placeholder cards promptly.
+3. Resolve live windows and apply their saved layout in the background.
+4. Keep unresolved references as recoverable `Unavailable` cards.
+5. Optionally recover missing windows and minimize unrelated windows after the target Board is visible.
 
-Board settings:
-
-- Save a new board from the current layout.
-- Overwrite the selected board.
-- Rename or delete a board.
-- Set the Status Item display with an SF Symbol, emoji, or text.
-- Toggle `Minimize Others When Switching Boards`.
-- Toggle `Restore Missing Windows When Switching Boards`.
-- Toggle `Keep Window Board On Top`.
-
-Card actions:
-
-- Click the icon area to bring a window forward.
-- Double-click the icon area to bring a window forward and move it below the cursor.
-- Drag a board from the sidebar into the current board to include its windows.
-- `Save Layout`: save that card's current position and size.
-- `Find or Reopen`: try to recover an unavailable or minimized window.
-- `Use Front Window`: reconnect a failed match to the current front window when it belongs to the same app.
-- `Detach from Board`: remove the card from the selected board.
-
-Card states:
-
-- `Available`: the window is currently accessible.
-- `Minimized`: the window is minimized and can be restored.
-- `Unavailable`: the saved window is not currently matched.
-- `Reconnecting`: Window Board is trying to find or reopen the saved window.
-
-## Board Behavior
-
-Board switching is designed to show the target board quickly, then finish heavier window operations in the background.
-
-- Saved windows may appear as placeholders before every AX operation has finished.
-- Live windows are matched from cached windows, fresh window lists, and best-effort reconnect checks.
-- Closed or stale windows stay on the board as recoverable/unavailable instead of being silently removed.
-- Minimized windows are included in matching and restored where possible.
-- Position and size restoration skip no-op updates when values are already close enough.
-- `Minimize Others When Switching Boards` runs after the target board is shown.
-- Switch-time minimize reuses known candidate windows where possible instead of always re-listing all windows.
-- `Restore Missing Windows When Switching Boards` controls whether missing windows are automatically opened or activated during switching.
-- When automatic restore is off, missing windows stay unavailable until explicit recovery is used.
-- Status Item board switches save the previous board without opening the Window Board window.
-- Window positions are snapshotted at low frequency so recently moved windows can be restored after close/reconnect where possible.
-
-Follow behavior:
-
-- `None`: windows stay attached but do not follow the Window Board window.
-- `Smooth`: attached windows follow board movement continuously.
-- `On Release`: attached windows move after the board window is released.
-- Position updates can be manual or automatic depending on the selected setting.
-- Auto-front and board-click options can bring attached windows forward after board movement or board selection.
-
-## Permanent Board
-
-Permanent Board is the fixed, non-deletable board used for windows that should be reusable across board compositions. It is no longer a separate global minimize-exclusion list.
-
-Permanent Board affects the current board only when it is included in that board's composition. Its windows are then handled like other attached windows, including protection from `Minimize Others` while included.
-
-Because macOS window identity can change after close/reopen, matching is best-effort using available window metadata such as app identity, title, document URL, process ID, and window number.
-
-Permanent Board can be selected normally from the sidebar or dragged into the current board. It cannot be renamed or deleted. Legacy `Never Minimize Windows` registrations are migrated into Permanent Board once and the old setting is removed.
-
-## Status Item
-
-Window Board also adds a macOS menu bar Status Item while remaining a normal Dock app.
-
-The Status Item can:
-
-- show the Window Board window
-- switch boards without opening the main window
-- show the active board with a checkmark
-- bring board windows to front
-- minimize other windows
-- restore windows minimized by Window Board
-- open Settings
-- quit Window Board
+`Minimize Others When Switching Boards` and `Restore Missing Windows When Switching Boards` are optional Board settings. Minimize and recovery work are best-effort and never remove a saved reference merely because a macOS Accessibility operation failed.
 
 ## Architecture
 
-- `WindowBoardAppState`: app-wide shared state and settings
-- `WorkspaceSessionController`: board/session state, switching, reconnect, minimize/restore
-- `ContentView`: main window composition, board-window-dependent behavior, and command routing
-- `WindowBoardMainViews`: card-board UI views and board controls
-- `AccessibilityWindowService`: AX window discovery and operations
-- `WorkspaceStore`: saved board persistence
-- `WindowBoardStatusItemController`: macOS menu bar Status Item
+- `WorkspaceSessionController`: central Board/session state, persistence updates, switching, layout restoration, recovery, and minimize/restore coordination.
+- `WorkspaceStore` and `BoardCompositionStore`: saved Board data and Current Board hierarchy.
+- `ContentView` and `Board*Views`: main SwiftUI composition and card-board presentation.
+- `AccessibilityWindowService`: the narrow Accessibility API boundary for external-window operations.
+- `ApplicationWindowCatalog`: external-window listing and cache merging.
+- `AttachedWindowRecoveryCoordinator`: explicit recover/reconnect work.
+- `BoardFollowCoordinator` and `BoardFrontingCoordinator`: follow and fronting policies.
+- `AttachedWindowSnapshotCoordinator` and `AttachedWindowSnapshotReducer`: low-frequency off-main window snapshots.
+- `WindowBoardStatusItemController`: menu-bar Status Item.
+- `QuickLauncherWindowController`: global launcher panel and shortcut handling.
 
-Some internal type and file names still use `Workspace` because the app evolved from a workspace-based MVP. The current user-facing concept is `Board`.
+`WindowBoardTree` is an experimental target. The supported WindowBoard product and its Quick Launcher are built from the `WindowBoard` target.
 
 ## Limitations
 
-Window Board depends on public macOS Accessibility APIs, so behavior is best-effort.
+WindowBoard relies on public macOS Accessibility APIs. Therefore all external-window control is best-effort.
 
-- Exact z-order cannot be fully guaranteed.
-- Full-screen windows and windows on another Space are not reliable board targets.
-- Window Board cannot move another app's existing window into the current Space through public macOS APIs.
-- System panels and special app windows may not be controllable.
-- Some apps do not allow AX resize, move, minimize, restore, or raise.
-- Closed windows cannot always be restored to the exact same document or internal app state.
-- Window matching after reopen is best-effort, especially for apps with multiple similar windows.
-- `Minimize Others` is conservative to avoid minimizing a protected or attached window by mistake.
+- Exact external-window z-order is not guaranteed.
+- Full-screen windows and windows on another Space are not reliable Board targets.
+- WindowBoard cannot move an existing external window into the current Space through public APIs.
+- System panels, special windows, and permission-limited windows may not be controllable.
+- Some applications do not allow move, resize, minimize, restore, focus, or raise operations.
+- A closed window cannot always be restored to its exact document, tab, folder, or internal application state.
+- Matching similar windows after reopening is necessarily best-effort.
 
-## Project Notes
+## Further Documentation
 
-The original MVP was a single selected window following the Window Board window. That MVP is complete. The current app is a post-MVP board/session manager for multiple external windows.
-
-See [PROJECT_PLAN.md](PROJECT_PLAN.md) for current behavior, architecture, constraints, and near-term priorities.
+- [APP_REQUIREMENTS.md](APP_REQUIREMENTS.md): consolidated, user-facing requirements and behavior contracts.
+- [PROJECT_PLAN.md](PROJECT_PLAN.md): implementation direction and architecture context.
+- [AGENTS.md](AGENTS.md): repository-specific development and verification guidance.
