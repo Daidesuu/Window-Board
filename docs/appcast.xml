@@ -6,6 +6,16 @@
         <description>Official WindowBoard software updates.</description>
         <language>en</language>
         <item>
+            <title>1.0.1</title>
+            <pubDate>Fri, 07 Aug 2026 16:10:21 +0900</pubDate>
+            <link>https://github.com/Daidesuu/Window-Board</link>
+            <sparkle:version>2</sparkle:version>
+            <sparkle:shortVersionString>1.0.1</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>14.0</sparkle:minimumSystemVersion>
+            <sparkle:hardwareRequirements>arm64</sparkle:hardwareRequirements>
+            <enclosure url="https://github.com/Daidesuu/Window-Board/releases/download/v1.0.1/WindowBoard-1.0.1-2.zip" length="4033171" type="application/octet-stream" sparkle:edSignature="tLLL4VkHrCNts3iOy3U/7lKW7JdTyO3jt1lSzu4BCKHEoiD9gZaTYiS7x2vHZ/PoMmplGxurYZm/6lvfL/tMDg=="/>
+        </item>
+        <item>
             <title>1.0</title>
             <pubDate>Fri, 07 Aug 2026 15:08:35 +0900</pubDate>
             <link>https://github.com/Daidesuu/Window-Board</link>

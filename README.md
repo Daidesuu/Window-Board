@@ -75,6 +75,8 @@ The matching private key is stored only in the macOS Keychain account `com.local
 
 Upload the generated ZIP in `release/sparkle/` to that GitHub Release, then commit `docs/appcast.xml` and publish the repository's `docs/` folder through GitHub Pages. The feed contains no updates until the first signed archive is published.
 
+The release script clears Finder metadata, applies and verifies an ad-hoc signature, then creates the ZIP. This makes the archive structurally valid without an Apple Developer certificate; macOS will still require users to approve the first launch in Privacy & Security.
+
 Run the test suite:
 
 ```bash
