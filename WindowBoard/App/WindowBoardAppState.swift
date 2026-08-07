@@ -8,6 +8,7 @@ enum WindowBoardStatusCommand {
     case bringAttachedToFront
     case minimizeUnattached
     case restoreMinimized
+    case refreshWindowList
 }
 
 private struct LegacyNeverMinimizeWindow: Decodable {
@@ -19,6 +20,8 @@ private struct LegacyNeverMinimizeWindow: Decodable {
 }
 
 final class WindowBoardAppState: ObservableObject {
+    private static let launcherWindowCandidateCacheLifetime: TimeInterval = 8
+
     let workspaceStore: WorkspaceStore
     let boardCompositionStore: BoardCompositionStore
     let session: WorkspaceSessionController
@@ -54,8 +57,10 @@ final class WindowBoardAppState: ObservableObject {
     @Published private(set) var positionUpdateMode: PositionUpdateMode
     @Published private(set) var autoFrontMode: AutoFrontMode
     @Published private(set) var boardClickAction: BoardClickAction
+    @Published private(set) var launcherWindowCandidates: [WindowInfo] = []
     private let defaults: UserDefaults
     private let neverMinimizeWindowsKey = BoardStorageKeys.legacyNeverMinimizeWindows
+    private var launcherWindowCandidateCacheDate: Date?
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -123,6 +128,19 @@ final class WindowBoardAppState: ObservableObject {
         commandSubject.send(command)
     }
 
+    func updateLauncherWindowCandidates(_ candidates: [WindowInfo]) {
+        launcherWindowCandidates = candidates
+        launcherWindowCandidateCacheDate = Date()
+    }
+
+    func freshLauncherWindowCandidates() -> [WindowInfo] {
+        guard let launcherWindowCandidateCacheDate,
+              Date().timeIntervalSince(launcherWindowCandidateCacheDate) <= Self.launcherWindowCandidateCacheLifetime else {
+            return []
+        }
+        return launcherWindowCandidates
+    }
+
     @discardableResult
     func focusMainWindowIfAvailable() -> Bool {
         NSApp.activate(ignoringOtherApps: true)
@@ -139,6 +157,24 @@ final class WindowBoardAppState: ObservableObject {
         }
 
         return false
+    }
+
+    @discardableResult
+    func showMainWindow() -> Bool {
+        if focusMainWindowIfAvailable() {
+            return true
+        }
+
+        let didRequestWindow = NSApp.sendAction(Selector(("newWindow:")), to: nil, from: nil)
+        guard didRequestWindow else {
+            return false
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        DispatchQueue.main.async { [weak self] in
+            _ = self?.focusMainWindowIfAvailable()
+        }
+        return true
     }
 
     private var existingMainWindow: NSWindow? {

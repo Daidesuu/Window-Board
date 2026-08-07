@@ -30,6 +30,7 @@ struct BoardSectionHeader: View {
 struct WorkspaceSettingsControls: View {
     let selectedWorkspace: SavedWorkspace?
     let workspaceName: Binding<String>
+    let workspaceSearchAliases: Binding<String>
     let workspaceStatusText: Binding<String>
     let minimizeUnattachedOnSwitch: Binding<Bool>
     let restoreMissingWindowsOnSwitch: Binding<Bool>
@@ -43,6 +44,7 @@ struct WorkspaceSettingsControls: View {
     let saveWorkspace: () -> Void
     let overwriteWorkspace: () -> Void
     let renameWorkspace: () -> Void
+    let saveSearchAliases: () -> Void
     let deleteWorkspace: () -> Void
     let updateStatusItemIcon: (String) -> Void
     let updateStatusItemText: () -> Void
@@ -56,6 +58,13 @@ struct WorkspaceSettingsControls: View {
 
                 TextField("Board Name", text: workspaceName)
                     .disabled(!canEditWorkspaceName)
+
+                HStack {
+                    TextField("Search aliases (comma separated)", text: workspaceSearchAliases)
+                        .disabled(selectedWorkspace == nil)
+                    Button("Save Aliases", action: saveSearchAliases)
+                        .disabled(selectedWorkspace == nil)
+                }
 
                 ViewThatFits(in: .horizontal) {
                     HStack {

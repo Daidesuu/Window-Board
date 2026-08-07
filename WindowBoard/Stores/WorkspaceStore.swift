@@ -42,7 +42,12 @@ final class WorkspaceStore: ObservableObject {
         return workspace
     }
 
-    func updateWorkspace(id: SavedWorkspace.ID, name: String? = nil, windows: [SavedWindowReference]? = nil) -> SavedWorkspace? {
+    func updateWorkspace(
+        id: SavedWorkspace.ID,
+        name: String? = nil,
+        searchAliases: [String]? = nil,
+        windows: [SavedWindowReference]? = nil
+    ) -> SavedWorkspace? {
         var updatedWorkspaces = workspaces
         guard let index = updatedWorkspaces.firstIndex(where: { $0.id == id }) else {
             return nil
@@ -50,6 +55,10 @@ final class WorkspaceStore: ObservableObject {
 
         if let name, !updatedWorkspaces[index].isDefault {
             updatedWorkspaces[index].name = name
+        }
+
+        if let searchAliases {
+            updatedWorkspaces[index].searchAliases = searchAliases
         }
 
         if let windows {

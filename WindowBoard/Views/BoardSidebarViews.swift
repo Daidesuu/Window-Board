@@ -316,65 +316,121 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
     @State private var boardDropTargetID: SavedWorkspace.ID?
 
     var body: some View {
+        if isComposite {
+            compositeBoardGroup
+        } else if let workspace = group.boards.first {
+            standardBoardRow(for: workspace)
+        }
+    }
+
+    private var compositeBoardGroup: some View {
         VStack(alignment: .leading, spacing: 4) {
-            if isComposite {
+            HStack(spacing: 6) {
                 ScrollView(.horizontal) {
                     HStack(spacing: 4) {
                         ForEach(group.boards) { workspace in
                             tab(for: workspace)
                         }
                     }
-                    .padding(4)
+                    .padding(.vertical, 3)
                 }
                 .scrollIndicators(.hidden)
-            } else {
-                HStack(spacing: 4) {
-                    ForEach(group.boards) { workspace in
-                        tab(for: workspace)
-                    }
-                }
-                .padding(4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            }
-
-            HStack(spacing: 4) {
-                if isComposite {
-                    Text("\(group.boards.count) boards")
-                    Text("·")
-                }
-                Text("\(totalWindowCount) \(totalWindowCount == 1 ? "window" : "windows")")
                 Spacer(minLength: 0)
-                if isSelected {
-                    Image(systemName: "checkmark.circle.fill")
-                        .font(.caption)
-                }
+                Text("\(totalWindowCount)")
+                    .font(.caption.weight(.medium))
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("\(totalWindowCount) \(totalWindowCount == 1 ? "window" : "windows")")
+                selectionIndicator
             }
-            .font(.caption2)
-            .foregroundStyle(.secondary)
-            .padding(.horizontal, 8)
 
-            if isComposite {
-                SidebarGroupSeparationDropZone(
-                    primaryBoardID: group.primaryBoardID,
-                    separateBoard: separateBoard
-                )
-            }
+            SidebarGroupSeparationDropZone(
+                primaryBoardID: group.primaryBoardID,
+                separateBoard: separateBoard
+            )
         }
-        .padding(4)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 3)
         .background(
             isSelected
-                ? Color.accentColor.opacity(0.22)
-                : (isHovering ? Color.primary.opacity(0.055) : Color.clear),
-            in: RoundedRectangle(cornerRadius: 9, style: .continuous)
+                ? Color.accentColor.opacity(0.16)
+                : (isHovering ? Color.primary.opacity(0.045) : Color.clear),
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
-        .overlay {
-            if !isSelected {
-                RoundedRectangle(cornerRadius: 9, style: .continuous)
-                    .strokeBorder(Color.primary.opacity(0.07))
-            }
-        }
         .onHover { isHovering = $0 }
         .help(group.displayTitle)
+    }
+
+    private func standardBoardRow(for workspace: SavedWorkspace) -> some View {
+        HStack(spacing: 8) {
+            workspaceGlyph(for: workspace)
+                .frame(width: 16)
+
+            VStack(alignment: .leading, spacing: 1) {
+                Text(workspace.name)
+                    .font(.callout.weight(isSelected ? .semibold : .regular))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Text("\(workspace.windows.count) \(workspace.windows.count == 1 ? "window" : "windows")")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            Spacer(minLength: 0)
+            selectionIndicator
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .contentShape(Rectangle())
+        .boardDraggable(
+            id: workspace.id,
+            sourcePrimaryBoardID: nil
+        )
+        .simultaneousGesture(
+            TapGesture().onEnded {
+                selectBoard(
+                    SidebarBoardSelection(
+                        memberBoardID: workspace.id,
+                        groupPrimaryID: workspace.id
+                    )
+                )
+            }
+        )
+        .contextMenu { contextMenu(workspace) }
+        .help(workspace.displayName)
+        .onDrop(
+            of: [
+                WindowBoardDragKind.board.type.identifier,
+                WindowBoardDragKind.window.type.identifier
+            ],
+            delegate: WindowBoardDropDelegate(
+                acceptedKinds: [.board, .window],
+                setTargeted: { isTargeted in
+                    boardDropTargetID = isTargeted ? workspace.id : nil
+                },
+                perform: { payload, location in
+                    switch payload {
+                    case let .board(boardID):
+                        _ = dropBoard(boardID, workspace.id, location, 44)
+                    case let .window(windowID):
+                        _ = moveWindow(windowID, workspace.id)
+                    }
+                }
+            )
+        )
+        .background(
+            isSelected
+                ? Color.accentColor.opacity(0.18)
+                : (isHovering ? Color.primary.opacity(0.045) : Color.clear),
+            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
+        )
+        .overlay {
+            RoundedRectangle(cornerRadius: 7, style: .continuous)
+                .stroke(
+                    isDropTargeted(workspace.id) ? Color.accentColor.opacity(0.75) : Color.clear,
+                    lineWidth: 1.2
+                )
+        }
+        .onHover { isHovering = $0 }
     }
 
     private func tab(for workspace: SavedWorkspace) -> some View {
@@ -390,12 +446,12 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
         .frame(
             minWidth: isComposite ? 96 : nil,
             maxWidth: isComposite ? 150 : .infinity,
-            minHeight: 32,
+            minHeight: 28,
             alignment: .leading
         )
         .background(
-            Color.primary.opacity(isSelected ? 0.10 : 0.055),
-            in: RoundedRectangle(cornerRadius: 8, style: .continuous)
+            Color.primary.opacity(0.055),
+            in: Capsule()
         )
         .contentShape(Rectangle())
         .boardDraggable(
@@ -435,11 +491,20 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
             )
         )
         .overlay {
-            RoundedRectangle(cornerRadius: 8, style: .continuous)
+            Capsule()
                 .stroke(
                     isDropTargeted(workspace.id) ? Color.accentColor.opacity(0.75) : Color.clear,
                     lineWidth: 1.2
                 )
+        }
+    }
+
+    @ViewBuilder
+    private var selectionIndicator: some View {
+        if isSelected {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
     }
 

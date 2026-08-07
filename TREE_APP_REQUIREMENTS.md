@@ -4,7 +4,7 @@
 
 WindowBoard Tree is an experimental macOS application built as a separate target in `WindowBoard.xcodeproj`. It validates a strict, single-parent Board tree without changing the existing WindowBoard application.
 
-The current implementation is Stage 6. It provides an independent hierarchical Board manager with Board-owned external window references, explicit window actions, a Finder-style Board browser, in-app Board/window drag and drop, and persistent Favorite Board shortcuts.
+The current implementation is Stage 7. It provides an independent hierarchical Board manager with Board-owned external window references, Finder-style single-level browsing and navigation history, in-app Board/window drag and drop, and persistent Favorite Board shortcuts.
 
 ## Application Isolation
 
@@ -28,13 +28,16 @@ The current implementation is Stage 6. It provides an independent hierarchical B
 - Deleting a Board requires confirmation and removes its complete child subtree from Tree storage. Saved external window references are removed, but external application windows are not closed.
 - The detail view shows a compact clickable Board path followed by one Finder-style table.
 - Direct child Boards and the selected Board's saved window references appear together in the table.
-- The table uses `Name`, `Kind`, and `Status` columns. Boards use folder icons and windows use window icons.
-- A single click selects a row without opening it. Double-clicking or pressing Return opens a child Board or shows/restores a saved window.
+- The table uses `Name`, `Kind`, `Status`, and `Windows` columns. Boards use folder icons and windows use window icons.
+- A single click selects a row without opening it. Double-clicking opens a child Board or shows/restores a saved window. Pressing Return renames a selected child Board.
 - Board and window row context menus expose the same existing create, rename, delete, show, and remove actions.
 - Pressing Delete applies the existing delete flow to the selected Board or removes the selected window reference from its Board.
-- When a Board contains no child Boards or saved windows, the detail displays a compact empty state with a New Child Board action.
+- When a Board contains no child Boards or saved windows, the detail displays a compact empty state with New Child Board and Add Window actions.
 - Board creation and editing remain available without Accessibility permission. Window actions show a compact permission banner until access is granted.
-- The Tree toolbar contains New Child Board, Add Window, Attach Frontmost Window, Refresh Windows, and a Board actions menu.
+- The Tree toolbar contains Back, Forward, New Child Board, Add Window, Attach Frontmost Window, Refresh Windows, and a Board actions menu.
+- Back and Forward navigate the visited Board history. Opening a new Board after going back clears the Forward history.
+- Navigation from the Sidebar, Favorites, the path bar, and child Board rows uses the same history.
+- Deleted or unavailable Boards are removed from navigation history, and navigation falls back to a valid current Board.
 - Settings identifies the Tree app's Board library as separate from WindowBoard.
 
 ## Favorite Boards

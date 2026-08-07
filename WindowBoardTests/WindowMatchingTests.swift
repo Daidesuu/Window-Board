@@ -772,6 +772,316 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(service.positions[targetWindow.id], CGPoint(x: 220, y: 260))
     }
 
+    func testLauncherBoardTargetsPreservePrimaryAndSelectedMemberIDs() async {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let primary = workspaceStore.saveWorkspace(name: "Primary", windows: [])
+        let included = workspaceStore.saveWorkspace(name: "Included", windows: [])
+        let standalone = workspaceStore.saveWorkspace(name: "Standalone", windows: [])
+        let compositionStore = BoardCompositionStore(defaults: defaults)
+        _ = compositionStore.includeRoot(
+            included.id,
+            for: primary.id,
+            availableBoardIDs: Set(workspaceStore.workspaces.map(\.id))
+        )
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            boardCompositionStore: compositionStore,
+            windowServiceFactory: { FakeWorkspaceWindowService(windows: []) }
+        )
+
+        let includedTarget = try! XCTUnwrap(session.boardSwitchTargets.first(where: {
+            $0.primaryBoardID == primary.id && $0.selectedBoardID == included.id
+        }))
+        XCTAssertEqual(includedTarget.board.id, included.id)
+        XCTAssertTrue(session.boardSwitchTargets.contains(where: {
+            $0.primaryBoardID == standalone.id && $0.selectedBoardID == standalone.id
+        }))
+
+        XCTAssertTrue(session.switchWorkspaceFromLauncher(includedTarget, followMode: .smooth))
+        await waitForWorkspaceSwitch(session)
+
+        XCTAssertEqual(session.activeWorkspaceID, primary.id)
+        XCTAssertEqual(session.selectedWorkspaceID, included.id)
+    }
+
+    func testLauncherSwitchUsesSavedAbsoluteOriginWithFollowEnabled() async {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let reference = savedReference(
+            title: "Target",
+            origin: CGPoint(x: 220, y: 260)
+        )
+        let targetWindow = window(
+            id: "launcher-target-live",
+            title: "Target",
+            position: CGPoint(x: 900, y: 700)
+        )
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let targetBoard = workspaceStore.saveWorkspace(name: "Target", windows: [reference])
+        let service = FakeWorkspaceWindowService(windows: [targetWindow])
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            windowServiceFactory: { service }
+        )
+        let target = try! XCTUnwrap(session.boardSwitchTargets.first(where: {
+            $0.primaryBoardID == targetBoard.id && $0.selectedBoardID == targetBoard.id
+        }))
+
+        XCTAssertTrue(session.switchWorkspaceFromLauncher(target, followMode: .smooth))
+        await waitForWorkspaceSwitch(session)
+
+        XCTAssertEqual(session.activeWorkspaceID, targetBoard.id)
+        XCTAssertEqual(service.positions[targetWindow.id], CGPoint(x: 220, y: 260))
+    }
+
+    func testLauncherSwitchUsesCompleteCandidateCacheWithoutListingWindows() async {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let reference = savedReference(
+            title: "Cached",
+            origin: CGPoint(x: 240, y: 280)
+        )
+        let cachedWindow = window(
+            id: "launcher-cached-window",
+            title: "Cached",
+            position: CGPoint(x: 900, y: 700)
+        )
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let board = workspaceStore.saveWorkspace(name: "Cached Board", windows: [reference])
+        let service = FakeWorkspaceWindowService(windows: [cachedWindow])
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            windowServiceFactory: { service }
+        )
+        let target = try! XCTUnwrap(session.boardSwitchTargets.first(where: {
+            $0.primaryBoardID == board.id && $0.selectedBoardID == board.id
+        }))
+
+        XCTAssertTrue(
+            session.switchWorkspaceFromLauncher(
+                target,
+                followMode: .smooth,
+                candidateWindows: [cachedWindow]
+            )
+        )
+        await waitForWorkspaceSwitch(session)
+
+        XCTAssertEqual(service.listWindowsCallCount, 0)
+        XCTAssertEqual(session.attachedWindows.first?.window.id, cachedWindow.id)
+        XCTAssertEqual(service.positions[cachedWindow.id], CGPoint(x: 240, y: 280))
+    }
+
+    func testLauncherCachedSwitchPublishesPlaceholderBeforeDeferredLayoutApplication() async {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let savedOrigin = CGPoint(x: 260, y: 300)
+        let reference = savedReference(title: "Deferred", origin: savedOrigin)
+        let cachedWindow = window(
+            id: "launcher-deferred-window",
+            title: "Deferred",
+            position: CGPoint(x: 820, y: 640)
+        )
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let board = workspaceStore.saveWorkspace(name: "Deferred Board", windows: [reference])
+        let service = FakeWorkspaceWindowService(windows: [cachedWindow])
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            windowServiceFactory: { service }
+        )
+        let target = try! XCTUnwrap(session.boardSwitchTargets.first(where: {
+            $0.primaryBoardID == board.id && $0.selectedBoardID == board.id
+        }))
+
+        XCTAssertTrue(
+            session.switchWorkspaceFromLauncher(
+                target,
+                followMode: .smooth,
+                candidateWindows: [cachedWindow]
+            )
+        )
+
+        XCTAssertTrue(session.isLoadingWorkspace)
+        XCTAssertEqual(session.attachedWindows.count, 1)
+        XCTAssertEqual(session.attachedWindows.first?.id, reference.id)
+        XCTAssertEqual(session.attachedWindows.first?.window.pid, 0)
+        XCTAssertTrue(session.unavailableAttachedWindowIDs.contains(reference.id))
+        XCTAssertEqual(service.positions[cachedWindow.id], CGPoint(x: 820, y: 640))
+
+        await waitForWorkspaceSwitch(session)
+
+        XCTAssertEqual(session.attachedWindows.first?.window.id, cachedWindow.id)
+        XCTAssertEqual(service.positions[cachedWindow.id], savedOrigin)
+    }
+
+    func testLauncherRestoreLayoutDoesNotOverwriteSavedLayoutWithCurrentPosition() async {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let savedOrigin = CGPoint(x: 220, y: 260)
+        let reference = savedReference(title: "Target", origin: savedOrigin)
+        let targetWindow = window(
+            id: "restore-layout-live",
+            title: "Target",
+            position: CGPoint(x: 900, y: 700)
+        )
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let board = workspaceStore.saveWorkspace(name: "Target", windows: [reference])
+        let service = FakeWorkspaceWindowService(windows: [targetWindow])
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            windowServiceFactory: { service }
+        )
+        let target = try! XCTUnwrap(session.boardSwitchTargets.first(where: {
+            $0.primaryBoardID == board.id && $0.selectedBoardID == board.id
+        }))
+        XCTAssertTrue(session.switchWorkspaceFromLauncher(target, followMode: .smooth))
+        await waitForWorkspaceSwitch(session)
+
+        let movedOrigin = CGPoint(x: 620, y: 480)
+        service.positions[targetWindow.id] = movedOrigin
+        session.attachedWindows[0].lastWindowOrigin = movedOrigin
+
+        XCTAssertTrue(session.restoreLayoutFromLauncher(followMode: .smooth))
+        await waitForWorkspaceSwitch(session)
+
+        XCTAssertEqual(service.positions[targetWindow.id], savedOrigin)
+        let storedBoard = try! XCTUnwrap(workspaceStore.workspaces.first(where: { $0.id == board.id }))
+        XCTAssertEqual(storedBoard.windows.first?.savedOrigin, savedOrigin)
+    }
+
+    func testAttachedWindowSessionSnapshotsExposeCachedRuntimeState() {
+        let workspace = makeWorkspace(name: "Current", windows: [])
+        let session = makeSession(
+            workspaces: [workspace],
+            service: FakeWorkspaceWindowService(windows: [])
+        )
+        let storedWorkspace = try! XCTUnwrap(
+            session.workspaceStore.workspaces.first(where: { $0.name == workspace.name })
+        )
+        session.activeWorkspaceID = storedWorkspace.id
+        let liveWindow = window(
+            id: "snapshot-live",
+            title: "Document",
+            bundleIdentifier: "com.example.Editor"
+        )
+        let attachment = AttachedWindow(
+            window: liveWindow,
+            lastBoardOrigin: .zero,
+            lastWindowOrigin: .zero,
+            lastAppliedOrigin: nil,
+            pendingReleaseOrigin: nil
+        )
+        session.attachedWindows = [attachment]
+        session.minimizedAttachedWindowIDs.insert(attachment.id)
+
+        var snapshot = try! XCTUnwrap(session.attachedWindowSessionSnapshots.first)
+        XCTAssertEqual(snapshot.state, .minimized)
+        XCTAssertEqual(snapshot.ownerBoardID, storedWorkspace.id)
+        XCTAssertEqual(snapshot.ownerBoardName, storedWorkspace.name)
+        XCTAssertTrue(snapshot.isFromPrimaryBoard)
+        XCTAssertEqual(snapshot.bundleIdentifier, "com.example.Editor")
+        XCTAssertEqual(snapshot.displayName, "Editor - Document")
+
+        session.unavailableAttachedWindowIDs.insert(attachment.id)
+        snapshot = try! XCTUnwrap(session.attachedWindowSessionSnapshots.first)
+        XCTAssertEqual(snapshot.state, .unavailable)
+
+        session.reconnectingAttachedWindowIDs.insert(attachment.id)
+        snapshot = try! XCTUnwrap(session.attachedWindowSessionSnapshots.first)
+        XCTAssertEqual(snapshot.state, .reconnecting)
+
+        session.isLoadingWorkspace = true
+        snapshot = try! XCTUnwrap(session.attachedWindowSessionSnapshots.first)
+        XCTAssertEqual(snapshot.state, .resolving)
+    }
+
+    func testSessionAttachWindowPersistsAndUpdatesDuplicateWithoutAddingAnotherReference() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let board = workspaceStore.saveWorkspace(name: "Target", windows: [])
+        let session = WorkspaceSessionController(
+            workspaceStore: workspaceStore,
+            defaults: defaults,
+            windowServiceFactory: { FakeWorkspaceWindowService(windows: []) }
+        )
+        session.activeWorkspaceID = board.id
+        session.selectedWorkspaceID = board.id
+        let firstWindow = window(
+            id: "first-identity",
+            title: "Document",
+            windowNumber: 42,
+            position: CGPoint(x: 320, y: 240)
+        )
+
+        let firstResult = session.attachWindow(
+            firstWindow,
+            boardOrigin: CGPoint(x: 20, y: 40)
+        )
+        guard case let .attached(attachmentID) = firstResult else {
+            return XCTFail("Expected a new attachment")
+        }
+        XCTAssertEqual(session.attachedWindows.map(\.id), [attachmentID])
+        var storedBoard = try! XCTUnwrap(workspaceStore.workspaces.first(where: { $0.id == board.id }))
+        XCTAssertEqual(storedBoard.windows.count, 1)
+        XCTAssertEqual(storedBoard.windows.first?.id, attachmentID)
+        XCTAssertEqual(storedBoard.windows.first?.offsetX, 300)
+        XCTAssertEqual(storedBoard.windows.first?.offsetY, 200)
+
+        let replacement = window(
+            id: "replacement-identity",
+            title: "Document",
+            windowNumber: 42,
+            position: CGPoint(x: 500, y: 360)
+        )
+        let replacementResult = session.attachWindow(
+            replacement,
+            boardOrigin: CGPoint(x: 20, y: 40)
+        )
+
+        XCTAssertEqual(replacementResult, .updatedExisting(attachmentID))
+        XCTAssertEqual(session.attachedWindows.count, 1)
+        storedBoard = try! XCTUnwrap(workspaceStore.workspaces.first(where: { $0.id == board.id }))
+        XCTAssertEqual(storedBoard.windows.count, 1)
+        XCTAssertEqual(storedBoard.windows.first?.id, attachmentID)
+        XCTAssertEqual(storedBoard.windows.first?.offsetX, 480)
+        XCTAssertEqual(storedBoard.windows.first?.offsetY, 320)
+    }
+
+    func testSessionAttachWindowRejectsMissingPositionWithoutMutation() {
+        let workspace = makeWorkspace(name: "Target", windows: [])
+        let session = makeSession(
+            workspaces: [workspace],
+            service: FakeWorkspaceWindowService(windows: [])
+        )
+        let storedWorkspace = try! XCTUnwrap(
+            session.workspaceStore.workspaces.first(where: { $0.name == workspace.name })
+        )
+        session.activeWorkspaceID = storedWorkspace.id
+        let unreadableWindow = window(id: "missing-position", title: "Document", position: nil)
+
+        XCTAssertEqual(
+            session.attachWindow(unreadableWindow, boardOrigin: .zero),
+            .missingWindowPosition
+        )
+        XCTAssertTrue(session.attachedWindows.isEmpty)
+        XCTAssertTrue(
+            session.workspaceStore.workspaces.first(where: { $0.id == storedWorkspace.id })?.windows.isEmpty == true
+        )
+    }
+
     func testBestExpectedFrontWindowRejectsDifferentAppAndUsesMatchingCandidate() {
         let unrelatedWindow = window(
             id: "unrelated",
@@ -1594,7 +1904,7 @@ private final class FakeWorkspaceWindowService: ContentWindowOperating, @uncheck
     private(set) var openedReferences: [SavedWindowReference] = []
     private(set) var activatedReferences: [SavedWindowReference] = []
     private(set) var raisedWindowIDs: [WindowInfo.ID] = []
-    private var listWindowsCallCount = 0
+    private(set) var listWindowsCallCount = 0
 
     init(windows: [WindowInfo]) {
         windowsToList = windows
@@ -1609,9 +1919,10 @@ private final class FakeWorkspaceWindowService: ContentWindowOperating, @uncheck
             Thread.sleep(forTimeInterval: listWindowsDelay)
         }
 
+        let callIndex = listWindowsCallCount
+        listWindowsCallCount += 1
         if !listWindowsResponses.isEmpty {
-            let index = min(listWindowsCallCount, listWindowsResponses.count - 1)
-            listWindowsCallCount += 1
+            let index = min(callIndex, listWindowsResponses.count - 1)
             return listWindowsResponses[index]
         }
 

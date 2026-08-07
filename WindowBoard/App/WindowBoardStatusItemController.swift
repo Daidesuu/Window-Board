@@ -3,12 +3,14 @@ import Combine
 
 final class WindowBoardStatusItemController: NSObject {
     private let appState: WindowBoardAppState
+    private let showQuickLauncherAction: () -> Void
     private let statusItem: NSStatusItem
     private let menu = NSMenu()
     private var cancellables: Set<AnyCancellable> = []
 
-    init(appState: WindowBoardAppState) {
+    init(appState: WindowBoardAppState, showQuickLauncher: @escaping () -> Void = {}) {
         self.appState = appState
+        self.showQuickLauncherAction = showQuickLauncher
         self.statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         super.init()
 
@@ -83,6 +85,7 @@ final class WindowBoardStatusItemController: NSObject {
         menu.addItem(NSMenuItem.separator())
 
         menu.addItem(menuItem("Show Window", action: #selector(showWindow)))
+        menu.addItem(menuItem("Show Quick Launcher", action: #selector(showQuickLauncher)))
         menu.addItem(NSMenuItem.separator())
 
         let workspacesItem = NSMenuItem(title: "Boards", action: nil, keyEquivalent: "")
@@ -186,7 +189,11 @@ final class WindowBoardStatusItemController: NSObject {
     }
 
     @objc private func showWindow() {
-        appState.send(.showWindow)
+        _ = appState.showMainWindow()
+    }
+
+    @objc private func showQuickLauncher() {
+        showQuickLauncherAction()
     }
 
     @objc private func loadWorkspace(_ sender: NSMenuItem) {

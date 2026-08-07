@@ -29,5 +29,6 @@ struct TreePathBar: View {
         .background(.bar)
         .overlay(alignment: .bottom) { Divider() }
         .accessibilityLabel("Board path")
+        .help(boards.map(\.name).joined(separator: " / "))
     }
 }

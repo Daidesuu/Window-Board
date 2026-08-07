@@ -3,6 +3,7 @@ import SwiftUI
 struct TreeBoardDetailView: View {
     @ObservedObject var directory: BoardDirectoryController
     @ObservedObject var windowController: TreeBoardWindowController
+    @Binding var displayMode: TreeBrowserDisplayMode
 
     let onOpenBoard: (SavedWorkspace.ID) -> Void
     let onCreateChild: (SavedWorkspace.ID) -> Void
@@ -35,21 +36,7 @@ struct TreeBoardDetailView: View {
                     statusBanner(statusMessage)
                 }
 
-                TreeBoardContentsTable(
-                    items: browserItems,
-                    selection: $selection,
-                    onOpen: open,
-                    onCreateChild: onCreateChild,
-                    onRename: onRename,
-                    onDelete: onDelete,
-                    isFavorite: isFavorite,
-                    onToggleFavorite: onToggleFavorite,
-                    onRemoveWindow: windowController.detach,
-                    onCreateEmptyChild: { onCreateChild(board.id) },
-                    currentBoardID: board.id,
-                    onMoveBoard: onMoveBoard,
-                    onMoveWindow: onMoveWindow
-                )
+                boardContents(board)
             }
             .onChange(of: browserItems.map(\.id)) { _, validIDs in
                 selection.formIntersection(Set(validIDs))
@@ -60,6 +47,61 @@ struct TreeBoardDetailView: View {
                 systemImage: "exclamationmark.triangle"
             )
         }
+    }
+
+    @ViewBuilder
+    private func boardContents(_ board: SavedWorkspace) -> some View {
+        switch displayMode {
+        case .list:
+            TreeBoardContentsTable(
+                items: browserItems,
+                selection: $selection,
+                onOpen: open,
+                onCreateChild: onCreateChild,
+                onRename: onRename,
+                onDelete: onDelete,
+                isFavorite: isFavorite,
+                onToggleFavorite: onToggleFavorite,
+                onRemoveWindow: windowController.detach,
+                onCreateEmptyChild: { onCreateChild(board.id) },
+                windowCandidates: windowController.candidates,
+                canAttachWindow: windowController.canAttach,
+                onAttachWindow: attachWindow,
+                canAddWindow: canAddWindow,
+                currentBoardID: board.id,
+                onMoveBoard: onMoveBoard,
+                onMoveWindow: onMoveWindow
+            )
+
+        case .icons:
+            TreeBoardContentsIconGrid(
+                items: browserItems,
+                selection: $selection,
+                onOpen: open,
+                onCreateChild: onCreateChild,
+                onRename: onRename,
+                onDelete: onDelete,
+                isFavorite: isFavorite,
+                onToggleFavorite: onToggleFavorite,
+                onRemoveWindow: windowController.detach,
+                onCreateEmptyChild: { onCreateChild(board.id) },
+                windowCandidates: windowController.candidates,
+                canAttachWindow: windowController.canAttach,
+                onAttachWindow: attachWindow,
+                canAddWindow: canAddWindow,
+                currentBoardID: board.id,
+                onMoveBoard: onMoveBoard,
+                onMoveWindow: onMoveWindow
+            )
+        }
+    }
+
+    private var canAddWindow: Bool {
+        windowController.isAccessibilityTrusted && !windowController.isRefreshing
+    }
+
+    private func attachWindow(_ windowID: WindowInfo.ID) {
+        Task { await windowController.attachWindow(id: windowID) }
     }
 
     private var browserItems: [TreeBrowserItem] {

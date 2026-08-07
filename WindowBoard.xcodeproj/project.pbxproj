@@ -75,6 +75,21 @@
 		2A0000010000000000000075 /* TreeDragPayloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000010000000000000077 /* TreeDragPayloads.swift */; };
 		2A0000010000000000000076 /* TreeDragPayloads.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000010000000000000077 /* TreeDragPayloads.swift */; };
 		2A0000010000000000000078 /* TreeFavoritesSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000010000000000000079 /* TreeFavoritesSidebarView.swift */; };
+		2A000001000000000000007A /* TreeNavigationHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A000001000000000000007C /* TreeNavigationHistory.swift */; };
+		2A000001000000000000007B /* TreeNavigationHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A000001000000000000007C /* TreeNavigationHistory.swift */; };
+		2A000001000000000000007D /* TreeBrowserDisplayMode.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A000001000000000000007E /* TreeBrowserDisplayMode.swift */; };
+		2A000001000000000000007F /* TreeBoardContentsIconGrid.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000010000000000000080 /* TreeBoardContentsIconGrid.swift */; };
+		2A0000010000000000000081 /* TreeItemIconView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A0000010000000000000082 /* TreeItemIconView.swift */; };
+		3A0000010000000000000001 /* QuickLauncherItem.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000011 /* QuickLauncherItem.swift */; };
+		3A0000010000000000000002 /* QuickLauncherUsageStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000012 /* QuickLauncherUsageStore.swift */; };
+		3A0000010000000000000003 /* QuickLauncherSearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000013 /* QuickLauncherSearchService.swift */; };
+		3A0000010000000000000004 /* QuickLauncherViewModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000014 /* QuickLauncherViewModel.swift */; };
+		3A0000010000000000000005 /* QuickLauncherView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000015 /* QuickLauncherView.swift */; };
+		3A0000010000000000000006 /* GlobalHotKeyController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000016 /* GlobalHotKeyController.swift */; };
+		3A0000010000000000000007 /* QuickLauncherIntegration.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000017 /* QuickLauncherIntegration.swift */; };
+		3A0000010000000000000008 /* QuickLauncherWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000018 /* QuickLauncherWindowController.swift */; };
+		3A0000010000000000000009 /* QuickLauncherTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3A0000010000000000000019 /* QuickLauncherTests.swift */; };
+		4A0000010000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4A0000010000000000000002 /* Assets.xcassets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -140,6 +155,20 @@
 		2A0000010000000000000074 /* TreeBoardContentsTable.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeBoardContentsTable.swift; sourceTree = "<group>"; };
 		2A0000010000000000000077 /* TreeDragPayloads.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeDragPayloads.swift; sourceTree = "<group>"; };
 		2A0000010000000000000079 /* TreeFavoritesSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeFavoritesSidebarView.swift; sourceTree = "<group>"; };
+		2A000001000000000000007C /* TreeNavigationHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeNavigationHistory.swift; sourceTree = "<group>"; };
+		2A000001000000000000007E /* TreeBrowserDisplayMode.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeBrowserDisplayMode.swift; sourceTree = "<group>"; };
+		2A0000010000000000000080 /* TreeBoardContentsIconGrid.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeBoardContentsIconGrid.swift; sourceTree = "<group>"; };
+		2A0000010000000000000082 /* TreeItemIconView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TreeItemIconView.swift; sourceTree = "<group>"; };
+		3A0000010000000000000011 /* QuickLauncherItem.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherItem.swift; sourceTree = "<group>"; };
+		3A0000010000000000000012 /* QuickLauncherUsageStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherUsageStore.swift; sourceTree = "<group>"; };
+		3A0000010000000000000013 /* QuickLauncherSearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherSearchService.swift; sourceTree = "<group>"; };
+		3A0000010000000000000014 /* QuickLauncherViewModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherViewModel.swift; sourceTree = "<group>"; };
+		3A0000010000000000000015 /* QuickLauncherView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherView.swift; sourceTree = "<group>"; };
+		3A0000010000000000000016 /* GlobalHotKeyController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalHotKeyController.swift; sourceTree = "<group>"; };
+		3A0000010000000000000017 /* QuickLauncherIntegration.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherIntegration.swift; sourceTree = "<group>"; };
+		3A0000010000000000000018 /* QuickLauncherWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherWindowController.swift; sourceTree = "<group>"; };
+		3A0000010000000000000019 /* QuickLauncherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherTests.swift; sourceTree = "<group>"; };
+		4A0000010000000000000002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -176,7 +205,9 @@
 		1A0000010000000000000031 /* WindowBoard */ = {
 			isa = PBXGroup;
 			children = (
+				4A0000010000000000000002 /* Assets.xcassets */,
 				1A0000010000000000000033 /* App */,
+				3A0000010000000000000020 /* Launcher */,
 				1A0000010000000000000034 /* Views */,
 				1A0000010000000000000035 /* Models */,
 				1A0000010000000000000038 /* Stores */,
@@ -199,6 +230,7 @@
 		1B0000010000000000000004 /* WindowBoardTests */ = {
 			isa = PBXGroup;
 			children = (
+				3A0000010000000000000019 /* QuickLauncherTests.swift */,
 				1B0000010000000000000002 /* WindowMatchingTests.swift */,
 				2A000001000000000000006C /* TreeBoardWindowControllerTests.swift */,
 				1D0000010000000000000004 /* BoardFrontingCoordinatorTests.swift */,
@@ -246,6 +278,7 @@
 				1C0000010000000000000002 /* AttachedWindowRecoveryResolver.swift */,
 				1D000001000000000000000A /* AttachedWindowSnapshotReducer.swift */,
 				2A0000010000000000000077 /* TreeDragPayloads.swift */,
+				2A000001000000000000007C /* TreeNavigationHistory.swift */,
 				1A0000010000000000000017 /* FollowMode.swift */,
 				1A0000010000000000000018 /* PositionUpdateMode.swift */,
 				1A0000010000000000000019 /* AutoFrontMode.swift */,
@@ -291,6 +324,21 @@
 			path = Support;
 			sourceTree = "<group>";
 		};
+		3A0000010000000000000020 /* Launcher */ = {
+			isa = PBXGroup;
+			children = (
+				3A0000010000000000000011 /* QuickLauncherItem.swift */,
+				3A0000010000000000000012 /* QuickLauncherUsageStore.swift */,
+				3A0000010000000000000013 /* QuickLauncherSearchService.swift */,
+				3A0000010000000000000014 /* QuickLauncherViewModel.swift */,
+				3A0000010000000000000015 /* QuickLauncherView.swift */,
+				3A0000010000000000000016 /* GlobalHotKeyController.swift */,
+				3A0000010000000000000017 /* QuickLauncherIntegration.swift */,
+				3A0000010000000000000018 /* QuickLauncherWindowController.swift */,
+			);
+			path = Launcher;
+			sourceTree = "<group>";
+		};
 		2A000001000000000000000B /* WindowBoardTree */ = {
 			isa = PBXGroup;
 			children = (
@@ -321,6 +369,9 @@
 				2A0000010000000000000070 /* TreePathBar.swift */,
 				2A0000010000000000000072 /* TreeAccessibilityBanner.swift */,
 				2A0000010000000000000074 /* TreeBoardContentsTable.swift */,
+				2A0000010000000000000080 /* TreeBoardContentsIconGrid.swift */,
+				2A000001000000000000007E /* TreeBrowserDisplayMode.swift */,
+				2A0000010000000000000082 /* TreeItemIconView.swift */,
 				2A0000010000000000000065 /* TreeBoardEditorView.swift */,
 				2A0000010000000000000008 /* TreeSettingsView.swift */,
 			);
@@ -456,6 +507,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				4A0000010000000000000001 /* Assets.xcassets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -486,10 +538,14 @@
 				2A000001000000000000006F /* TreePathBar.swift in Sources */,
 				2A0000010000000000000071 /* TreeAccessibilityBanner.swift in Sources */,
 				2A0000010000000000000073 /* TreeBoardContentsTable.swift in Sources */,
+				2A000001000000000000007F /* TreeBoardContentsIconGrid.swift in Sources */,
+				2A000001000000000000007D /* TreeBrowserDisplayMode.swift in Sources */,
+				2A0000010000000000000081 /* TreeItemIconView.swift in Sources */,
 				2A0000010000000000000064 /* TreeBoardEditorView.swift in Sources */,
 				2A0000010000000000000007 /* TreeSettingsView.swift in Sources */,
 				2A0000010000000000000010 /* WindowInfo.swift in Sources */,
 				2A0000010000000000000075 /* TreeDragPayloads.swift in Sources */,
+				2A000001000000000000007A /* TreeNavigationHistory.swift in Sources */,
 				2A0000010000000000000011 /* SavedWorkspace.swift in Sources */,
 				2A0000010000000000000012 /* WorkspaceStore.swift in Sources */,
 				2A0000010000000000000013 /* BoardTreeStore.swift in Sources */,
@@ -505,6 +561,14 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3A0000010000000000000001 /* QuickLauncherItem.swift in Sources */,
+				3A0000010000000000000002 /* QuickLauncherUsageStore.swift in Sources */,
+				3A0000010000000000000003 /* QuickLauncherSearchService.swift in Sources */,
+				3A0000010000000000000004 /* QuickLauncherViewModel.swift in Sources */,
+				3A0000010000000000000005 /* QuickLauncherView.swift in Sources */,
+				3A0000010000000000000006 /* GlobalHotKeyController.swift in Sources */,
+				3A0000010000000000000007 /* QuickLauncherIntegration.swift in Sources */,
+				3A0000010000000000000008 /* QuickLauncherWindowController.swift in Sources */,
 				1A0000010000000000000001 /* WindowBoardApp.swift in Sources */,
 				1A0000010000000000000002 /* ContentView.swift in Sources */,
 				1A0000010000000000000003 /* WindowInfo.swift in Sources */,
@@ -518,6 +582,7 @@
 				1A000001000000000000000B /* BoardClickObserver.swift in Sources */,
 				1A000001000000000000000C /* SavedWorkspace.swift in Sources */,
 				2A0000010000000000000076 /* TreeDragPayloads.swift in Sources */,
+				2A000001000000000000007B /* TreeNavigationHistory.swift in Sources */,
 				1A000001000000000000000D /* WorkspaceStore.swift in Sources */,
 				1A000001000000000000000E /* SettingsView.swift in Sources */,
 				1A000001000000000000000F /* WindowBoardAppState.swift in Sources */,
@@ -551,6 +616,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				3A0000010000000000000009 /* QuickLauncherTests.swift in Sources */,
 				1B0000010000000000000001 /* WindowMatchingTests.swift in Sources */,
 				1D0000010000000000000003 /* BoardFrontingCoordinatorTests.swift in Sources */,
 				1D0000010000000000000007 /* AttachedWindowSnapshotCoordinatorTests.swift in Sources */,

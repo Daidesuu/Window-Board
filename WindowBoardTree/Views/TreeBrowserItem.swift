@@ -36,12 +36,20 @@ enum TreeBrowserItem: Identifiable {
 
     var status: String {
         switch self {
-        case let .board(board, childCount):
-            let windowText = "\(board.windows.count) \(board.windows.count == 1 ? "window" : "windows")"
-            guard childCount > 0 else { return windowText }
-            return "\(windowText), \(childCount) \(childCount == 1 ? "Board" : "Boards")"
+        case let .board(_, childCount):
+            guard childCount > 0 else { return "No child Boards" }
+            return "\(childCount) child \(childCount == 1 ? "Board" : "Boards")"
         case let .window(row):
             return row.state.label
+        }
+    }
+
+    var windowCount: String {
+        switch self {
+        case let .board(board, _):
+            String(board.windows.count)
+        case .window:
+            "-"
         }
     }
 }

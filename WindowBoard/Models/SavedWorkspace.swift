@@ -4,6 +4,7 @@ import Foundation
 struct SavedWorkspace: Codable, Identifiable, Equatable {
     let id: UUID
     var name: String
+    var searchAliases: [String]
     var statusItemSymbolName: String?
     var createdAt: Date
     var updatedAt: Date
@@ -13,6 +14,7 @@ struct SavedWorkspace: Codable, Identifiable, Equatable {
     init(
         id: UUID,
         name: String,
+        searchAliases: [String] = [],
         statusItemSymbolName: String?,
         createdAt: Date,
         updatedAt: Date,
@@ -21,6 +23,7 @@ struct SavedWorkspace: Codable, Identifiable, Equatable {
     ) {
         self.id = id
         self.name = name
+        self.searchAliases = searchAliases
         self.statusItemSymbolName = statusItemSymbolName
         self.createdAt = createdAt
         self.updatedAt = updatedAt
@@ -31,6 +34,7 @@ struct SavedWorkspace: Codable, Identifiable, Equatable {
     private enum CodingKeys: String, CodingKey {
         case id
         case name
+        case searchAliases
         case statusItemSymbolName
         case createdAt
         case updatedAt
@@ -42,6 +46,7 @@ struct SavedWorkspace: Codable, Identifiable, Equatable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(UUID.self, forKey: .id)
         name = try container.decode(String.self, forKey: .name)
+        searchAliases = try container.decodeIfPresent([String].self, forKey: .searchAliases) ?? []
         statusItemSymbolName = try container.decodeIfPresent(String.self, forKey: .statusItemSymbolName)
         createdAt = try container.decode(Date.self, forKey: .createdAt)
         updatedAt = try container.decode(Date.self, forKey: .updatedAt)

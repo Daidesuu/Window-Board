@@ -1,9 +1,14 @@
 import SwiftUI
 import AppKit
 
+@MainActor
 private enum WindowBoardSharedObjects {
     static let appState = WindowBoardAppState()
-    static let statusItemController = WindowBoardStatusItemController(appState: appState)
+    static let quickLauncherController = QuickLauncherWindowController(appState: appState)
+    static let statusItemController = WindowBoardStatusItemController(
+        appState: appState,
+        showQuickLauncher: { quickLauncherController.show() }
+    )
 }
 
 @main
@@ -34,5 +39,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
         _ = WindowBoardSharedObjects.statusItemController
+        WindowBoardSharedObjects.quickLauncherController.start()
     }
 }

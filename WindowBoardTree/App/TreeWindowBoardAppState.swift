@@ -10,6 +10,7 @@ final class TreeWindowBoardAppState: ObservableObject {
 
     @Published private(set) var storageError: String?
     @Published private(set) var expandedBoardIDs: Set<SavedWorkspace.ID>
+    @Published private(set) var navigationHistory: TreeNavigationHistory
     @Published var operationMessage: String?
 
     private let defaults: UserDefaults
@@ -58,6 +59,7 @@ final class TreeWindowBoardAppState: ObservableObject {
         self.treeStore = treeStore
         self.directory = directory
         windowController = TreeBoardWindowController(workspaceStore: workspaceStore)
+        navigationHistory = TreeNavigationHistory(currentBoardID: directory.currentBoardID)
         expandedBoardIDs = storedExpandedIDs
             .filter { treeStore.contains($0) }
             .union(treeStore.pathIDs(to: directory.currentBoardID))
@@ -71,6 +73,7 @@ final class TreeWindowBoardAppState: ObservableObject {
             .sink { [weak self] boardID in
                 self?.persistSelection(boardID)
                 self?.revealBoard(boardID)
+                self?.reconcileNavigationHistory(currentBoardID: boardID)
             }
             .store(in: &cancellables)
 
@@ -78,6 +81,7 @@ final class TreeWindowBoardAppState: ObservableObject {
             .dropFirst()
             .sink { [weak self] _ in
                 self?.reconcileExpandedBoardIDs()
+                self?.reconcileNavigationHistory()
             }
             .store(in: &cancellables)
     }
@@ -100,12 +104,36 @@ final class TreeWindowBoardAppState: ObservableObject {
 
     @discardableResult
     func selectBoard(_ boardID: SavedWorkspace.ID) -> Bool {
+        guard treeStore.contains(boardID),
+              workspaceStore.workspaces.contains(where: { $0.id == boardID }) else {
+            operationMessage = "Board is no longer available."
+            return false
+        }
+
+        var updatedHistory = navigationHistory
+        updatedHistory.visit(boardID)
+        navigationHistory = updatedHistory
+
         guard directory.openBoard(boardID) else {
+            reconcileNavigationHistory()
             operationMessage = "Board is no longer available."
             return false
         }
         revealBoard(boardID)
         return true
+    }
+
+    var canNavigateBack: Bool { navigationHistory.canGoBack }
+    var canNavigateForward: Bool { navigationHistory.canGoForward }
+
+    @discardableResult
+    func navigateBack() -> Bool {
+        navigateHistory(goingBack: true)
+    }
+
+    @discardableResult
+    func navigateForward() -> Bool {
+        navigateHistory(goingBack: false)
     }
 
     @discardableResult
@@ -229,6 +257,40 @@ final class TreeWindowBoardAppState: ObservableObject {
         guard updatedIDs != expandedBoardIDs else { return }
         expandedBoardIDs = updatedIDs
         persistExpandedBoardIDs()
+    }
+
+    @discardableResult
+    private func navigateHistory(goingBack: Bool) -> Bool {
+        var updatedHistory = navigationHistory
+        updatedHistory.reconcile(
+            validBoardIDs: Set(workspaceStore.workspaces.map(\.id)),
+            currentBoardID: directory.currentBoardID
+        )
+        let destinationID = goingBack
+            ? updatedHistory.goBack()
+            : updatedHistory.goForward()
+        guard let destinationID,
+              directory.openBoard(destinationID) else {
+            navigationHistory = updatedHistory
+            reconcileNavigationHistory()
+            return false
+        }
+
+        navigationHistory = updatedHistory
+        revealBoard(destinationID)
+        return true
+    }
+
+    private func reconcileNavigationHistory(
+        currentBoardID: SavedWorkspace.ID? = nil
+    ) {
+        var updatedHistory = navigationHistory
+        updatedHistory.reconcile(
+            validBoardIDs: Set(workspaceStore.workspaces.map(\.id)),
+            currentBoardID: currentBoardID ?? directory.currentBoardID
+        )
+        guard updatedHistory != navigationHistory else { return }
+        navigationHistory = updatedHistory
     }
 
     private func persistSelection(_ boardID: SavedWorkspace.ID) {

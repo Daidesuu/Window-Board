@@ -12,9 +12,17 @@ struct TreeBoardContentsTable: View {
     let onToggleFavorite: (SavedWorkspace.ID) -> Void
     let onRemoveWindow: (SavedWindowReference.ID) -> Void
     let onCreateEmptyChild: () -> Void
+    let windowCandidates: [WindowInfo]
+    let canAttachWindow: (WindowInfo) -> Bool
+    let onAttachWindow: (WindowInfo.ID) -> Void
+    let canAddWindow: Bool
     let currentBoardID: SavedWorkspace.ID
     let onMoveBoard: (SavedWorkspace.ID, SavedWorkspace.ID) -> Bool
     let onMoveWindow: (TreeWindowDragPayload, SavedWorkspace.ID) -> Bool
+
+    @State private var lastClickedItemID: TreeBrowserItem.ID?
+    @State private var lastClickTime: TimeInterval = 0
+    @FocusState private var isTableFocused: Bool
 
     var body: some View {
         TreeCurrentBoardDropTarget(
@@ -33,9 +41,11 @@ struct TreeBoardContentsTable: View {
                     .width(min: 220, ideal: 360)
 
                     TableColumn("Kind") { item in
-                        Text(item.kind)
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1)
+                        interactiveCell(item) {
+                            Text(item.kind)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
                     .width(min: 110, ideal: 150)
 
@@ -43,7 +53,16 @@ struct TreeBoardContentsTable: View {
                         statusCell(item)
                     }
                     .width(min: 130, ideal: 180)
+
+                    TableColumn("Windows") { item in
+                        interactiveCell(item) {
+                            Text(item.windowCount)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .width(min: 60, ideal: 72, max: 90)
                 }
+                .focused($isTableFocused)
 
                 if items.isEmpty {
                     ContentUnavailableView {
@@ -52,12 +71,17 @@ struct TreeBoardContentsTable: View {
                         Text("Create a child Board or attach an external window.")
                     } actions: {
                         Button("New Child Board", action: onCreateEmptyChild)
+                        emptyBoardAddWindowMenu
                     }
                 }
             }
+            .contextMenu {
+                Button("New Child Board", action: onCreateEmptyChild)
+                emptyBoardAddWindowMenu
+            }
         }
         .onKeyPress(.return) {
-            openSelection()
+            renameSelection()
         }
         .onDeleteCommand(perform: deleteSelection)
     }
@@ -94,17 +118,15 @@ struct TreeBoardContentsTable: View {
     }
 
     private func baseNameCell(_ item: TreeBrowserItem) -> some View {
-        HStack(spacing: 8) {
-            Image(systemName: icon(for: item))
-                .foregroundStyle(iconStyle(for: item))
-                .frame(width: 18)
+        interactiveCell(item) {
+            HStack(spacing: 8) {
+                Image(systemName: icon(for: item))
+                    .foregroundStyle(iconStyle(for: item))
+                    .frame(width: 18)
 
-            Text(item.name)
-                .lineLimit(1)
-        }
-        .contentShape(Rectangle())
-        .onTapGesture(count: 2) {
-            onOpen(item)
+                Text(item.name)
+                    .lineLimit(1)
+            }
         }
         .contextMenu {
             itemContextMenu(item)
@@ -113,15 +135,47 @@ struct TreeBoardContentsTable: View {
 
     @ViewBuilder
     private func statusCell(_ item: TreeBrowserItem) -> some View {
-        switch item {
-        case .board:
-            Text(item.status)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-        case let .window(row):
-            Label(item.status, systemImage: row.state.systemImage)
-                .foregroundStyle(row.state == .unavailable ? .orange : .secondary)
-                .lineLimit(1)
+        interactiveCell(item) {
+            switch item {
+            case .board:
+                Text(item.status)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            case let .window(row):
+                Label(item.status, systemImage: row.state.systemImage)
+                    .foregroundStyle(row.state == .unavailable ? .orange : .secondary)
+                    .lineLimit(1)
+            }
+        }
+    }
+
+    private func interactiveCell<Content: View>(
+        _ item: TreeBrowserItem,
+        @ViewBuilder content: () -> Content
+    ) -> some View {
+        content()
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                handleClick(on: item)
+            }
+    }
+
+    private func handleClick(on item: TreeBrowserItem) {
+        let now = ProcessInfo.processInfo.systemUptime
+        let isDoubleClick = lastClickedItemID == item.id
+            && now - lastClickTime <= NSEvent.doubleClickInterval
+
+        isTableFocused = true
+        selection = [item.id]
+
+        if isDoubleClick {
+            lastClickedItemID = nil
+            lastClickTime = 0
+            onOpen(item)
+        } else {
+            lastClickedItemID = item.id
+            lastClickTime = now
         }
     }
 
@@ -174,13 +228,30 @@ struct TreeBoardContentsTable: View {
         }
     }
 
-    private func openSelection() -> KeyPress.Result {
+    private func renameSelection() -> KeyPress.Result {
         guard let selectedID = selection.first,
-              let item = items.first(where: { $0.id == selectedID }) else {
+              let item = items.first(where: { $0.id == selectedID }),
+              case let .board(board, _) = item else {
             return .ignored
         }
-        onOpen(item)
+        onRename(board.id)
         return .handled
+    }
+
+    private var emptyBoardAddWindowMenu: some View {
+        Menu("Add Window") {
+            if windowCandidates.isEmpty {
+                Text("No external windows found")
+            } else {
+                ForEach(windowCandidates) { window in
+                    Button(window.displayName) {
+                        onAttachWindow(window.id)
+                    }
+                    .disabled(!canAttachWindow(window))
+                }
+            }
+        }
+        .disabled(!canAddWindow)
     }
 
     private func deleteSelection() {
@@ -198,7 +269,7 @@ struct TreeBoardContentsTable: View {
     }
 }
 
-private struct TreeBrowserBoardDropTarget<Content: View>: View {
+struct TreeBrowserBoardDropTarget<Content: View>: View {
     let onBoardDrop: (TreeBoardDragPayload) -> Bool
     let onWindowDrop: (TreeWindowDragPayload) -> Bool
     @ViewBuilder let content: () -> Content
@@ -236,7 +307,7 @@ private struct TreeBrowserBoardDropTarget<Content: View>: View {
     }
 }
 
-private struct TreeCurrentBoardDropTarget<Content: View>: View {
+struct TreeCurrentBoardDropTarget<Content: View>: View {
     let onBoardDrop: (TreeBoardDragPayload) -> Bool
     let onWindowDrop: (TreeWindowDragPayload) -> Bool
     @ViewBuilder let content: () -> Content
@@ -270,7 +341,7 @@ private struct TreeCurrentBoardDropTarget<Content: View>: View {
     }
 }
 
-private struct TreeBrowserDragPreview: View {
+struct TreeBrowserDragPreview: View {
     let name: String
     let systemImage: String
 

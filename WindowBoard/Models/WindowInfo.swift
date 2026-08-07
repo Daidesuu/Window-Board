@@ -36,6 +36,21 @@ struct WindowInfo: Identifiable {
             position: position
         )
     }
+
+    func updatingPosition(_ position: CGPoint) -> WindowInfo {
+        WindowInfo(
+            id: id,
+            appName: appName,
+            title: title,
+            pid: pid,
+            bundleIdentifier: bundleIdentifier,
+            bundleURL: bundleURL,
+            documentURL: documentURL,
+            axWindow: axWindow,
+            windowNumber: windowNumber,
+            position: position
+        )
+    }
 }
 
 struct AttachedWindow: Identifiable {

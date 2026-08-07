@@ -3,6 +3,42 @@ import XCTest
 
 @MainActor
 final class BoardDirectoryControllerTests: XCTestCase {
+    func testTreeNavigationHistorySupportsBackForwardAndNewBranches() {
+        let root = UUID()
+        let first = UUID()
+        let second = UUID()
+        let replacement = UUID()
+        var history = TreeNavigationHistory(currentBoardID: root)
+
+        history.visit(first)
+        history.visit(second)
+        XCTAssertEqual(history.goBack(), first)
+        XCTAssertEqual(history.goBack(), root)
+        XCTAssertEqual(history.goForward(), first)
+
+        history.visit(replacement)
+        XCTAssertFalse(history.canGoForward)
+        XCTAssertEqual(history.goBack(), first)
+    }
+
+    func testTreeNavigationHistoryDropsDeletedBoardsAndUsesCurrentFallback() {
+        let root = UUID()
+        let first = UUID()
+        let deleted = UUID()
+        var history = TreeNavigationHistory(currentBoardID: root)
+
+        history.visit(first)
+        history.visit(deleted)
+        history.reconcile(validBoardIDs: [root, first], currentBoardID: first)
+
+        XCTAssertEqual(history.currentBoardID, first)
+        XCTAssertEqual(history.goBack(), root)
+        XCTAssertNil(history.goBack())
+        XCTAssertEqual(history.goForward(), first)
+        XCTAssertNil(history.goForward())
+        XCTAssertFalse(history.canGoForward)
+    }
+
     func testResolverProjectsCurrentDirectoryWithoutMixingChildWindows() {
         let rootID = UUID()
         let classesID = UUID()

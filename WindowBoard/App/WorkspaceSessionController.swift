@@ -14,6 +14,59 @@ private let workspaceSessionLogger = Logger(
 enum WorkspaceSwitchSource {
     case mainWindow
     case statusItem
+    case launcher
+}
+
+struct BoardSwitchTarget: Identifiable, Equatable {
+    let primaryBoardID: SavedWorkspace.ID
+    let selectedBoardID: SavedWorkspace.ID
+    let board: SavedWorkspace
+
+    var id: String {
+        "\(primaryBoardID.uuidString)/\(selectedBoardID.uuidString)"
+    }
+}
+
+enum AttachedWindowSessionState: Equatable {
+    case resolving
+    case reconnecting
+    case unavailable
+    case minimized
+    case available
+}
+
+struct AttachedWindowSessionSnapshot: Identifiable, Equatable {
+    let id: AttachedWindow.ID
+    let windowID: WindowInfo.ID
+    let appName: String
+    let title: String
+    let displayName: String
+    let bundleIdentifier: String?
+    let ownerBoardID: SavedWorkspace.ID?
+    let ownerBoardName: String?
+    let isFromPrimaryBoard: Bool
+    let state: AttachedWindowSessionState
+}
+
+enum SessionAttachedWindowInsertion {
+    case start
+    case end
+}
+
+enum SessionWindowAttachResult: Equatable {
+    case attached(AttachedWindow.ID)
+    case updatedExisting(AttachedWindow.ID)
+    case noActiveBoard
+    case missingWindowPosition
+
+    var didAttach: Bool {
+        switch self {
+        case .attached, .updatedExisting:
+            true
+        case .noActiveBoard, .missingWindowPosition:
+            false
+        }
+    }
 }
 
 enum BoardWindowMutationResult: Equatable {
@@ -113,6 +166,7 @@ final class WorkspaceSessionController: ObservableObject {
     @Published var attachedWindows: [AttachedWindow] = []
     @Published var unavailableAttachedWindowIDs: Set<AttachedWindow.ID> = []
     @Published var reconnectingAttachedWindowIDs: Set<AttachedWindow.ID> = []
+    @Published var minimizedAttachedWindowIDs: Set<AttachedWindow.ID> = []
     @Published var minimizedWindows: [WindowInfo] = []
     @Published var isLoadingWorkspace = false
     @Published var isApplyingWorkspaceWindows = false
@@ -175,6 +229,159 @@ final class WorkspaceSessionController: ObservableObject {
 
     var canRestoreMinimized: Bool {
         !minimizedWindows.isEmpty && !isMinimizingUnattached && !isRestoringMinimized
+    }
+
+    var boardSwitchTargets: [BoardSwitchTarget] {
+        let projection = boardCompositionStore.sidebarProjection(workspaces: workspaceStore.workspaces)
+        let groupTargets = projection.groups.flatMap { group in
+            group.boards.map { board in
+                BoardSwitchTarget(
+                    primaryBoardID: group.primaryBoardID,
+                    selectedBoardID: board.id,
+                    board: board
+                )
+            }
+        }
+        let standaloneTargets = projection.standaloneBoards.map { board in
+            BoardSwitchTarget(
+                primaryBoardID: board.id,
+                selectedBoardID: board.id,
+                board: board
+            )
+        }
+        return groupTargets + standaloneTargets
+    }
+
+    var attachedWindowSessionSnapshots: [AttachedWindowSessionSnapshot] {
+        let workspaceNameByID = Dictionary(uniqueKeysWithValues: workspaceStore.workspaces.map { ($0.id, $0.name) })
+        return attachedWindows.map { attachedWindow in
+            let ownerBoardID = attachmentOwnerBoardIDs[attachedWindow.id] ?? activeWorkspaceID
+            return AttachedWindowSessionSnapshot(
+                id: attachedWindow.id,
+                windowID: attachedWindow.window.id,
+                appName: attachedWindow.window.appName,
+                title: attachedWindow.window.title,
+                displayName: attachedWindow.window.displayName,
+                bundleIdentifier: attachedWindow.window.bundleIdentifier,
+                ownerBoardID: ownerBoardID,
+                ownerBoardName: ownerBoardID.flatMap { workspaceNameByID[$0] },
+                isFromPrimaryBoard: ownerBoardID == activeWorkspaceID,
+                state: attachedWindowSessionState(for: attachedWindow.id)
+            )
+        }
+    }
+
+    @discardableResult
+    func switchWorkspaceFromLauncher(
+        _ target: BoardSwitchTarget,
+        followMode: FollowMode,
+        candidateWindows: [WindowInfo]? = nil
+    ) -> Bool {
+        guard boardSwitchTargets.contains(where: {
+            $0.primaryBoardID == target.primaryBoardID && $0.selectedBoardID == target.selectedBoardID
+        }) else {
+            statusMessage = "Board not found."
+            return false
+        }
+
+        if activeWorkspaceID == target.primaryBoardID,
+           requestMemberSelection(
+               memberBoardID: target.selectedBoardID,
+               groupPrimaryID: target.primaryBoardID
+           ) {
+            return true
+        }
+
+        switchWorkspace(
+            id: target.primaryBoardID,
+            selectedBoardID: target.selectedBoardID,
+            boardOrigin: nil,
+            source: .launcher,
+            followMode: followMode,
+            windowCache: candidateWindows
+        )
+        return true
+    }
+
+    @discardableResult
+    func restoreLayoutFromLauncher(
+        followMode: FollowMode,
+        candidateWindows: [WindowInfo]? = nil
+    ) -> Bool {
+        guard !isLoadingWorkspace, !isApplyingWorkspaceWindows else {
+            statusMessage = "Wait for the current board operation to finish."
+            return false
+        }
+        guard let activeWorkspaceID,
+              workspaceStore.workspaces.contains(where: { $0.id == activeWorkspaceID }) else {
+            statusMessage = "Board not found."
+            return false
+        }
+        let selectedBoardID = selectedWorkspaceID.flatMap { selectedID in
+            currentBoardComposition.uniqueBoards.contains(where: { $0.id == selectedID }) ? selectedID : nil
+        } ?? activeWorkspaceID
+        switchWorkspace(
+            id: activeWorkspaceID,
+            selectedBoardID: selectedBoardID,
+            boardOrigin: nil,
+            source: .launcher,
+            followMode: followMode,
+            windowCache: candidateWindows,
+            persistCurrentWorkspaceBeforeSwitch: false
+        )
+        return true
+    }
+
+    @discardableResult
+    func attachWindow(
+        _ window: WindowInfo,
+        boardOrigin: CGPoint,
+        insertion: SessionAttachedWindowInsertion = .start
+    ) -> SessionWindowAttachResult {
+        guard let activeWorkspaceID,
+              workspaceStore.workspaces.contains(where: { $0.id == activeWorkspaceID }) else {
+            statusMessage = "Select a board before attaching a window."
+            return .noActiveBoard
+        }
+        guard let windowOrigin = window.position else {
+            statusMessage = "Could not read the window position."
+            return .missingWindowPosition
+        }
+
+        if let index = attachedWindows.firstIndex(where: { Self.windowsReferToSameWindow($0.window, window) }) {
+            let attachmentID = attachedWindows[index].id
+            attachedWindows[index].window = window
+            attachedWindows[index].lastBoardOrigin = boardOrigin
+            attachedWindows[index].lastWindowOrigin = windowOrigin
+            attachedWindows[index].lastAppliedOrigin = windowOrigin
+            attachedWindows[index].pendingReleaseOrigin = nil
+            unavailableAttachedWindowIDs.remove(attachmentID)
+            reconnectingAttachedWindowIDs.remove(attachmentID)
+            minimizedAttachedWindowIDs.remove(attachmentID)
+            let ownerBoardID = attachmentOwnerBoardIDs[attachmentID] ?? activeWorkspaceID
+            persistCachedWorkspaceState(ownerBoardID: ownerBoardID, boardOrigin: boardOrigin)
+            statusMessage = "Already attached. Updated \(window.displayName)."
+            return .updatedExisting(attachmentID)
+        }
+
+        let attachedWindow = AttachedWindow(
+            window: window,
+            lastBoardOrigin: boardOrigin,
+            lastWindowOrigin: windowOrigin,
+            lastAppliedOrigin: windowOrigin,
+            pendingReleaseOrigin: nil
+        )
+        switch insertion {
+        case .start:
+            attachedWindows.insert(attachedWindow, at: attachedWindows.startIndex)
+        case .end:
+            attachedWindows.append(attachedWindow)
+        }
+        attachmentOwnerBoardIDs[attachedWindow.id] = activeWorkspaceID
+        includedAttachmentIDs.remove(attachedWindow.id)
+        persistCachedWorkspaceState(ownerBoardID: activeWorkspaceID, boardOrigin: boardOrigin)
+        statusMessage = "Attached \(window.displayName)."
+        return .attached(attachedWindow.id)
     }
 
     @discardableResult
@@ -259,6 +466,7 @@ final class WorkspaceSessionController: ObservableObject {
         )
         unavailableAttachedWindowIDs.removeAll()
         reconnectingAttachedWindowIDs.removeAll()
+        minimizedAttachedWindowIDs.removeAll()
         loadedWindowIDsByWorkspaceID[workspace.id] = [:]
         statusMessage = "Created \(workspace.displayName)."
         return workspace
@@ -334,6 +542,21 @@ final class WorkspaceSessionController: ObservableObject {
         statusMessage = "Renamed board to \(workspace.name)."
     }
 
+    func updateWorkspaceSearchAliases(id workspaceID: SavedWorkspace.ID, aliases: [String]) {
+        let normalizedAliases = Array(
+            Set(
+                aliases.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            )
+        ).sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        guard workspaceStore.updateWorkspace(id: workspaceID, searchAliases: normalizedAliases) != nil else {
+            return
+        }
+        statusMessage = normalizedAliases.isEmpty
+            ? "Cleared search aliases."
+            : "Saved \(normalizedAliases.count) search alias(es)."
+    }
+
     private func nextWorkspaceName() -> String {
         let existingNames = Set(workspaceStore.workspaces.map(\.name))
         var index = workspaceStore.workspaces.count + 1
@@ -367,6 +590,7 @@ final class WorkspaceSessionController: ObservableObject {
             currentBoardComposition = .empty
             unavailableAttachedWindowIDs = []
             reconnectingAttachedWindowIDs = []
+            minimizedAttachedWindowIDs = []
         }
         if selectedWorkspaceID == workspaceID || activeWorkspaceID == nil {
             selectedWorkspaceID = workspaceStore.defaultWorkspace?.id
@@ -498,7 +722,7 @@ final class WorkspaceSessionController: ObservableObject {
         isLoadingWorkspace = true
         statusMessage = "Loading \(workspace.name)..."
 
-        let shouldRestoreSavedOrigin = source == .statusItem || followMode == .none
+        let shouldRestoreSavedOrigin = source == .statusItem || source == .launcher || followMode == .none
         let effectiveBoardOrigin = boardOrigin ?? .zero
         let boardComposition = boardCompositionStore.resolveCurrentBoard(
             primaryID: workspaceID,
@@ -537,6 +761,7 @@ final class WorkspaceSessionController: ObservableObject {
         currentBoardComposition = boardComposition
         unavailableAttachedWindowIDs = plannedAttachmentIDs
         reconnectingAttachedWindowIDs = []
+        minimizedAttachedWindowIDs = []
         activeWorkspaceID = workspace.id
         selectedWorkspaceID = resolvedSelectedBoardID
         loadedWindowIDsByWorkspaceID[workspace.id] = [:]
@@ -955,6 +1180,7 @@ final class WorkspaceSessionController: ObservableObject {
         attachmentOwnerBoardIDs[id] = nil
         unavailableAttachedWindowIDs.remove(id)
         reconnectingAttachedWindowIDs.remove(id)
+        minimizedAttachedWindowIDs.remove(id)
         if let ownerBoardID,
            let owner = workspaceStore.workspaces.first(where: { $0.id == ownerBoardID }) {
             let remainingReferences = owner.windows.filter { $0.id != id }
@@ -1052,6 +1278,7 @@ final class WorkspaceSessionController: ObservableObject {
         attachedWindows.removeAll { primaryIDs.contains($0.id) }
         unavailableAttachedWindowIDs.subtract(primaryIDs)
         reconnectingAttachedWindowIDs.subtract(primaryIDs)
+        minimizedAttachedWindowIDs.subtract(primaryIDs)
         primaryIDs.forEach { attachmentOwnerBoardIDs[$0] = nil }
         if let activeWorkspaceID {
             _ = workspaceStore.updateWorkspace(id: activeWorkspaceID, windows: [])
@@ -1077,6 +1304,7 @@ final class WorkspaceSessionController: ObservableObject {
         attachedWindows.removeAll { !visibleReferenceIDs.contains($0.id) }
         unavailableAttachedWindowIDs.subtract(removedAttachmentIDs)
         reconnectingAttachedWindowIDs.subtract(removedAttachmentIDs)
+        minimizedAttachedWindowIDs.subtract(removedAttachmentIDs)
         attachmentOwnerBoardIDs = ownerByReferenceID
         includedAttachmentIDs = Set(attachedWindows.compactMap { attachedWindow in
             guard let ownerBoardID = ownerByReferenceID[attachedWindow.id],
@@ -1108,6 +1336,32 @@ final class WorkspaceSessionController: ObservableObject {
         return lhs.appName == rhs.appName && !lhs.title.isEmpty && lhs.title == rhs.title
     }
 
+    private static func windowsReferToSameWindow(_ lhs: WindowInfo, _ rhs: WindowInfo) -> Bool {
+        if lhs.id == rhs.id {
+            return true
+        }
+        if let lhsWindowNumber = lhs.windowNumber,
+           let rhsWindowNumber = rhs.windowNumber,
+           lhs.pid == rhs.pid,
+           lhsWindowNumber == rhsWindowNumber {
+            return true
+        }
+        guard lhs.pid == rhs.pid,
+              lhs.appName == rhs.appName,
+              lhs.title == rhs.title else {
+            return false
+        }
+        if let lhsDocumentURL = lhs.documentURL,
+           let rhsDocumentURL = rhs.documentURL {
+            return lhsDocumentURL == rhsDocumentURL
+        }
+        if let lhsPosition = lhs.position,
+           let rhsPosition = rhs.position {
+            return originsMatch(lhsPosition, rhsPosition)
+        }
+        return lhs.windowNumber == nil && rhs.windowNumber == nil
+    }
+
     func markAttachedWindowAvailable(_ id: AttachedWindow.ID) {
         unavailableAttachedWindowIDs.remove(id)
         reconnectingAttachedWindowIDs.remove(id)
@@ -1123,6 +1377,26 @@ final class WorkspaceSessionController: ObservableObject {
 
     func isReconnecting(_ id: AttachedWindow.ID) -> Bool {
         reconnectingAttachedWindowIDs.contains(id)
+    }
+
+    func isMinimized(_ id: AttachedWindow.ID) -> Bool {
+        minimizedAttachedWindowIDs.contains(id)
+    }
+
+    func attachedWindowSessionState(for id: AttachedWindow.ID) -> AttachedWindowSessionState {
+        if isLoadingWorkspace {
+            return .resolving
+        }
+        if reconnectingAttachedWindowIDs.contains(id) {
+            return .reconnecting
+        }
+        if unavailableAttachedWindowIDs.contains(id) {
+            return .unavailable
+        }
+        if minimizedAttachedWindowIDs.contains(id) {
+            return .minimized
+        }
+        return .available
     }
 
     func rememberMinimizedWindow(_ window: WindowInfo) {
@@ -1267,12 +1541,43 @@ final class WorkspaceSessionController: ObservableObject {
 
         unavailableAttachedWindowIDs.remove(attachedWindow.id)
         reconnectingAttachedWindowIDs.remove(attachedWindow.id)
+        minimizedAttachedWindowIDs.remove(attachedWindow.id)
         loadedWindowIDsByWorkspaceID[workspaceID, default: [:]][referenceID] = attachedWindow.window.id
     }
 
     private func currentWorkspaceReferences(boardOrigin: CGPoint?) -> [SavedWindowReference]? {
         guard let activeWorkspaceID else { return nil }
         return currentWorkspaceReferences(ownerBoardID: activeWorkspaceID, boardOrigin: boardOrigin)
+    }
+
+    private func persistCachedWorkspaceState(
+        ownerBoardID: SavedWorkspace.ID,
+        boardOrigin: CGPoint
+    ) {
+        var references: [SavedWindowReference] = []
+        for index in attachedWindows.indices where
+            (attachmentOwnerBoardIDs[attachedWindows[index].id] ?? activeWorkspaceID) == ownerBoardID {
+            let reference = SavedWindowReference.make(
+                from: attachedWindows[index],
+                boardOrigin: boardOrigin,
+                size: attachedWindows[index].savedReference?.savedSize
+            )
+            attachedWindows[index].savedReference = reference
+            references.append(reference)
+        }
+        guard workspaceStore.updateWorkspace(id: ownerBoardID, windows: references) != nil else {
+            return
+        }
+        let ownerAttachments = attachedWindows.filter {
+            (attachmentOwnerBoardIDs[$0.id] ?? activeWorkspaceID) == ownerBoardID
+        }
+        rememberLoadedWindowIDs(for: ownerBoardID, attachedWindows: ownerAttachments)
+        if let activeWorkspaceID {
+            currentBoardComposition = boardCompositionStore.resolveCurrentBoard(
+                primaryID: activeWorkspaceID,
+                workspaces: workspaceStore.workspaces
+            )
+        }
     }
 
     private func currentWorkspaceReferences(

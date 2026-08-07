@@ -1,6 +1,6 @@
 # WindowBoard Application Requirements
 
-2026/7/14/10:48
+2026/8/4
 
 ## 1. Purpose
 
@@ -313,6 +313,25 @@ Board switching must be a staged, responsive operation:
 - Consecutive switches must not allow an older task to overwrite the active Current Board, attached windows, recovery state, or minimization state.
 - Attached snapshot polling must pause while loading, applying layouts, minimizing, or restoring to avoid AX contention.
 
+## 16.1 Quick Launcher Requirements
+
+- The Quick Launcher is a feature of the main **WindowBoard** application target. It is not a separate application and is not added to the experimental `WindowBoardTree` target.
+- The launcher opens from anywhere with `Command-Shift-Space`, and from `Show Quick Launcher` in the Status Item menu.
+- It appears as a centered, transient floating panel near the screen containing the pointer. Closing the panel must not terminate or hide the main application.
+- Opening the launcher repeatedly reuses one panel/controller and returns keyboard focus to the search field. Pressing the global shortcut while it is open toggles it closed.
+- Results are grouped as `Boards`, `Windows`, and `Actions`, with bounded result counts so ordinary typing does not trigger an unbounded list render.
+- Search is local and immediate. It matches Board name, saved Board search aliases, application name, window title, owning Board, and action terms while ignoring case, width, diacritics, and Hiragana/Katakana variation. Japanese text containing Kanji is also indexed with a local `ja_JP` tokenized reading, so a reading prefix such as `じゅ` can find `授業`. Multiple terms must all match; exact and prefix matches rank above substring, typo-tolerant, and fuzzy matches; recent successful use may refine ties without overriding clearly stronger text matches. Matching text is visually emphasized in result titles when possible.
+- A Board's optional comma-separated search aliases are saved in Board Settings. `>` limits a query to Actions, `@` limits it to Windows, and `#` limits it to Boards.
+- The launcher always shows the current selected Board directly below its search field. The matching Board row also has a `Current` badge and checkmark; this indication is independent of the keyboard-selected result that Return will execute.
+- Keyboard operation supports Up/Down selection, Return execution, and Escape dismissal. Disabled items cannot be executed, and selection remains stable across live result refreshes when the selected item still exists.
+- Board results use the same `WorkspaceSessionController` switch path as the sidebar and Status Item. A result may identify a selected member Board while switching through its Primary Board.
+- Current Board window results expose state-appropriate behavior: bring forward when available, restore when minimized, and find or reopen when unavailable. They also provide a `Detach` control that removes the saved reference from its owning Board without closing, minimizing, moving, raising, or reconnecting the external window. Resolving or reconnecting entries remain visible but cannot start a conflicting duplicate operation.
+- Saved window references belonging to inactive Boards remain searchable and are marked `Saved`. Selecting one switches to its owning Board; it does not pretend that an inactive saved reference is already a controllable live window.
+- Action results include showing the main window, focusing Current Board windows, restoring layout, attaching the frontmost eligible window, recovering missing windows, minimizing others, restoring windows minimized by WindowBoard, and refreshing the main-window candidate list. Each action uses the same session/application operation path as its existing UI equivalent.
+- Launcher-triggered Board switching and layout restoration must save outgoing Board state appropriately, preserve unavailable references, reject stale asynchronous completions, and keep Accessibility work off the main thread.
+- Accessibility-dependent results are disabled when permission or required runtime state is unavailable. Failures produce a concise status message and leave saved Board/window state recoverable.
+- Only one launcher-triggered operation of the same logical target may run at a time. Completion from an older recovery attempt must not overwrite a newer attachment or Board state.
+
 ## 17. Performance and Reliability Requirements
 
 - Accessibility reads, writes, app activation, focus, raise, minimize, restore, and recovery polling must not block the main thread.
@@ -362,3 +381,4 @@ The current product does not guarantee or require:
 - A user can configure follow/fronting behavior and Status Item display values.
 - Board switching, card scrolling, and idle operation remain responsive and do not perform unnecessary high-frequency Accessibility work.
 - The app behaves safely when macOS or an external app denies a requested window operation.
+- A user can open the Quick Launcher globally, search Boards/windows/actions, switch Boards through the shared session path, and execute only state-valid operations without opening a second application.

@@ -7,6 +7,7 @@ struct TreeContentView: View {
 
     @State private var editorRequest: TreeBoardEditorRequest?
     @State private var deletionRequest: TreeBoardDeletionRequest?
+    @AppStorage("treeBrowserDisplayMode") private var browserDisplayMode: TreeBrowserDisplayMode = .list
 
     init(appState: TreeWindowBoardAppState) {
         self.appState = appState
@@ -27,6 +28,24 @@ struct TreeContentView: View {
         .toolbar {
             ToolbarItemGroup(placement: .navigation) {
                 Button {
+                    _ = appState.navigateBack()
+                } label: {
+                    Label("Back", systemImage: "chevron.left")
+                }
+                .help("Go to the previous Board")
+                .keyboardShortcut("[", modifiers: .command)
+                .disabled(!appState.canNavigateBack)
+
+                Button {
+                    _ = appState.navigateForward()
+                } label: {
+                    Label("Forward", systemImage: "chevron.right")
+                }
+                .help("Go to the next Board")
+                .keyboardShortcut("]", modifiers: .command)
+                .disabled(!appState.canNavigateForward)
+
+                Button {
                     presentCreateBoard(parentID: directory.currentBoardID)
                 } label: {
                     Label("New Child Board", systemImage: "folder.badge.plus")
@@ -36,6 +55,22 @@ struct TreeContentView: View {
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
+                Picker("View", selection: $browserDisplayMode) {
+                    Label("List", systemImage: "list.bullet")
+                        .tag(TreeBrowserDisplayMode.list)
+                    Label("Icons", systemImage: "square.grid.2x2")
+                        .tag(TreeBrowserDisplayMode.icons)
+                }
+                .pickerStyle(.segmented)
+                .labelStyle(.iconOnly)
+                .labelsHidden()
+                .frame(width: 72)
+                .help(
+                    browserDisplayMode == .list
+                        ? "Show items as a list"
+                        : "Show items as icons"
+                )
+
                 addWindowMenu
 
                 Button {
@@ -108,6 +143,7 @@ struct TreeContentView: View {
         TreeBoardDetailView(
             directory: directory,
             windowController: windowController,
+            displayMode: $browserDisplayMode,
             onOpenBoard: selectBoard,
             onCreateChild: presentCreateBoard,
             onRename: presentRenameBoard,
