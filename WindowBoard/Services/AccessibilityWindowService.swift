@@ -22,16 +22,35 @@ enum WindowBoardAXError: LocalizedError {
 
 protocol WorkspaceWindowOperating: AnyObject {
     func listWindows() -> [WindowInfo]
+    func listWindowsReport() -> WindowEnumerationReport
     func windows(matching window: WindowInfo) -> [WindowInfo]
     func position(of window: WindowInfo) throws -> CGPoint
     func size(of window: WindowInfo) throws -> CGSize
     func setPosition(_ position: CGPoint, for window: WindowInfo) throws
     func setSize(_ size: CGSize, for window: WindowInfo) throws
     func isMinimized(_ window: WindowInfo) -> Bool
+    func minimizedObservation(of window: WindowInfo) -> MinimizedObservation
     func setMinimized(_ minimized: Bool, for window: WindowInfo) throws
     func raise(_ window: WindowInfo)
     func openSavedWindowReference(_ reference: SavedWindowReference) -> Bool
     func activateSavedApplication(_ reference: SavedWindowReference) -> Bool
+}
+
+extension WorkspaceWindowOperating {
+    /// Compatibility only: the legacy array cannot establish enumeration coverage.
+    func listWindowsReport() -> WindowEnumerationReport {
+        WindowEnumerationReport(
+            windows: listWindows(),
+            coverage: .unverifiedLegacy,
+            issues: [],
+            failedPIDs: []
+        )
+    }
+
+    /// Preserve the old Bool without claiming that read failures were diagnosed.
+    func minimizedObservation(of window: WindowInfo) -> MinimizedObservation {
+        MinimizedObservation(state: .success(isMinimized(window)), quality: .legacy)
+    }
 }
 
 protocol ContentWindowOperating: WorkspaceWindowOperating, Sendable {
