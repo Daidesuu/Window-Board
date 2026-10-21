@@ -92,6 +92,16 @@
 		4A0000010000000000000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 4A0000010000000000000002 /* Assets.xcassets */; };
 		4B0000010000000000000001 /* Sparkle in Frameworks */ = {isa = PBXBuildFile; productRef = 4B0000010000000000000002 /* Sparkle */; };
 		4B0000010000000000000003 /* WindowBoardUpdateController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4B0000010000000000000004 /* WindowBoardUpdateController.swift */; };
+		5C0000010000000000000002 /* WindowOperationInspection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0000010000000000000001 /* WindowOperationInspection.swift */; };
+		5C0000010000000000000004 /* WindowMinimizationModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0000010000000000000003 /* WindowMinimizationModels.swift */; };
+		5C0000010000000000000006 /* UnattachedWindowMinimizationPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0000010000000000000005 /* UnattachedWindowMinimizationPolicy.swift */; };
+		5C0000010000000000000008 /* UnattachedWindowMinimizationExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0000010000000000000007 /* UnattachedWindowMinimizationExecutor.swift */; };
+		5C000001000000000000000A /* WindowMinimizationPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0000010000000000000009 /* WindowMinimizationPolicyTests.swift */; };
+		5C000001000000000000000C /* WindowMinimizationExecutorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C000001000000000000000B /* WindowMinimizationExecutorTests.swift */; };
+		5C000001000000000000000E /* WorkspaceMinimizationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C000001000000000000000D /* WorkspaceMinimizationTests.swift */; };
+		5C0000010000000000000010 /* WindowOperationInspectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C000001000000000000000F /* WindowOperationInspectionTests.swift */; };
+		5C0000010000000000000012 /* ControlledMinimizationWindowService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0000010000000000000011 /* ControlledMinimizationWindowService.swift */; };
+		5C0000010000000000000014 /* WindowOperationInspection.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5C0000010000000000000001 /* WindowOperationInspection.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -172,6 +182,15 @@
 		3A0000010000000000000019 /* QuickLauncherTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickLauncherTests.swift; sourceTree = "<group>"; };
 		4A0000010000000000000002 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		4B0000010000000000000004 /* WindowBoardUpdateController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardUpdateController.swift; sourceTree = "<group>"; };
+		5C0000010000000000000001 /* WindowOperationInspection.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowOperationInspection.swift; sourceTree = "<group>"; };
+		5C0000010000000000000003 /* WindowMinimizationModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowMinimizationModels.swift; sourceTree = "<group>"; };
+		5C0000010000000000000005 /* UnattachedWindowMinimizationPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnattachedWindowMinimizationPolicy.swift; sourceTree = "<group>"; };
+		5C0000010000000000000007 /* UnattachedWindowMinimizationExecutor.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = UnattachedWindowMinimizationExecutor.swift; sourceTree = "<group>"; };
+		5C0000010000000000000009 /* WindowMinimizationPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowMinimizationPolicyTests.swift; sourceTree = "<group>"; };
+		5C000001000000000000000B /* WindowMinimizationExecutorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowMinimizationExecutorTests.swift; sourceTree = "<group>"; };
+		5C000001000000000000000D /* WorkspaceMinimizationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceMinimizationTests.swift; sourceTree = "<group>"; };
+		5C000001000000000000000F /* WindowOperationInspectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowOperationInspectionTests.swift; sourceTree = "<group>"; };
+		5C0000010000000000000011 /* ControlledMinimizationWindowService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ControlledMinimizationWindowService.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -234,6 +253,11 @@
 		1B0000010000000000000004 /* WindowBoardTests */ = {
 			isa = PBXGroup;
 			children = (
+				5C0000010000000000000009 /* WindowMinimizationPolicyTests.swift */,
+				5C000001000000000000000B /* WindowMinimizationExecutorTests.swift */,
+				5C000001000000000000000D /* WorkspaceMinimizationTests.swift */,
+				5C000001000000000000000F /* WindowOperationInspectionTests.swift */,
+				5C0000010000000000000015 /* Support */,
 				3A0000010000000000000019 /* QuickLauncherTests.swift */,
 				1B0000010000000000000002 /* WindowMatchingTests.swift */,
 				2A000001000000000000006C /* TreeBoardWindowControllerTests.swift */,
@@ -277,6 +301,9 @@
 		1A0000010000000000000035 /* Models */ = {
 			isa = PBXGroup;
 			children = (
+				5C0000010000000000000001 /* WindowOperationInspection.swift */,
+				5C0000010000000000000003 /* WindowMinimizationModels.swift */,
+				5C0000010000000000000005 /* UnattachedWindowMinimizationPolicy.swift */,
 				1A0000010000000000000013 /* WindowInfo.swift */,
 				1A0000010000000000000029 /* WindowMatching.swift */,
 				1B0000010000000000000012 /* WorkspaceWindowResolver.swift */,
@@ -308,6 +335,7 @@
 		1A0000010000000000000036 /* Services */ = {
 			isa = PBXGroup;
 			children = (
+				5C0000010000000000000007 /* UnattachedWindowMinimizationExecutor.swift */,
 				1A0000010000000000000014 /* AccessibilityWindowService.swift */,
 				2A0000010000000000000069 /* TreeBoardWindowController.swift */,
 				1A0000010000000000000016 /* WindowMoveScheduler.swift */,
@@ -381,6 +409,14 @@
 				2A0000010000000000000008 /* TreeSettingsView.swift */,
 			);
 			path = Views;
+			sourceTree = "<group>";
+		};
+		5C0000010000000000000015 /* Support */ = {
+			isa = PBXGroup;
+			children = (
+				5C0000010000000000000011 /* ControlledMinimizationWindowService.swift */,
+			);
+			path = Support;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
@@ -556,6 +592,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5C0000010000000000000014 /* WindowOperationInspection.swift in Sources */,
 				2A0000010000000000000001 /* TreeWindowBoardApp.swift in Sources */,
 				2A0000010000000000000003 /* TreeWindowBoardAppState.swift in Sources */,
 				2A0000010000000000000005 /* TreeContentView.swift in Sources */,
@@ -589,6 +626,10 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5C0000010000000000000002 /* WindowOperationInspection.swift in Sources */,
+				5C0000010000000000000004 /* WindowMinimizationModels.swift in Sources */,
+				5C0000010000000000000006 /* UnattachedWindowMinimizationPolicy.swift in Sources */,
+				5C0000010000000000000008 /* UnattachedWindowMinimizationExecutor.swift in Sources */,
 				4B0000010000000000000003 /* WindowBoardUpdateController.swift in Sources */,
 				3A0000010000000000000001 /* QuickLauncherItem.swift in Sources */,
 				3A0000010000000000000002 /* QuickLauncherUsageStore.swift in Sources */,
@@ -645,6 +686,11 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				5C000001000000000000000A /* WindowMinimizationPolicyTests.swift in Sources */,
+				5C000001000000000000000C /* WindowMinimizationExecutorTests.swift in Sources */,
+				5C000001000000000000000E /* WorkspaceMinimizationTests.swift in Sources */,
+				5C0000010000000000000010 /* WindowOperationInspectionTests.swift in Sources */,
+				5C0000010000000000000012 /* ControlledMinimizationWindowService.swift in Sources */,
 				3A0000010000000000000009 /* QuickLauncherTests.swift in Sources */,
 				1B0000010000000000000001 /* WindowMatchingTests.swift in Sources */,
 				1D0000010000000000000003 /* BoardFrontingCoordinatorTests.swift in Sources */,
