@@ -271,6 +271,218 @@ final class WindowMinimizationExecutorTests: XCTestCase {
         XCTAssertNil(result.candidateSnapshot)
     }
 
+    @MainActor
+    func testStopAfterReadPreventsWriteAndPreservesSnapshot() async {
+        let service = ControlledMinimizationWindowService()
+        var calls = 0
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([window("first"), window("second")])), service: service,
+            authorize: { proposal in
+                calls += 1
+                return calls == 1 ? .perform(self.permit(proposal)) : .stop(.superseded)
+            }, restorePlan: { ProtectionSnapshot(records: []) }, record: { _ in XCTFail("no completed operation") })
+        XCTAssertEqual(result.endReason, .superseded)
+        XCTAssertEqual(service.snapshot.count(for: .read), 1)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
+        XCTAssertEqual(result.candidateSnapshot?.report.windows.count, 2)
+    }
+
+    @MainActor
+    func testInFlightWriteRecordsSuccessBeforeStoppingNextOperation() async {
+        for cancel in [false, true] {
+            let service = ControlledMinimizationWindowService()
+            let started = expectation(description: "write started")
+            let gate = service.holdNext(.minimize, onStart: { started.fulfill() })
+            var stopped = false
+            var receipts: [StepReceipt] = []
+            let task = Task {
+                await UnattachedWindowMinimizationExecutor().run(
+                    request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([window("first"), window("second")])), service: service,
+                    authorize: { proposal in stopped ? .stop(.superseded) : .perform(self.permit(proposal)) },
+                    restorePlan: { ProtectionSnapshot(records: []) }, record: { receipt in
+                        XCTAssertEqual(service.snapshot.count(for: .minimize), 1)
+                        receipts.append(receipt)
+                    })
+            }
+            await fulfillment(of: [started], timeout: 2)
+            if cancel { task.cancel() } else { stopped = true }
+            gate.release()
+            let result = await task.value
+            XCTAssertEqual(result.endReason, cancel ? .cancelled : .superseded)
+            XCTAssertEqual(result.summary.minimizedCount, 1)
+            XCTAssertEqual(receipts.count, 1)
+            XCTAssertEqual(service.snapshot.count(for: .minimize), 1)
+            guard case .changed = receipts.first?.outcome else { XCTFail("inflight success lost"); continue }
+        }
+    }
+
+    @MainActor
+    func testChangedWritePermitNeverUsesOldRead() async {
+        for mismatch in [0, 1, 3] {
+            let service = ControlledMinimizationWindowService()
+            var calls = 0
+            let candidate = window("candidate")
+            var receipts: [StepReceipt] = []
+            _ = await UnattachedWindowMinimizationExecutor().run(
+                request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([candidate])), service: service,
+                authorize: { proposal in
+                    calls += 1
+                    if calls == 1 { return .perform(self.permit(proposal)) }
+                    let changed = mismatch == 0 ? self.window("different") : mismatch == 1 ? self.window("candidate") : candidate
+                    return .perform(WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID, stepID: proposal.stepID, kind: proposal.kind, identity: LiveWindowIdentity(window: changed), window: changed, attachmentID: proposal.attachmentID, expectedLedgerVersion: mismatch == 2 ? 7 : nil, protectionFingerprint: ProtectionSnapshot(records: []).fingerprint, classification: mismatch == 3 ? .registered : .target))
+                }, restorePlan: { ProtectionSnapshot(records: []) }, record: { receipts.append($0) })
+            XCTAssertEqual(service.snapshot.count(for: .minimize), 0, "mismatch \(mismatch)")
+            XCTAssertEqual(receipts.count, 1)
+        }
+    }
+
+    @MainActor
+    func testLedgerVersionChangeRereadsAndCarriesReadPermitVersion() async {
+        let service = ControlledMinimizationWindowService()
+        var calls = 0
+        var receipts: [StepReceipt] = []
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([window("candidate")])), service: service,
+            authorize: { proposal in
+                calls += 1
+                let version: UInt64 = calls == 1 ? 1 : 2
+                if calls == 2 { XCTAssertEqual(proposal.expectedLedgerVersion, 1) }
+                if calls == 4 { XCTAssertEqual(proposal.expectedLedgerVersion, 2) }
+                return .perform(WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID, stepID: proposal.stepID, kind: proposal.kind, identity: proposal.candidateIdentity, window: proposal.candidateWindow, attachmentID: proposal.attachmentID, expectedLedgerVersion: version, protectionFingerprint: ProtectionSnapshot(records: []).fingerprint, classification: .target))
+            }, restorePlan: { ProtectionSnapshot(records: []) }, record: { receipts.append($0) })
+        XCTAssertEqual(service.snapshot.count(for: .read), 2)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 1)
+        XCTAssertEqual(result.summary.minimizedCount, 1)
+        XCTAssertEqual(receipts.first?.expectedLedgerVersion, 2)
+    }
+
+    @MainActor
+    func testStopBeforeReadNeverStartsAX() async {
+        let service = ControlledMinimizationWindowService()
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([window("candidate")])), service: service,
+            authorize: { _ in .stop(.superseded) }, restorePlan: { ProtectionSnapshot(records: []) }, record: { _ in XCTFail("no operation") })
+        XCTAssertEqual(result.endReason, .superseded)
+        XCTAssertTrue(service.snapshot.events.isEmpty)
+    }
+
+    @MainActor
+    func testReadResultGateAllowsInvalidationBeforeWrite() async {
+        let service = ControlledMinimizationWindowService()
+        let sampled = expectation(description: "read sampled")
+        let gate = service.holdNext(.readResult, onStart: { sampled.fulfill() })
+        var stopped = false
+        let task = Task {
+            await UnattachedWindowMinimizationExecutor().run(
+                request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([window("candidate")])), service: service,
+                authorize: { proposal in stopped ? .stop(.superseded) : .perform(self.permit(proposal)) }, restorePlan: { ProtectionSnapshot(records: []) }, record: { _ in XCTFail("no completed operation") })
+        }
+        await fulfillment(of: [sampled], timeout: 2)
+        stopped = true
+        gate.release()
+        let result = await task.value
+        XCTAssertEqual(result.endReason, .superseded)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
+    }
+
+    @MainActor
+    func testInFlightRestoreRecordsBeforeCancellationEndsRequest() async {
+        let service = ControlledMinimizationWindowService()
+        let w = window("registered")
+        let second = window("second")
+        let protection = ProtectionSnapshot(records: [w, second].map { ProtectionRecord(attachmentID: UUID(), window: $0, savedReference: nil, isAvailable: true, isReconnecting: false, lastWindowOrigin: .zero) })
+        service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: w.id)
+        let started = expectation(description: "restore started")
+        let gate = service.holdNext(.restore, onStart: { started.fulfill() })
+        var receipts: [StepReceipt] = []
+        let task = Task {
+            await UnattachedWindowMinimizationExecutor().run(
+                request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([])), service: service,
+                authorize: { .perform(self.permit($0)) }, restorePlan: { protection }, record: { receipts.append($0) })
+        }
+        await fulfillment(of: [started], timeout: 2)
+        task.cancel()
+        gate.release()
+        let result = await task.value
+        XCTAssertEqual(result.endReason, .cancelled)
+        XCTAssertEqual(result.summary.restoredCount, 1)
+        XCTAssertEqual(receipts.count, 1)
+        XCTAssertEqual(service.snapshot.count(for: .read), 1)
+        XCTAssertEqual(service.snapshot.count(for: .restore), 1)
+    }
+
+    @MainActor
+    func testCancellationDuringReadStartsNoWrite() async {
+        let service = ControlledMinimizationWindowService()
+        let started = expectation(description: "read started")
+        let gate = service.holdNext(.read, onStart: { started.fulfill() })
+        let task = Task {
+            await UnattachedWindowMinimizationExecutor().run(
+                request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([window("candidate")])), service: service,
+                authorize: { .perform(self.permit($0)) }, restorePlan: { ProtectionSnapshot(records: []) }, record: { _ in XCTFail("read was interrupted before write") })
+        }
+        await fulfillment(of: [started], timeout: 2)
+        task.cancel()
+        gate.release()
+        let result = await task.value
+        XCTAssertEqual(result.endReason, .cancelled)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
+    }
+
+    @MainActor
+    func testReceiptIsAppliedBeforeNextReadAuthorization() async {
+        let service = ControlledMinimizationWindowService()
+        var recorded = 0
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([window("first"), window("second")])), service: service,
+            authorize: { proposal in
+                if proposal.candidateWindow.id == "second" { XCTAssertEqual(recorded, 1) }
+                return .perform(self.permit(proposal))
+            }, restorePlan: { ProtectionSnapshot(records: []) }, record: { _ in
+                recorded += 1
+                XCTAssertEqual(service.snapshot.count(for: .minimize), recorded)
+            })
+        XCTAssertEqual(result.summary.minimizedCount, 2)
+        XCTAssertEqual(recorded, 2)
+    }
+
+    @MainActor
+    func testFailedRestoreReauthorizesDiagnosticReadAndAlwaysRecordsFailure() async {
+        for change in 0..<7 {
+            let service = ControlledMinimizationWindowService()
+            let w = window("registered")
+            let protection = ProtectionSnapshot(records: [ProtectionRecord(attachmentID: UUID(), window: w, savedReference: nil, isAvailable: true, isReconnecting: false, lastWindowOrigin: .zero)])
+            service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: w.id)
+            let issue = WindowInspectionIssue(stage: .restoreMinimized, pid: w.pid, windowID: w.id, failure: .invalidValue)
+            service.setWriteFailure(issue, minimized: false, for: w.id)
+            let started = expectation(description: "failed restore starts")
+            let gate = service.holdNext(.restore, onStart: { started.fulfill() })
+            var changed = false
+            var receipts: [StepReceipt] = []
+            let task = Task {
+                await UnattachedWindowMinimizationExecutor().run(
+                    request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([])), service: service,
+                    authorize: { proposal in
+                        guard changed else { return .perform(self.permit(proposal)) }
+                        if change == 0 { return .stop(.superseded) }
+                        if change == 1 { return .skip(.unavailable) }
+                        let selected = change == 2 ? self.window("replacement") : change == 3 ? self.window("registered") : proposal.candidateWindow
+                        return .perform(WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID, stepID: proposal.stepID, kind: proposal.kind, identity: LiveWindowIdentity(window: selected), window: selected, attachmentID: proposal.attachmentID, expectedLedgerVersion: change == 4 ? 99 : proposal.expectedLedgerVersion, protectionFingerprint: protection.fingerprint, classification: change == 5 ? .registered : .target))
+                    }, restorePlan: { protection }, record: { receipts.append($0) })
+            }
+            await fulfillment(of: [started], timeout: 2)
+            changed = true
+            gate.release()
+            let result = await task.value
+            XCTAssertEqual(service.snapshot.count(for: .read), change == 6 ? 2 : 1, "change \(change)")
+            XCTAssertEqual(result.endReason, change == 0 ? .superseded : .failed)
+            XCTAssertEqual(result.summary.writeFailureCount, 1)
+            XCTAssertEqual(receipts.count, 1)
+            guard case .writeFailed(_, let observedAfter) = receipts.first?.outcome else { XCTFail("failed receipt lost"); continue }
+            XCTAssertEqual(observedAfter == nil, change != 6)
+        }
+    }
+
     private func permit(_ proposal: StepProposal) -> WindowOperationPermit {
         WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID, stepID: proposal.stepID, kind: proposal.kind, identity: proposal.candidateIdentity, window: proposal.candidateWindow, attachmentID: proposal.attachmentID, expectedLedgerVersion: proposal.expectedLedgerVersion, protectionFingerprint: ProtectionSnapshot(records: []).fingerprint, classification: .target)
     }
