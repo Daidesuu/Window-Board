@@ -174,8 +174,15 @@ struct StepProposal {
     let stepID: UInt64
     let kind: WindowOperationKind
     let candidateIdentity: LiveWindowIdentity
+    /// Preserve the discovered live AX handle for Session's current protection check.
+    let candidateWindow: WindowInfo
     let attachmentID: UUID?
     let expectedLedgerVersion: UInt64?
+
+    /// A value-only check; authorization remains Session's responsibility.
+    var hasMatchingCandidateIdentity: Bool {
+        candidateIdentity == LiveWindowIdentity(window: candidateWindow)
+    }
 }
 
 /// Authorization applies to exactly one step and one live window. Reauthorization

@@ -4,7 +4,7 @@
 
 通常は番号順に進める。2.1と2.2だけは基盤完了後に並列実行でき、記載した依存タスクを満たせば直前の同階層タスクを待たなくてよい。その他は先行する実行タスクの完了を前提とする。
 
-計画レビュー：Task Plan Review Gate通過。Task-Graph Sanity Reviewは独立レビュー（independent）でPASS。実装・検証は未着手。
+計画レビュー：Task Plan Review Gate通過。Task-Graph Sanity Reviewは独立レビュー（independent）でPASS。1.1〜2.2は実装・検証済み。操作許可契約の補足案は利用者の続行指示で承認済み。
 
 Session本体の変更はSession / Workspace担当一人が逐次所有する。AX担当は診断取得境界、Regression担当はテスト基盤・回帰検証を担当する。共有契約・テスト基盤・ターゲット登録を並列に編集しない。既存の未コミット変更を戻さず、他担当の編集に合わせる。
 
@@ -43,6 +43,15 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
   - _Depends: 1.3_
   - _Requirements: 2.1, 3.2, 3.5, 5.1, 7.2_
 
+- [x] 1.5 操作許可へ実候補を渡す共通契約を補足する
+  - StepProposalへcandidateWindow: WindowInfoを追加し、candidateIdentityとの一致を検証可能にする。
+  - 新規列挙候補の実AX handleを保持し、Session側で最新保護情報による許可判定ができる値契約にする。
+  - 既存の3.1作業差分は保全し、producerの引数追加だけを機械的に合わせる。実行経路とテストhelperの修正は3.1で行う。
+  - 完了時には実候補の参照保持とidentity不一致を契約テストで確認できる。保存形式・状態所有・保護範囲は変えない。
+  - _Boundary: Models（作業中Executorの構築引数一箇所の機械的追従のみ許可）_
+  - _Depends: 1.2_
+  - _Requirements: 1.1, 3.4, 7.1_
+
 - [x] 2. 診断取得と保護判断を独立して実装する
 - [x] 2.1 (P) AXの取得失敗を失わずに一覧と状態を返す
   - 本番の一覧取得で正常ゼロ件・一部失敗・全体失敗を区別し、取得できた候補と失敗したアプリの情報を保持する。
@@ -71,7 +80,7 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
   - 各窓の状態読取、最小化・復元、既に目的状態、読取・書込失敗を区別し、一窓の失敗で残りの対象を止めない。
   - 完了時には制御可能なfakeに対し正常操作・状態不明・no-op・部分失敗が別の結果となり、AX呼出がMainActorで行われないことを専用テストで確認できる。
   - _Boundary: UnattachedWindowMinimizationExecutor_
-  - _Depends: 2.1, 2.2_
+  - _Depends: 1.5, 2.1, 2.2_
   - _Requirements: 1.1, 1.2, 2.1, 5.1, 5.3, 5.6, 5.8, 7.2_
 
 - [ ] 3.2 古い操作を区切りで止め実行済み結果を必ず返す
@@ -253,3 +262,6 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
 
 - 1.1: Desktop直下でのビルド停止を避け、ソース一致を確認した一時コピーで通常版・Tree版・185件のXCTestを検証した。後続も変更後のソースを同期して検証する。
 - 1.2: 固定候補をSessionへ返すresult.candidateSnapshotと、部分取得の由来を維持するsnapshot.fallbackを共通契約へ補足した。既存Snapshotテストに一度失敗があったが、以降の全189件と独立レビューは成功。
+- 3.1: 新規候補のAX handleをSession許可へ渡す契約不足を検出。Executorの差分を保全し未完了。補正案はbuild/minimization-contract-amendment.md。最終218件中、既存Frontingテスト1件失敗も再検証対象。
+- 計画補足: 利用者が操作許可契約の補正と続行を承認。1.5を追加し、3.1の停止は1.5検証後に解除する。
+- 1.5: 利用者承認のcandidateWindow契約補正を実装・独立レビュー・全220件で確認。3.1の停止を解除した。

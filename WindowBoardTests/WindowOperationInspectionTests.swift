@@ -155,6 +155,39 @@ final class WindowOperationInspectionTests: XCTestCase {
         XCTAssertEqual(Set([first, first]).count, 1)
     }
 
+    func testStepProposalPreservesCandidateAXHandleAndMatchingIdentity() {
+        let window = makeWindow(id: "fresh-candidate")
+        let proposal = StepProposal(
+            operationID: UUID(), intentID: MinimizationIntentID(value: 1),
+            stepID: 1, kind: .minimizeCandidate,
+            candidateIdentity: LiveWindowIdentity(window: window), candidateWindow: window,
+            attachmentID: nil, expectedLedgerVersion: nil
+        )
+
+        XCTAssertTrue(proposal.candidateWindow.axWindow === window.axWindow)
+        XCTAssertTrue(proposal.hasMatchingCandidateIdentity)
+    }
+
+    func testStepProposalDetectsEachCandidateIdentityMismatch() {
+        let window = makeWindow(id: "fresh-candidate")
+        let mismatches = [
+            LiveWindowIdentity(pid: window.pid + 1, windowID: window.id, windowNumber: window.windowNumber),
+            LiveWindowIdentity(pid: window.pid, windowID: "other-window", windowNumber: window.windowNumber),
+            LiveWindowIdentity(pid: window.pid, windowID: window.id, windowNumber: 99)
+        ]
+        for identity in mismatches {
+            let proposal = StepProposal(
+                operationID: UUID(), intentID: MinimizationIntentID(value: 1),
+                stepID: 1, kind: .minimizeCandidate,
+                candidateIdentity: identity, candidateWindow: window,
+                attachmentID: nil, expectedLedgerVersion: nil
+            )
+
+            XCTAssertFalse(proposal.hasMatchingCandidateIdentity)
+            XCTAssertTrue(proposal.candidateWindow.axWindow === window.axWindow)
+        }
+    }
+
     func testLiveIdentitySeparatesProcessAndWindowNumber() {
         let first = LiveWindowIdentity(pid: 1, windowID: "same", windowNumber: 10)
         XCTAssertNotEqual(first, LiveWindowIdentity(pid: 2, windowID: "same", windowNumber: 10))
