@@ -3,6 +3,73 @@ import XCTest
 @testable import WindowBoard
 
 final class WindowOperationInspectionTests: XCTestCase {
+    func testProductionAggregationDistinguishesZeroPartialAndFailure() {
+        typealias Inspection = AccessibilityWindowService.ApplicationInspection
+        let empty = AccessibilityWindowService.aggregateInspections([])
+        XCTAssertEqual(empty.coverage, .complete)
+        let issue = WindowInspectionIssue(stage: .enumerateWindows, pid: 43, windowID: nil, failure: .ax(.cannotComplete))
+        let failed = Inspection(pid: 43, windows: [], issues: [issue], hasSuccessfulScope: false)
+        XCTAssertEqual(AccessibilityWindowService.aggregateInspections([failed]).coverage, .failed)
+        let window = makeWindow(id: "retained")
+        let partial = AccessibilityWindowService.aggregateInspections([
+            Inspection(pid: 42, windows: [window], issues: [], hasSuccessfulScope: true), failed
+        ])
+        XCTAssertEqual(partial.coverage, .partial)
+        XCTAssertEqual(partial.windows.map(\.id), [window.id])
+        XCTAssertEqual(partial.failedPIDs, [43])
+        XCTAssertEqual(partial.issues, [issue])
+        XCTAssertEqual(AccessibilityWindowService.aggregateInspections([], permissionGranted: false).coverage, .failed)
+        let permissionChanged = AccessibilityWindowService.aggregateInspections([
+            Inspection(pid: 42, windows: [window], issues: [], hasSuccessfulScope: true), failed
+        ], permissionGranted: false)
+        XCTAssertEqual(permissionChanged.windows.map(\.id), [window.id])
+        XCTAssertEqual(permissionChanged.coverage, .failed)
+        XCTAssertEqual(permissionChanged.failedPIDs, [43])
+        XCTAssertEqual(permissionChanged.issues.map(\.stage), [.enumerateWindows, .accessibilityPermission])
+    }
+
+    func testProductionBoolConversionRejectsNumbersStringsNilAndAXFailure() throws {
+        for expected in [true, false] {
+            let observation = AccessibilityWindowService.minimizedObservation(rawValue: expected ? kCFBooleanTrue : kCFBooleanFalse, error: .success, pid: 42, windowID: "w")
+            XCTAssertEqual(try observation.state.get(), expected)
+            XCTAssertEqual(observation.quality, .diagnostic)
+        }
+        for raw: CFTypeRef? in [nil, NSNumber(value: 1), "true" as CFString] {
+            let observation = AccessibilityWindowService.minimizedObservation(rawValue: raw, error: .success, pid: 42, windowID: "w")
+            XCTAssertThrowsError(try observation.state.get()) { error in
+                XCTAssertEqual((error as? WindowInspectionIssue)?.failure, .invalidValue)
+            }
+        }
+        let failed = AccessibilityWindowService.minimizedObservation(rawValue: kCFBooleanFalse, error: .cannotComplete, pid: 42, windowID: "w")
+        XCTAssertThrowsError(try failed.state.get()) { error in
+            XCTAssertEqual((error as? WindowInspectionIssue)?.failure, .ax(.cannotComplete))
+        }
+    }
+
+    func testProductionGeometryConversionDistinguishesExpectedAXTypesAndReadErrors() {
+        var point = CGPoint(x: 10, y: 20)
+        var size = CGSize(width: 100, height: 200)
+        let positionValue = AXValueCreate(.cgPoint, &point)!
+        let sizeValue = AXValueCreate(.cgSize, &size)!
+        XCTAssertNil(AccessibilityWindowService.geometryIssue(rawValue: positionValue, error: .success, stage: .readPosition, pid: 42))
+        XCTAssertNil(AccessibilityWindowService.geometryIssue(rawValue: sizeValue, error: .success, stage: .readSize, pid: 42))
+        for raw: CFTypeRef? in [nil, kCFBooleanTrue, "invalid" as CFString, sizeValue] {
+            XCTAssertEqual(AccessibilityWindowService.geometryIssue(rawValue: raw, error: .success, stage: .readPosition, pid: 42)?.failure, .invalidValue)
+        }
+        XCTAssertEqual(AccessibilityWindowService.geometryIssue(rawValue: positionValue, error: .cannotComplete, stage: .readPosition, pid: 42)?.failure, .ax(.cannotComplete))
+    }
+
+    func testProductionRoleConversionKeepsLegitimateExclusionSeparateFromFailure() throws {
+        XCTAssertEqual(try AccessibilityWindowService.roleObservation(rawValue: kAXButtonRole as CFString, error: .success, pid: 42).get(), kAXButtonRole)
+        XCTAssertEqual(try AccessibilityWindowService.roleObservation(rawValue: kAXWindowRole as CFString, error: .success, pid: 42).get(), kAXWindowRole)
+        for raw: CFTypeRef? in [nil, kCFBooleanTrue, NSNumber(value: 1)] {
+            XCTAssertThrowsError(try AccessibilityWindowService.roleObservation(rawValue: raw, error: .success, pid: 42).get())
+        }
+        XCTAssertThrowsError(try AccessibilityWindowService.roleObservation(rawValue: kAXWindowRole as CFString, error: .cannotComplete, pid: 42).get())
+        let excluded = AccessibilityWindowService.ApplicationInspection(pid: 42, windows: [], issues: [], hasSuccessfulScope: true)
+        XCTAssertEqual(AccessibilityWindowService.aggregateInspections([excluded]).coverage, .complete)
+    }
+
     func testLegacyEnumerationPreservesWindowsWithoutClaimingCompleteCoverage() {
         let fake = LegacyInspectionWindowService()
         let first = makeWindow(id: "first")

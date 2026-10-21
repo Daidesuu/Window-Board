@@ -96,20 +96,86 @@ final class AccessibilityWindowService: ContentWindowOperating, @unchecked Senda
         }
     }
 
+    struct ApplicationInspection {
+        let pid: pid_t
+        let windows: [WindowInfo]
+        let issues: [WindowInspectionIssue]
+        let hasSuccessfulScope: Bool
+    }
+
+    static func aggregateInspections(_ inspections: [ApplicationInspection], permissionGranted: Bool = true) -> WindowEnumerationReport {
+        let windows = inspections.flatMap(\.windows).sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        let failedPIDs = Set(inspections.filter { !$0.issues.isEmpty }.map(\.pid))
+        let issues = inspections.flatMap(\.issues)
+        guard permissionGranted else {
+            return WindowEnumerationReport(windows: windows, coverage: .failed, issues: issues + [
+                WindowInspectionIssue(stage: .accessibilityPermission, pid: nil, windowID: nil, failure: .ax(.apiDisabled))
+            ], failedPIDs: failedPIDs)
+        }
+        let coverage: WindowEnumerationReport.Coverage = issues.isEmpty ? .complete
+            : (inspections.contains(where: \.hasSuccessfulScope) ? .partial : .failed)
+        return WindowEnumerationReport(
+            windows: windows, coverage: coverage, issues: issues, failedPIDs: failedPIDs
+        )
+    }
+
+    static func minimizedObservation(rawValue: CFTypeRef?, error: AXError, pid: pid_t, windowID: String?) -> MinimizedObservation {
+        let failure: WindowInspectionIssue.Failure
+        if error != .success {
+            failure = .ax(error)
+        } else if let rawValue, CFGetTypeID(rawValue) == CFBooleanGetTypeID() {
+            return MinimizedObservation(state: .success(CFEqual(rawValue, kCFBooleanTrue)), quality: .diagnostic)
+        } else {
+            failure = .invalidValue
+        }
+        return MinimizedObservation(state: .failure(WindowInspectionIssue(
+            stage: .readMinimized, pid: pid, windowID: windowID, failure: failure
+        )), quality: .diagnostic)
+    }
+
+    static func roleObservation(rawValue: CFTypeRef?, error: AXError, pid: pid_t) -> Result<String, WindowInspectionIssue> {
+        guard error == .success else {
+            return .failure(WindowInspectionIssue(stage: .readRole, pid: pid, windowID: nil, failure: .ax(error)))
+        }
+        guard let rawValue, CFGetTypeID(rawValue) == CFStringGetTypeID(), let role = rawValue as? String else {
+            return .failure(WindowInspectionIssue(stage: .readRole, pid: pid, windowID: nil, failure: .invalidValue))
+        }
+        return .success(role)
+    }
+
+    static func geometryIssue(rawValue: CFTypeRef?, error: AXError, stage: WindowInspectionIssue.Stage, pid: pid_t) -> WindowInspectionIssue? {
+        if error != .success {
+            return WindowInspectionIssue(stage: stage, pid: pid, windowID: nil, failure: .ax(error))
+        }
+        guard let rawValue, CFGetTypeID(rawValue) == AXValueGetTypeID() else {
+            return WindowInspectionIssue(stage: stage, pid: pid, windowID: nil, failure: .invalidValue)
+        }
+        let value = unsafeBitCast(rawValue, to: AXValue.self)
+        let expectedType: AXValueType = stage == .readPosition ? .cgPoint : .cgSize
+        guard AXValueGetType(value) == expectedType else {
+            return WindowInspectionIssue(stage: stage, pid: pid, windowID: nil, failure: .invalidValue)
+        }
+        return nil
+    }
+
     func listWindows() -> [WindowInfo] {
+        inspectWindows().windows
+    }
+
+    func listWindowsReport() -> WindowEnumerationReport {
+        inspectWindows()
+    }
+
+    private func inspectWindows() -> WindowEnumerationReport {
         let currentPID = ProcessInfo.processInfo.processIdentifier
         let applications = NSWorkspace.shared.runningApplications
             .filter { $0.processIdentifier != currentPID }
             .filter { $0.activationPolicy == .regular || $0.activationPolicy == .accessory }
-
-        return applications.flatMap { application -> [WindowInfo] in
-            guard let appName = application.localizedName else {
-                return []
-            }
-
-            return windows(for: application, appName: appName)
+        let inspections = applications.compactMap { application -> ApplicationInspection? in
+            guard let appName = application.localizedName else { return nil }
+            return inspectWindows(for: application, appName: appName)
         }
-        .sorted { $0.displayName.localizedCaseInsensitiveCompare($1.displayName) == .orderedAscending }
+        return Self.aggregateInspections(inspections, permissionGranted: isTrusted())
     }
 
     func windows(matching window: WindowInfo) -> [WindowInfo] {
@@ -284,11 +350,14 @@ final class AccessibilityWindowService: ContentWindowOperating, @unchecked Senda
     func isMinimized(_ window: WindowInfo) -> Bool {
         var value: CFTypeRef?
         let error = AXUIElementCopyAttributeValue(window.axWindow, kAXMinimizedAttribute as CFString, &value)
-        guard error == .success else {
-            return false
-        }
-
+        guard error == .success else { return false }
         return value as? Bool ?? false
+    }
+
+    func minimizedObservation(of window: WindowInfo) -> MinimizedObservation {
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(window.axWindow, kAXMinimizedAttribute as CFString, &value)
+        return Self.minimizedObservation(rawValue: value, error: error, pid: window.pid, windowID: window.id)
     }
 
     func title(of window: WindowInfo) -> String? {
@@ -512,6 +581,70 @@ final class AccessibilityWindowService: ContentWindowOperating, @unchecked Senda
         return value as? Bool
     }
 
+    private func inspectWindows(for application: NSRunningApplication, appName: String) -> ApplicationInspection {
+        let pid = application.processIdentifier
+        var value: CFTypeRef?
+        let error = AXUIElementCopyAttributeValue(AXUIElementCreateApplication(pid), kAXWindowsAttribute as CFString, &value)
+        guard error == .success, let value, CFGetTypeID(value) == CFArrayGetTypeID(),
+              let elements = value as? [AnyObject] else {
+            return ApplicationInspection(pid: pid, windows: [], issues: [WindowInspectionIssue(
+                stage: .enumerateWindows, pid: pid, windowID: nil,
+                failure: error == .success ? .invalidValue : .ax(error)
+            )], hasSuccessfulScope: false)
+        }
+        var windows: [WindowInfo] = []
+        var issues: [WindowInspectionIssue] = []
+        var successfulScope = elements.isEmpty
+        for element in elements {
+            guard CFGetTypeID(element) == AXUIElementGetTypeID() else {
+                issues.append(WindowInspectionIssue(stage: .enumerateWindows, pid: pid, windowID: nil, failure: .invalidValue))
+                continue
+            }
+            let window = unsafeBitCast(element, to: AXUIElement.self)
+            var role: CFTypeRef?
+            let roleError = AXUIElementCopyAttributeValue(window, kAXRoleAttribute as CFString, &role)
+            let roleString: String
+            switch Self.roleObservation(rawValue: role, error: roleError, pid: pid) {
+            case .success(let value): roleString = value
+            case .failure(let issue):
+                issues.append(issue)
+                continue
+            }
+            guard roleString == kAXWindowRole as String else {
+                successfulScope = true
+                continue
+            }
+            var minimizedValue: CFTypeRef?
+            let minimizedError = AXUIElementCopyAttributeValue(window, kAXMinimizedAttribute as CFString, &minimizedValue)
+            let minimized = Self.minimizedObservation(rawValue: minimizedValue, error: minimizedError, pid: pid, windowID: nil)
+            if case .failure(let issue) = minimized.state { issues.append(issue) }
+            var usable = true
+            // Keep the legacy filter's Bool bridging while reporting strict observation quality.
+            let legacyMinimized = minimizedError == .success && (minimizedValue as? Bool) == true
+            if !legacyMinimized {
+                for (attribute, stage) in [(kAXPositionAttribute, WindowInspectionIssue.Stage.readPosition), (kAXSizeAttribute, .readSize)] {
+                    var raw: CFTypeRef?
+                    let readError = AXUIElementCopyAttributeValue(window, attribute as CFString, &raw)
+                    if readError != .success {
+                        issues.append(WindowInspectionIssue(stage: stage, pid: pid, windowID: nil, failure: .ax(readError)))
+                        usable = false
+                        break
+                    }
+                    // Successful geometry reads remain usable for existing array callers;
+                    // malformed values still make diagnostic coverage incomplete.
+                    if let issue = Self.geometryIssue(rawValue: raw, error: readError, stage: stage, pid: pid) {
+                        issues.append(issue)
+                    }
+                }
+            }
+            if usable, let info = windowInfo(for: window, application: application, appName: appName, knownUsable: true) {
+                windows.append(info)
+                successfulScope = true
+            }
+        }
+        return ApplicationInspection(pid: pid, windows: windows, issues: issues, hasSuccessfulScope: successfulScope)
+    }
+
     private func windows(for application: NSRunningApplication, appName: String) -> [WindowInfo] {
         let appElement = AXUIElementCreateApplication(application.processIdentifier)
         var value: CFTypeRef?
@@ -528,9 +661,10 @@ final class AccessibilityWindowService: ContentWindowOperating, @unchecked Senda
     private func windowInfo(
         for axWindow: AXUIElement,
         application: NSRunningApplication,
-        appName: String
+        appName: String,
+        knownUsable: Bool = false
     ) -> WindowInfo? {
-        guard isUsableWindow(axWindow) else {
+        guard knownUsable || isUsableWindow(axWindow) else {
             return nil
         }
 
