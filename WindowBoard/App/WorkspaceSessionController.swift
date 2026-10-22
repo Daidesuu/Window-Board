@@ -272,6 +272,7 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     @discardableResult
+    @MainActor
     func switchWorkspaceFromLauncher(
         _ target: BoardSwitchTarget,
         followMode: FollowMode,
@@ -304,6 +305,7 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     @discardableResult
+    @MainActor
     func restoreLayoutFromLauncher(
         followMode: FollowMode,
         candidateWindows: [WindowInfo]? = nil
@@ -396,6 +398,7 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     @discardableResult
+    @MainActor
     func requestMemberSelection(
         memberBoardID: SavedWorkspace.ID,
         groupPrimaryID: SavedWorkspace.ID
@@ -676,6 +679,7 @@ final class WorkspaceSessionController: ObservableObject {
         return workspace
     }
 
+    @MainActor
     func switchWorkspace(
         id workspaceID: SavedWorkspace.ID,
         selectedBoardID: SavedWorkspace.ID? = nil,
@@ -1002,6 +1006,7 @@ final class WorkspaceSessionController: ObservableObject {
         }
     }
 
+    @MainActor
     func minimizeUnattachedWindows(
         knownWindows: [WindowInfo],
         recentWindows: [WindowInfo] = [],
@@ -1080,6 +1085,7 @@ final class WorkspaceSessionController: ObservableObject {
         }
     }
 
+    @MainActor
     func restoreMinimizedWindows(mergeWindows: @escaping @MainActor ([WindowInfo]) -> Void = { _ in }) {
         guard !isRestoringMinimized, !minimizedWindows.isEmpty else {
             return
@@ -1399,6 +1405,7 @@ final class WorkspaceSessionController: ObservableObject {
         return .available
     }
 
+    @MainActor
     func rememberMinimizedWindow(_ window: WindowInfo) {
         guard !minimizedWindows.contains(where: { $0.id == window.id }) else {
             return
@@ -1420,6 +1427,7 @@ final class WorkspaceSessionController: ObservableObject {
         loadedWindowIDsByWorkspaceID[workspaceID] = loadedWindowIDs
     }
 
+    @MainActor
     private func applyDeferredRecovery(
         _ recoveredAttachments: [AttachedWindow.ID: AttachedWindow],
         failedAttachments: [AttachedWindow],
@@ -1629,6 +1637,7 @@ final class WorkspaceSessionController: ObservableObject {
         }
     }
 
+    @MainActor
     private func beginMinimizing(
         _ windowsToMinimize: [WindowInfo],
         attachedSnapshots: [SessionAttachedWindowSnapshot],

@@ -128,6 +128,7 @@ final class WindowMatchingTests: XCTestCase {
         )
     }
 
+    @MainActor
     func testStatusItemSwitchPersistsPreviousPrimaryLayoutBeforeReplacement() async {
         let firstReference = savedReference(title: "First", origin: CGPoint(x: 10, y: 20))
         let firstWorkspace = makeWorkspace(name: "First Board", windows: [firstReference])
@@ -385,6 +386,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(projection.standaloneBoards.map(\.id), [child.id])
     }
 
+    @MainActor
     func testEditingIncludedBoardDoesNotChangeCurrentBoardSelection() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -552,6 +554,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(session.activeWorkspaceID, defaultBoard.id)
     }
 
+    @MainActor
     func testNewBoardLoadsIncludedCompositionThroughWorkspaceSwitch() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -598,6 +601,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertTrue(persistedNewBoard.windows.isEmpty)
     }
 
+    @MainActor
     func testWorkspaceSwitchIncludesComposedBoardWithoutCopyingItsWindowsIntoPrimary() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -643,6 +647,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(persistedDefault.windows.map(\.title), ["Included Window"])
     }
 
+    @MainActor
     func testSelectingMemberBoardKeepsCurrentBoardPrimaryLoaded() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -688,6 +693,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(session.selectedWorkspaceID, board1.id)
     }
 
+    @MainActor
     func testSelectingMemberDuringLoadIsNotOverwrittenByCompletion() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -729,6 +735,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(session.selectedWorkspaceID, board2.id)
     }
 
+    @MainActor
     func testQueuedStatusItemSwitchKeepsItsSavedOriginSemantics() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -772,6 +779,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(service.positions[targetWindow.id], CGPoint(x: 220, y: 260))
     }
 
+    @MainActor
     func testLauncherBoardTargetsPreservePrimaryAndSelectedMemberIDs() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -808,6 +816,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(session.selectedWorkspaceID, included.id)
     }
 
+    @MainActor
     func testLauncherSwitchUsesSavedAbsoluteOriginWithFollowEnabled() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -840,6 +849,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(service.positions[targetWindow.id], CGPoint(x: 220, y: 260))
     }
 
+    @MainActor
     func testLauncherSwitchUsesCompleteCandidateCacheWithoutListingWindows() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -879,6 +889,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(service.positions[cachedWindow.id], CGPoint(x: 240, y: 280))
     }
 
+    @MainActor
     func testLauncherCachedSwitchPublishesPlaceholderBeforeDeferredLayoutApplication() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -923,6 +934,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(service.positions[cachedWindow.id], savedOrigin)
     }
 
+    @MainActor
     func testLauncherRestoreLayoutDoesNotOverwriteSavedLayoutWithCurrentPosition() async {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -1103,6 +1115,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(resolved?.id, matchingWindow.id)
     }
 
+    @MainActor
     func testSwitchDoesNotStartAutomaticRecoveryWhenRestoreMissingIsDisabled() async {
         let reference = savedReference(title: "Missing")
         let workspace = makeWorkspace(name: "No Recovery", windows: [reference])
@@ -1125,6 +1138,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertTrue(session.isUnavailable(reference.id))
     }
 
+    @MainActor
     func testSwitchDefersAutomaticRecoveryUntilAfterInitialResolution() async {
         let reference = savedReference(title: "Recovered")
         let workspace = makeWorkspace(name: "Deferred Recovery", windows: [reference])
@@ -1158,6 +1172,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertFalse(session.isUnavailable(reference.id))
     }
 
+    @MainActor
     func testSwitchWorkspaceUsesSavedOriginForStatusItemWithCachedWindow() async {
         let reference = savedReference(title: "Saved", origin: CGPoint(x: 480, y: 320))
         let workspace = makeWorkspace(name: "Status", windows: [reference])
@@ -1182,6 +1197,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertFalse(session.isUnavailable(reference.id))
     }
 
+    @MainActor
     func testLayoutWriteFailureDoesNotMarkLiveWindowUnavailable() async {
         let reference = savedReference(title: "Live", origin: CGPoint(x: 320, y: 220))
         let workspace = makeWorkspace(name: "Live", windows: [reference])
@@ -1205,6 +1221,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertFalse(session.isUnavailable(reference.id))
     }
 
+    @MainActor
     func testSwitchWorkspaceKeepsUnresolvedReferenceAttachedAsUnavailable() async {
         let reference = savedReference(title: "Missing", origin: CGPoint(x: 240, y: 180))
         let workspace = makeWorkspace(name: "Missing", windows: [reference])
@@ -1230,6 +1247,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertTrue(session.isUnavailable(reference.id))
     }
 
+    @MainActor
     func testMinimizeUnattachedProtectsOnlyAttachedWindows() async {
         let attached = window(id: "attached", title: "Attached", bundleIdentifier: "com.example.attached")
         let permanent = window(id: "permanent", title: "Permanent", bundleIdentifier: "com.example.permanent")
@@ -1258,6 +1276,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(Set(session.minimizedWindows.map(\.id)), [permanent.id, other.id])
     }
 
+    @MainActor
     func testRestoreKeepsOnlyWindowsThatCouldNotBeRestored() async {
         let restored = window(id: "restored", title: "Restored")
         let failed = window(id: "failed", title: "Failed")
@@ -1276,6 +1295,7 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(session.minimizedWindows.map(\.id), [failed.id])
     }
 
+    @MainActor
     func testNewerSwitchRemainsActiveWhenPreviousResolutionFinishesLater() async {
         let firstReference = savedReference(title: "First")
         let secondReference = savedReference(title: "Second")

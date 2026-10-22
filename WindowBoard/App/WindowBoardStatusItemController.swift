@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 
+@MainActor
 final class WindowBoardStatusItemController: NSObject {
     private let appState: WindowBoardAppState
     private let showQuickLauncherAction: () -> Void
