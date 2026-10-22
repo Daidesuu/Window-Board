@@ -483,6 +483,209 @@ final class WindowMinimizationExecutorTests: XCTestCase {
         }
     }
 
+    @MainActor
+    func testReplacementReclassifiesPreviouslyRegisteredCandidateWithoutRelisting() async {
+        let service = ControlledMinimizationWindowService()
+        let old = window("old"), replacement = window("replacement"), trigger = window("trigger")
+        let attachmentID = UUID()
+        var selected = old
+        func plan() -> ProtectionSnapshot {
+            ProtectionSnapshot(records: [ProtectionRecord(attachmentID: attachmentID, window: selected, savedReference: nil, isAvailable: true, isReconnecting: false, lastWindowOrigin: .zero)])
+        }
+        service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: replacement.id)
+        let started = expectation(description: "old registered candidate already skipped")
+        let gate = service.holdNext(.minimize, onStart: { started.fulfill() })
+        var receipts: [StepReceipt] = []
+        let task = Task {
+            await UnattachedWindowMinimizationExecutor().run(
+                request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([old, trigger, replacement])), service: service,
+                authorize: { proposal in
+                    let protection = plan()
+                    let w = proposal.kind == .restoreAttachment ? selected : proposal.candidateWindow
+                    return .perform(WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID, stepID: proposal.stepID, kind: proposal.kind, identity: LiveWindowIdentity(window: w), window: w, attachmentID: proposal.attachmentID, expectedLedgerVersion: nil, protectionFingerprint: protection.fingerprint, classification: UnattachedWindowMinimizationPolicy.classify(w, protection: protection)))
+                }, restorePlan: { plan() }, record: { receipts.append($0) })
+        }
+        await fulfillment(of: [started], timeout: 2)
+        selected = replacement
+        gate.release()
+        let result = await task.value
+        XCTAssertEqual(result.summary.minimizedCount, 2)
+        XCTAssertEqual(result.summary.restoredCount, 1)
+        XCTAssertEqual(result.summary.registeredCount, 1)
+        XCTAssertEqual(result.summary.candidateCount, 3)
+        XCTAssertEqual(result.summary.noOpCount, 0)
+        XCTAssertEqual(service.snapshot.count(for: .list), 0)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 2)
+        XCTAssertEqual(service.snapshot.count(for: .restore), 1)
+        XCTAssertTrue(receipts.contains { $0.identity == LiveWindowIdentity(window: old) && $0.desiredMinimized })
+        XCTAssertFalse(receipts.contains { $0.identity == LiveWindowIdentity(window: replacement) && $0.desiredMinimized })
+        XCTAssertEqual(Set(receipts.map(\.stepID)).count, receipts.count)
+    }
+
+    @MainActor
+    func testRestoreReplacementDuringReadDiscardsOldObservationAndUsesLatestHandle() async {
+        for sameIdentity in [false, true] {
+            let service = ControlledMinimizationWindowService()
+            let old = window("registered")
+            let replacement = window(sameIdentity ? "registered" : "replacement")
+            let attachmentID = UUID()
+            var selected = old
+            func plan() -> ProtectionSnapshot {
+                ProtectionSnapshot(records: [ProtectionRecord(attachmentID: attachmentID, window: selected, savedReference: nil, isAvailable: true, isReconnecting: false, lastWindowOrigin: .zero)])
+            }
+            service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: old.id)
+            service.setObservation(MinimizedObservation(state: .success(false), quality: .diagnostic), for: replacement.id)
+            if sameIdentity { service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: old.id) }
+            let sampled = expectation(description: "restore read sampled")
+            let gate = service.holdNext(.readResult, onStart: { sampled.fulfill() })
+            var readProposals: [WindowInfo] = []
+            let task = Task {
+                await UnattachedWindowMinimizationExecutor().run(
+                    request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([])), service: service,
+                    authorize: { proposal in
+                        readProposals.append(proposal.candidateWindow)
+                        return .perform(WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID, stepID: proposal.stepID, kind: proposal.kind, identity: LiveWindowIdentity(window: selected), window: selected, attachmentID: proposal.attachmentID, expectedLedgerVersion: nil, protectionFingerprint: plan().fingerprint, classification: .registered))
+                    }, restorePlan: { plan() }, record: { receipt in
+                        XCTAssertTrue(receipt.window.axWindow === replacement.axWindow)
+                    })
+            }
+            await fulfillment(of: [sampled], timeout: 2)
+            selected = replacement
+            service.setObservation(MinimizedObservation(state: .success(false), quality: .diagnostic), for: replacement.id)
+            gate.release()
+            let result = await task.value
+            XCTAssertEqual(service.snapshot.count(for: .read), 2)
+            XCTAssertEqual(service.snapshot.count(for: .restore), 0)
+            XCTAssertEqual(result.summary.noOpCount, 1)
+            XCTAssertTrue(readProposals.contains { $0.axWindow === replacement.axWindow })
+        }
+    }
+
+    @MainActor
+    func testRegistrationRoundTripReobservesPreviouslyMinimizedWindow() async {
+        let service = ControlledMinimizationWindowService()
+        let old = window("old"), replacement = window("replacement")
+        let attachmentID = UUID()
+        var selected = replacement
+        var changes = 0
+        func plan() -> ProtectionSnapshot {
+            ProtectionSnapshot(records: [ProtectionRecord(attachmentID: attachmentID, window: selected, savedReference: nil, isAvailable: true, isReconnecting: false, lastWindowOrigin: .zero)])
+        }
+        service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: replacement.id)
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([old, replacement])), service: service,
+            authorize: { .perform(self.permit($0)) }, restorePlan: { plan() }, record: { receipt in
+                guard case .changed = receipt.outcome else { return }
+                changes += 1
+                if changes == 1 { selected = old }
+                if changes == 2 { selected = replacement }
+            })
+        XCTAssertEqual(result.summary.minimizedCount, 2)
+        XCTAssertEqual(result.summary.restoredCount, 2)
+        XCTAssertEqual(result.summary.noOpCount, 1)
+        XCTAssertEqual(result.summary.registeredCount, 1)
+        XCTAssertEqual(service.snapshot.count(for: .list), 0)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 2)
+        XCTAssertEqual(service.snapshot.count(for: .restore), 2)
+    }
+
+    @MainActor
+    func testFinalFingerprintCheckReclassifiesAndUnavailableReconnectingRecordsStayUntouched() async {
+        let service = ControlledMinimizationWindowService()
+        let old = window("old"), replacement = window("replacement"), unavailable = window("unavailable"), reconnecting = window("reconnecting")
+        let attachmentID = UUID(), unavailableID = UUID(), reconnectingID = UUID()
+        var calls = 0
+        func plan() -> ProtectionSnapshot {
+            calls += 1
+            return ProtectionSnapshot(records: [
+                ProtectionRecord(attachmentID: attachmentID, window: calls == 1 ? old : replacement, savedReference: nil, isAvailable: calls != 1, isReconnecting: false, lastWindowOrigin: .zero),
+                ProtectionRecord(attachmentID: unavailableID, window: unavailable, savedReference: nil, isAvailable: false, isReconnecting: false, lastWindowOrigin: .zero),
+                ProtectionRecord(attachmentID: reconnectingID, window: reconnecting, savedReference: nil, isAvailable: true, isReconnecting: true, lastWindowOrigin: .zero)
+            ])
+        }
+        service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: replacement.id)
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([old, unavailable, reconnecting])), service: service,
+            authorize: { .perform(self.permit($0)) }, restorePlan: { plan() }, record: { _ in })
+        XCTAssertEqual(result.summary.registeredCount, 2)
+        XCTAssertEqual(result.summary.minimizedCount, 1)
+        XCTAssertEqual(result.summary.restoredCount, 1)
+        XCTAssertEqual(service.snapshot.count(for: .read), 2)
+        XCTAssertEqual(service.snapshot.count(for: .list), 0)
+    }
+
+    @MainActor
+    func testUnrelatedFingerprintChangeDoesNotRetryReadFailureOrCompletedTarget() async {
+        let service = ControlledMinimizationWindowService()
+        let failed = window("failed"), trigger = window("trigger"), unavailable = window("unavailable")
+        let attachmentID = UUID()
+        var changed = false
+        let issue = WindowInspectionIssue(stage: .readMinimized, pid: failed.pid, windowID: failed.id, failure: .invalidValue)
+        service.setObservation(MinimizedObservation(state: .failure(issue), quality: .diagnostic), for: failed.id)
+        func plan() -> ProtectionSnapshot {
+            ProtectionSnapshot(records: changed ? [ProtectionRecord(attachmentID: attachmentID, window: unavailable, savedReference: nil, isAvailable: false, isReconnecting: false, lastWindowOrigin: .zero)] : [])
+        }
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([failed, trigger])), service: service,
+            authorize: { .perform(self.permit($0)) }, restorePlan: { plan() }, record: { receipt in
+                if receipt.window.id == trigger.id { changed = true }
+            })
+        XCTAssertEqual(result.summary.readFailureCount, 1)
+        XCTAssertEqual(result.summary.minimizedCount, 1)
+        XCTAssertEqual(service.snapshot.count(for: .read), 2)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 1)
+        XCTAssertEqual(service.snapshot.count(for: .list), 0)
+    }
+
+    @MainActor
+    func testFinalWritePermitHasNoInterveningRestorePlanAwait() async {
+        let service = ControlledMinimizationWindowService()
+        let target = window("target"), registered = window("registered")
+        let protection = ProtectionSnapshot(records: [ProtectionRecord(attachmentID: UUID(), window: registered, savedReference: nil, isAvailable: true, isReconnecting: false, lastWindowOrigin: .zero)])
+        service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: registered.id)
+        var planReads = 0
+        var authorizations: [UInt64: Int] = [:]
+        var finalPermitPlanReads: [UInt64: Int] = [:]
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([target])), service: service,
+            authorize: { proposal in
+                authorizations[proposal.stepID, default: 0] += 1
+                if authorizations[proposal.stepID] == 2 { finalPermitPlanReads[proposal.stepID] = planReads }
+                return .perform(self.permit(proposal))
+            }, restorePlan: { planReads += 1; return protection }, record: { receipt in
+                guard case .changed = receipt.outcome else { return XCTFail("expected successful writes") }
+                XCTAssertEqual(finalPermitPlanReads[receipt.stepID], planReads)
+            })
+        XCTAssertEqual(result.summary.minimizedCount, 1)
+        XCTAssertEqual(result.summary.restoredCount, 1)
+    }
+
+    @MainActor
+    func testRestoreRedirectAtWriteAuthorizationRebuildsProposalAndRereadsLatestRecord() async {
+        let service = ControlledMinimizationWindowService()
+        let old = window("old"), replacement = window("replacement")
+        let attachmentID = UUID()
+        var selected = old
+        var authorizations = 0
+        func plan() -> ProtectionSnapshot {
+            ProtectionSnapshot(records: [ProtectionRecord(attachmentID: attachmentID, window: selected, savedReference: nil, isAvailable: true, isReconnecting: false, lastWindowOrigin: .zero)])
+        }
+        service.setObservation(MinimizedObservation(state: .success(true), quality: .diagnostic), for: old.id)
+        let result = await UnattachedWindowMinimizationExecutor().run(
+            request: MinimizationExecutionRequest(intentID: intent, operationID: UUID(), kind: .manual, candidateSource: .known([])), service: service,
+            authorize: { proposal in
+                authorizations += 1
+                if authorizations == 2 { selected = replacement }
+                return .perform(WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID, stepID: proposal.stepID, kind: proposal.kind, identity: LiveWindowIdentity(window: selected), window: selected, attachmentID: attachmentID, expectedLedgerVersion: nil, protectionFingerprint: plan().fingerprint, classification: .registered))
+            }, restorePlan: { plan() }, record: { receipt in
+                XCTAssertEqual(receipt.window.id, replacement.id)
+                XCTAssertTrue(receipt.window.axWindow === replacement.axWindow)
+            })
+        XCTAssertEqual(service.snapshot.count(for: .read), 2)
+        XCTAssertEqual(service.snapshot.count(for: .restore), 0)
+        XCTAssertEqual(result.summary.noOpCount, 1)
+    }
+
     private func permit(_ proposal: StepProposal) -> WindowOperationPermit {
         WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID, stepID: proposal.stepID, kind: proposal.kind, identity: proposal.candidateIdentity, window: proposal.candidateWindow, attachmentID: proposal.attachmentID, expectedLedgerVersion: proposal.expectedLedgerVersion, protectionFingerprint: ProtectionSnapshot(records: []).fingerprint, classification: .target)
     }
