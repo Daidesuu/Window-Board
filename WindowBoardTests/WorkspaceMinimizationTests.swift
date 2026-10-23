@@ -1166,6 +1166,89 @@ final class WorkspaceMinimizationTests: XCTestCase {
     }
 
     @MainActor
+    func testStaleManualPhysicalSuccessRemainsRestorableThroughPublicOperation() async throws {
+        let defaults = UserDefaults(suiteName: "StalePublicRestore.\(UUID())")!
+        let service = ControlledMinimizationWindowService()
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        let window = ledgerWindow()
+        let later = ledgerWindow(pid: 73, number: 12, id: "later")
+        let writing = expectation(description: "old physical write entered")
+        let gate = service.holdNext(.minimize) { writing.fulfill() }
+        defer { gate.release() }
+        var obsoleteCallbacks = 0
+        session.minimizeUnattachedWindows(knownWindows: [window, later],
+            removeWindows: { _ in obsoleteCallbacks += 1 })
+        await fulfillment(of: [writing], timeout: 3)
+        _ = session.acceptSwitchIntent(target: session.workspaceStore.defaultWorkspace!.id, automaticEnabled: false)
+        session.statusMessage = "Latest Board displayed."
+        gate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(obsoleteCallbacks, 0)
+        XCTAssertEqual(session.statusMessage, "Latest Board displayed.")
+        XCTAssertEqual(session.minimizedWindows.map(\.id), [window.id])
+        XCTAssertEqual(service.snapshot.events.filter { $0.operation == .minimize && $0.phase == .started }.map(\.windowID), [window.id])
+        let restored = expectation(description: "stale physical success explicitly restored")
+        session.restoreMinimizedWindows { merged in
+            XCTAssertEqual(merged.map(\.id), [window.id])
+            restored.fulfill()
+        }
+        await fulfillment(of: [restored], timeout: 3)
+        XCTAssertTrue(session.minimizedWindows.isEmpty)
+        XCTAssertTrue(session.minimizedLedger.isEmpty)
+        XCTAssertEqual(service.snapshot.events.filter { $0.operation == .restore && $0.phase == .started }.map(\.windowID), [window.id])
+        XCTAssertFalse(service.snapshot.events.contains { $0.onMainThread })
+    }
+
+    @MainActor
+    func testKnownManualNoopAndFailuresMatchPhysicalEventsAndCanRetry() async throws {
+        let defaults = UserDefaults(suiteName: "KnownPartialFailure.\(UUID())")!
+        let service = ControlledMinimizationWindowService()
+        var diagnostics: [MinimizationDiagnosticEvent] = []
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
+        let noop = ledgerWindow(id: "already-minimized")
+        let unknown = ledgerWindow(pid: 73, number: 12, id: "unknown")
+        let failed = ledgerWindow(pid: 74, number: 13, id: "failed")
+        let success = ledgerWindow(pid: 75, number: 14, id: "success-after-failure")
+        let issue = WindowInspectionIssue(stage: .readMinimized, pid: unknown.pid,
+            windowID: unknown.id, failure: .invalidValue)
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: noop.id)
+        service.setObservation(.init(state: .failure(issue), quality: .diagnostic), for: unknown.id)
+        service.setWriteFailure(.init(stage: .writeMinimized, pid: failed.pid,
+            windowID: failed.id, failure: .ax(.cannotComplete)), minimized: true, for: failed.id)
+        session.minimizeUnattachedWindows(knownWindows: [noop, unknown, failed, success])
+        await waitForAutomaticIdle(session)
+        let summary = try XCTUnwrap(diagnostics.last { $0.phase == .finished })
+        XCTAssertEqual(summary.noOpCount, 1)
+        XCTAssertEqual(summary.minimizedCount, 1)
+        XCTAssertEqual(summary.readFailureCount, 1)
+        XCTAssertEqual(summary.writeFailureCount, 1)
+        XCTAssertEqual(summary.issues.count, 2)
+        XCTAssertEqual(service.snapshot.count(for: .list), 0)
+        XCTAssertEqual(service.snapshot.events.filter { $0.operation == .minimize && $0.phase == .started }.map(\.windowID), [failed.id, success.id])
+        XCTAssertEqual(session.minimizedWindows.map(\.id), [success.id])
+        service.setObservation(.init(state: .success(false), quality: .diagnostic), for: unknown.id)
+        service.setWriteFailure(nil, minimized: true, for: failed.id)
+        session.minimizeUnattachedWindows(knownWindows: [noop, unknown, failed, success])
+        await waitForAutomaticIdle(session)
+        let retry = try XCTUnwrap(diagnostics.last { $0.phase == .finished })
+        XCTAssertEqual(retry.noOpCount, 2)
+        XCTAssertEqual(retry.minimizedCount, 2)
+        XCTAssertEqual(retry.readFailureCount + retry.writeFailureCount, 0)
+        XCTAssertEqual(session.minimizedWindows.map(\.id), [success.id, unknown.id, failed.id])
+        let restored = expectation(description: "only app-minimized targets restored")
+        session.restoreMinimizedWindows { merged in
+            XCTAssertEqual(merged.map(\.id), [success.id, unknown.id, failed.id])
+            restored.fulfill()
+        }
+        await fulfillment(of: [restored], timeout: 3)
+        XCTAssertEqual(service.snapshot.events.filter { $0.operation == .restore && $0.phase == .started }.map(\.windowID), [success.id, unknown.id, failed.id])
+        XCTAssertTrue(session.minimizedWindows.isEmpty)
+        XCTAssertFalse(service.snapshot.events.contains { $0.onMainThread })
+    }
+
+    @MainActor
     func testStalePhysicalSuccessIsRecordedWithoutPublishingOldUIAndDuplicateIsIdempotent() throws {
         let session = makeSession()
         let operation = try XCTUnwrap(session.startManualMinimizationOperation(candidateSource: .known([])))
@@ -1339,6 +1422,11 @@ final class WorkspaceMinimizationTests: XCTestCase {
         service.setObservation(.init(state: .success(true), quality: .diagnostic), for: failed.id)
         service.setWriteFailure(issue, minimized: false, for: failed.id)
         for value in [unknown, failed, normal, last] { session.rememberMinimizedWindow(value) }
+        session.attachedWindows = [unknown, failed].map {
+            AttachedWindow(window: $0, lastBoardOrigin: .zero, lastWindowOrigin: .zero,
+                lastAppliedOrigin: nil, pendingReleaseOrigin: nil)
+        }
+        let attachmentIDs = session.attachedWindows.map(\.id)
         // Reads: unknown, failed before write, failed after write, normal, last.
         for _ in 0..<4 { service.holdNext(.read).release() }
         let nextRead = expectation(description: "next read begins after normal receipt")
@@ -1355,6 +1443,9 @@ final class WorkspaceMinimizationTests: XCTestCase {
         await fulfillment(of: [done], timeout: 3)
         XCTAssertEqual(session.minimizedWindows.map(\.id), [unknown.id, failed.id])
         XCTAssertEqual(service.snapshot.count(for: .restore), 1)
+        XCTAssertEqual(session.statusMessage, "Restored 2 window(s). 2 window operation(s) reported an error.")
+        XCTAssertEqual(session.attachedWindows.map(\.id), attachmentIDs)
+        XCTAssertTrue(session.unavailableAttachedWindowIDs.isEmpty)
         service.setObservation(.init(state: .success(true), quality: .diagnostic), for: unknown.id)
         service.setWriteFailure(nil, minimized: false, for: failed.id)
         let retried = expectation(description: "failed targets can retry")
