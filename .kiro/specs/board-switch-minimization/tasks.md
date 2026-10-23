@@ -100,7 +100,7 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
   - _Depends: 2.2_
   - _Requirements: 3.3, 3.6, 4.1, 4.2, 4.3, 7.1_
 
-- [ ] 4. Sessionの要求・実行枠・復元台帳を整える
+- [x] 4. Sessionの要求・実行枠・復元台帳を整える
 - [x] 4.1 統合：新状態へ触れる既存入口のMainActor境界を揃える
   - 設計で指定したSessionの既存入口と状態更新にメソッド単位の隔離を適用し、クラス全体を移行しない。
   - Status ItemのUIライフサイクルと操作入口を隔離し、既存の画面・Launcherの呼出が同期的な隔離違反を起こさないようにする。
@@ -128,7 +128,7 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
   - _Boundary: WorkspaceSessionController_
   - _Requirements: 3.4, 5.4, 5.6, 5.8, 6.2_
 
-- [ ] 4.4 明示復元の結果で新しい記録を消さない
+- [x] 4.4 明示復元の結果で新しい記録を消さない
   - 明示復元の開始時に対象記録の版を取り込み、成功または非最小化の正常確認時だけ同じ版を削除する。
   - 状態不明・依然最小化されている復元失敗は記録を保持し、各窓の結果を反映してから次へ進む。一括の失敗配列で全置換しない。
   - 自動の登録復元も同じ台帳差分契約を使い、明示復元に新しい優先順位を導入しない。
@@ -269,3 +269,4 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
 - 4.1: 初期ユーザー追加テストtestSamePrimaryReloadIgnoresStaleDeferredApplicationFailureのMainActor注釈は、その未コミットテストと共に作業ツリーへ残した。既存部分だけ選択保存。
 - 4.2: finishOperationは枠を次要求へ移してその要求を返す。5.1のworker接続では返却要求を必ず起動する。same-target待機要求は最新contextでprivate経路へ再投入し旧batch/callbackを抑止する。
 - 4.3: step単位の重複追跡は終了時解放し、完了operation UUIDで遅延duplicateを拒否する。UUID保持量の評価は統合レビューで確認する。
+- 4.4: normal確認済みの窓はalreadyDesiredや書込失敗後normalでも候補復帰callbackへ返す。書込失敗診断とnormal状態への収束を別集計・表示とする。

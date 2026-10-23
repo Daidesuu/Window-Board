@@ -300,6 +300,21 @@ final class WorkspaceSessionController: ObservableObject {
         if receipt.desiredMinimized, case .changed = receipt.outcome {
             upsertMinimizedWindow(receipt.window)
         }
+        if !receipt.desiredMinimized,
+           let version = receipt.expectedLedgerVersion,
+           minimizedLedger[receipt.identity]?.entryVersion == version {
+            let normal: Bool
+            switch receipt.outcome {
+            case .changed, .alreadyDesired: normal = true
+            case .writeFailed(_, let observation):
+                if case .success(false)? = observation?.state { normal = true } else { normal = false }
+            default: normal = false
+            }
+            if normal {
+                minimizedLedger.removeValue(forKey: receipt.identity)
+                refreshMinimizedWindowsProjection()
+            }
+        }
         return canApplyMinimizationReceipt(receipt, to: receipt.window)
     }
 
@@ -1275,43 +1290,68 @@ final class WorkspaceSessionController: ObservableObject {
             return
         }
 
-        let windowsToRestore = minimizedWindows
+        let targets = minimizedLedger.values.sorted { $0.insertionOrder < $1.insertionOrder }.map {
+            LedgerRestoreTarget(identity: $0.identity, window: $0.window, expectedEntryVersion: $0.entryVersion)
+        }
+        let operationID = UUID()
+        let intentID = latestMinimizationIntent?.id ?? MinimizationIntentID(value: 0)
         isRestoringMinimized = true
-        statusMessage = "Restoring \(windowsToRestore.count) minimized window(s)..."
+        statusMessage = "Restoring \(targets.count) minimized window(s)..."
 
         Task.detached(priority: .userInitiated) {
             let service = self.windowServiceFactory()
             var restoredWindows: [WindowInfo] = []
-            var failedWindows: [WindowInfo] = []
-
-            for window in windowsToRestore {
-                do {
-                    try service.setMinimized(false, for: window)
-                    restoredWindows.append(window)
-                } catch {
-                    if service.isMinimized(window) {
-                        failedWindows.append(window)
+            var failureCount = 0
+            for (index, target) in targets.enumerated() {
+                let outcome: StepOutcome
+                switch service.minimizedObservation(of: target.window).state {
+                case .failure(let issue): outcome = .readFailed(issue)
+                case .success(false): outcome = .alreadyDesired
+                case .success(true):
+                    do {
+                        try service.setMinimized(false, for: target.window)
+                        outcome = .changed
+                    } catch {
+                        let issue: WindowInspectionIssue
+                        if let inspection = error as? WindowInspectionIssue {
+                            issue = inspection
+                        } else if case let WindowBoardAXError.operationFailed(_, axError) = error {
+                            issue = WindowInspectionIssue(stage: .restoreMinimized, pid: target.window.pid,
+                                windowID: target.window.id, failure: .ax(axError))
+                        } else {
+                            issue = WindowInspectionIssue(stage: .restoreMinimized, pid: target.window.pid,
+                                windowID: target.window.id, failure: .invalidValue)
+                        }
+                        outcome = .writeFailed(issue, observedAfter: service.minimizedObservation(of: target.window))
                     }
                 }
-            }
-
-            let resolvedRestoredWindows = restoredWindows
-            let resolvedFailedWindows = failedWindows
-            await MainActor.run {
-                self.isRestoringMinimized = false
-                // Transitional legacy restore bridge: mutate only the entries this batch
-                // resolved, preserving unrelated additions. Version checks follow in 4.4.
-                let failedIdentities = Set(resolvedFailedWindows.map { LiveWindowIdentity(window: $0) })
-                for window in windowsToRestore where !failedIdentities.contains(LiveWindowIdentity(window: window)) {
-                    self.minimizedLedger.removeValue(forKey: LiveWindowIdentity(window: window))
+                let receipt = StepReceipt(operationID: operationID, intentID: intentID, stepID: UInt64(index),
+                    identity: target.identity, window: target.window, desiredMinimized: false,
+                    outcome: outcome, expectedLedgerVersion: target.expectedEntryVersion)
+                await MainActor.run { self.commitReceipt(receipt) }
+                switch outcome {
+                case .changed: restoredWindows.append(target.window)
+                case .alreadyDesired:
+                    restoredWindows.append(target.window)
+                case .readFailed: failureCount += 1
+                case .writeFailed(_, let observation):
+                    failureCount += 1
+                    if case .success(false)? = observation?.state {
+                        restoredWindows.append(target.window)
+                    }
+                default: break
                 }
-                self.refreshMinimizedWindowsProjection()
+            }
+            let resolvedRestoredWindows = restoredWindows
+            let resolvedFailureCount = failureCount
+            await MainActor.run {
+                self.recordedMinimizationReceipts = self.recordedMinimizationReceipts.filter { $0.operationID != operationID }
+                self.isRestoringMinimized = false
                 mergeWindows(resolvedRestoredWindows)
-
-                if resolvedFailedWindows.isEmpty {
+                if resolvedFailureCount == 0 {
                     self.statusMessage = "Restored \(resolvedRestoredWindows.count) minimized window(s)."
                 } else {
-                    self.statusMessage = "Restored \(resolvedRestoredWindows.count) window(s). \(resolvedFailedWindows.count) could not be restored."
+                    self.statusMessage = "Restored \(resolvedRestoredWindows.count) window(s). \(resolvedFailureCount) window operation(s) reported an error."
                 }
             }
         }

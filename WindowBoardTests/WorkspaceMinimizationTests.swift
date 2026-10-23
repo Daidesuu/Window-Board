@@ -178,6 +178,146 @@ final class WorkspaceMinimizationTests: XCTestCase {
         XCTAssertTrue(session.minimizedWindows.isEmpty)
     }
 
+    @MainActor
+    func testAutomaticRestoreDeletesOnlyMatchingVersionEvenAfterIntentChanges() throws {
+        let session = makeSession()
+        let window = ledgerWindow()
+        session.rememberMinimizedWindow(window)
+        let version = try XCTUnwrap(session.minimizedLedger[LiveWindowIdentity(window: window)]).entryVersion
+        let operation = try XCTUnwrap(session.startManualMinimizationOperation(candidateSource: .known([])))
+        _ = session.acceptSwitchIntent(target: session.workspaceStore.defaultWorkspace!.id, automaticEnabled: false)
+        let receipt = StepReceipt(operationID: operation.operationID, intentID: operation.intentID, stepID: 1,
+            identity: LiveWindowIdentity(window: window), window: window, desiredMinimized: false,
+            outcome: .alreadyDesired, expectedLedgerVersion: version)
+        XCTAssertFalse(session.commitReceipt(receipt))
+        XCTAssertTrue(session.minimizedWindows.isEmpty)
+        session.rememberMinimizedWindow(window)
+        XCTAssertFalse(session.commitReceipt(.init(operationID: operation.operationID, intentID: operation.intentID,
+            stepID: 2, identity: receipt.identity, window: window, desiredMinimized: false,
+            outcome: .changed, expectedLedgerVersion: version)))
+        XCTAssertEqual(session.minimizedWindows.count, 1)
+    }
+
+    @MainActor
+    func testAutomaticRestoreOutcomesUseSameVersionedLedgerContract() throws {
+        let issue = WindowInspectionIssue(stage: .restoreMinimized, pid: 72, windowID: "same", failure: .invalidValue)
+        let outcomes: [(StepOutcome, Bool)] = [(.changed, true), (.alreadyDesired, true),
+            (.readFailed(issue), false), (.writeFailed(issue, observedAfter: nil), false),
+            (.writeFailed(issue, observedAfter: .init(state: .failure(issue), quality: .diagnostic)), false),
+            (.writeFailed(issue, observedAfter: .init(state: .success(true), quality: .diagnostic)), false),
+            (.writeFailed(issue, observedAfter: .init(state: .success(false), quality: .diagnostic)), true)]
+        for (outcome, removes) in outcomes {
+            let session = makeSession()
+            let window = ledgerWindow()
+            session.rememberMinimizedWindow(window)
+            let version = try XCTUnwrap(session.minimizedLedger[LiveWindowIdentity(window: window)]).entryVersion
+            let operation = try XCTUnwrap(session.startManualMinimizationOperation(candidateSource: .known([])))
+            XCTAssertTrue(session.commitReceipt(.init(operationID: operation.operationID, intentID: operation.intentID,
+                stepID: 1, identity: LiveWindowIdentity(window: window), window: window, desiredMinimized: false,
+                outcome: outcome, expectedLedgerVersion: version)))
+            XCTAssertEqual(session.minimizedWindows.isEmpty, removes)
+        }
+    }
+
+    @MainActor
+    func testExplicitRestorePreservesNewVersionAndOtherEntryDuringWrite() async throws {
+        let service = ControlledMinimizationWindowService()
+        let defaults = UserDefaults(suiteName: "RestoreVersion.\(UUID())")!
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        let window = ledgerWindow()
+        let other = ledgerWindow(pid: 73)
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: window.id)
+        session.rememberMinimizedWindow(window)
+        let started = expectation(description: "restore held")
+        let gate = service.holdNext(.restore) { started.fulfill() }
+        defer { gate.release() }
+        let done = expectation(description: "restore completed")
+        session.restoreMinimizedWindows { _ in done.fulfill() }
+        await fulfillment(of: [started], timeout: 3)
+        session.rememberMinimizedWindow(window)
+        session.rememberMinimizedWindow(other)
+        let version = session.minimizedLedger[LiveWindowIdentity(window: window)]?.entryVersion
+        gate.release()
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(session.minimizedWindows.count, 2)
+        XCTAssertEqual(session.minimizedLedger[LiveWindowIdentity(window: window)]?.entryVersion, version)
+        XCTAssertFalse(service.snapshot.events.contains { $0.onMainThread })
+    }
+
+    @MainActor
+    func testExplicitRestoreRetainsUnknownAndFailedTrueThenCommitsBeforeNextRead() async throws {
+        let service = ControlledMinimizationWindowService()
+        let defaults = UserDefaults(suiteName: "RestoreFailure.\(UUID())")!
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        func window(_ id: String) -> WindowInfo {
+            WindowInfo(id: id, appName: "App", title: id, pid: 72, bundleIdentifier: nil,
+                bundleURL: nil, documentURL: nil, axWindow: AXUIElementCreateApplication(72),
+                windowNumber: nil, position: nil)
+        }
+        let unknown = window("unknown"), failed = window("failed"), normal = window("normal"), last = window("last")
+        let issue = WindowInspectionIssue(stage: .readMinimized, pid: 72, windowID: unknown.id, failure: .invalidValue)
+        service.setObservation(.init(state: .failure(issue), quality: .diagnostic), for: unknown.id)
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: failed.id)
+        service.setWriteFailure(issue, minimized: false, for: failed.id)
+        for value in [unknown, failed, normal, last] { session.rememberMinimizedWindow(value) }
+        // Reads: unknown, failed before write, failed after write, normal, last.
+        for _ in 0..<4 { service.holdNext(.read).release() }
+        let nextRead = expectation(description: "next read begins after normal receipt")
+        let gate = service.holdNext(.read) { nextRead.fulfill() }
+        defer { gate.release() }
+        let done = expectation(description: "all targets attempted")
+        session.restoreMinimizedWindows { merged in
+            XCTAssertEqual(merged.map(\.id), [normal.id, last.id])
+            done.fulfill()
+        }
+        await fulfillment(of: [nextRead], timeout: 3)
+        XCTAssertEqual(session.minimizedWindows.map(\.id), [unknown.id, failed.id, last.id])
+        gate.release()
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(session.minimizedWindows.map(\.id), [unknown.id, failed.id])
+        XCTAssertEqual(service.snapshot.count(for: .restore), 1)
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: unknown.id)
+        service.setWriteFailure(nil, minimized: false, for: failed.id)
+        let retried = expectation(description: "failed targets can retry")
+        session.restoreMinimizedWindows { _ in retried.fulfill() }
+        await fulfillment(of: [retried], timeout: 3)
+        XCTAssertTrue(session.minimizedWindows.isEmpty)
+        XCTAssertFalse(service.snapshot.events.contains { $0.onMainThread })
+    }
+
+    @MainActor
+    func testFailedWriteObservedNormalMergesWindowAndRetainsFailureDiagnostic() async throws {
+        let service = ControlledMinimizationWindowService()
+        let defaults = UserDefaults(suiteName: "RestoreMerge.\(UUID())")!
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        let window = ledgerWindow()
+        let identity = LiveWindowIdentity(window: window)
+        let issue = WindowInspectionIssue(stage: .restoreMinimized, pid: window.pid,
+            windowID: window.id, failure: .invalidValue)
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: window.id)
+        service.setWriteFailure(issue, minimized: false, for: window.id)
+        session.rememberMinimizedWindow(window)
+        let started = expectation(description: "failed write held")
+        let gate = service.holdNext(.restore) { started.fulfill() }
+        defer { gate.release() }
+        let done = expectation(description: "normal window merged")
+        session.restoreMinimizedWindows { merged in
+            XCTAssertEqual(merged.map(\.id), [window.id])
+            done.fulfill()
+        }
+        await fulfillment(of: [started], timeout: 3)
+        session.rememberMinimizedWindow(window)
+        let newVersion = session.minimizedLedger[identity]?.entryVersion
+        service.setObservation(.init(state: .success(false), quality: .diagnostic), for: window.id)
+        gate.release()
+        await fulfillment(of: [done], timeout: 3)
+        XCTAssertEqual(session.minimizedLedger[identity]?.entryVersion, newVersion)
+        XCTAssertEqual(session.statusMessage, "Restored 1 window(s). 1 window operation(s) reported an error.")
+    }
+
     private func ledgerWindow(pid: pid_t = 72, number: CGWindowID = 11) -> WindowInfo {
         WindowInfo(id: "same", appName: "App", title: "old", pid: pid, bundleIdentifier: nil,
             bundleURL: nil, documentURL: nil, axWindow: AXUIElementCreateApplication(pid),
