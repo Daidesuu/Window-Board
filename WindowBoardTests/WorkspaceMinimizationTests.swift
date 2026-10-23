@@ -1,8 +1,119 @@
 import ApplicationServices
+import Combine
 import XCTest
 @testable import WindowBoard
 
 final class WorkspaceMinimizationTests: XCTestCase {
+    @MainActor
+    func testProgressProjectionRetainsLatestBusyUntilLastSlotFinishes() throws {
+        let session = makeSession()
+        let target = session.workspaceStore.defaultWorkspace!.id
+        let first = try XCTUnwrap(session.acceptSwitchIntent(target: target, automaticEnabled: true))
+        materialize(session, first, target)
+        guard case .waiting = session.minimizationProgress else { return XCTFail("Pending request must be waiting") }
+        XCTAssertTrue(session.isMinimizingUnattached)
+        XCTAssertFalse(AttachedWindowSnapshotCoordinator.Activity(hasAttachments: true,
+            isLoadingWorkspace: false, isApplyingWorkspaceWindows: false,
+            isMinimizingUnattached: session.isMinimizingUnattached, isRestoringMinimized: false).permitsSnapshots)
+        XCTAssertEqual(session.displayStatusMessage, "Board displayed; processing windows...")
+        let old = try XCTUnwrap(session.takeNextMinimizationOperation())
+        let latest = try XCTUnwrap(session.acceptSwitchIntent(target: target, automaticEnabled: true))
+        materialize(session, latest, target)
+        let oldResult = MinimizationOperationResult(operationID: old.operationID, intentID: old.intentID,
+            summary: OperationSummary(), endReason: .superseded)
+        let current = try XCTUnwrap(session.finishOperation(oldResult))
+        XCTAssertTrue(session.isMinimizingUnattached)
+        XCTAssertNil(session.finishOperation(oldResult))
+        XCTAssertTrue(session.isMinimizingUnattached)
+        var summary = OperationSummary()
+        summary.writeFailureCount = 2
+        _ = session.finishOperation(.init(operationID: current.operationID, intentID: current.intentID,
+            summary: summary, endReason: .completed))
+        XCTAssertFalse(session.isMinimizingUnattached)
+        guard case .completed(let completed) = session.minimizationProgress else { return XCTFail("Last request must complete") }
+        XCTAssertEqual(completed.failureCount, 2)
+        XCTAssertEqual(session.displayStatusMessage, session.statusMessage)
+    }
+
+    @MainActor
+    func testSupersededLastSlotReleasesBusyWhenLatestAutomaticSettingIsOff() throws {
+        let session = makeSession()
+        let target = session.workspaceStore.defaultWorkspace!.id
+        let old = try XCTUnwrap(session.startManualMinimizationOperation(candidateSource: .known([])))
+        _ = session.acceptSwitchIntent(target: target, automaticEnabled: false)
+        XCTAssertTrue(session.isMinimizingUnattached)
+        _ = session.finishOperation(.init(operationID: old.operationID, intentID: old.intentID,
+            summary: OperationSummary(), endReason: .superseded))
+        XCTAssertFalse(session.isMinimizingUnattached)
+        guard case .notRequested = session.minimizationProgress else { return XCTFail("Disabled latest request must become idle") }
+        XCTAssertEqual(session.displayStatusMessage, session.statusMessage)
+    }
+
+    @MainActor
+    func testStatusItemSubscriptionPublishesProgressWithoutStatusMessageMutation() async throws {
+        let session = makeSession()
+        let target = session.workspaceStore.defaultWorkspace!.id
+        let initial = expectation(description: "subscription ready")
+        let updated = expectation(description: "progress invalidates Status Item")
+        var count = 0
+        let subscription = WindowBoardStatusItemController.statusUpdates(for: session).sink {
+            count += 1
+            if count == 1 { initial.fulfill() }
+            if count == 2 { updated.fulfill() }
+        }
+        defer { subscription.cancel() }
+        await fulfillment(of: [initial], timeout: 1)
+        let message = session.statusMessage
+        let intent = try XCTUnwrap(session.acceptSwitchIntent(target: target, automaticEnabled: true))
+        // accept publishes notRequested, so ensure the menu reads the latest projection.
+        materialize(session, intent, target)
+        await fulfillment(of: [updated], timeout: 1)
+        XCTAssertEqual(session.statusMessage, message)
+        XCTAssertEqual(session.displayStatusMessage, "Board displayed; processing windows...")
+    }
+
+    @MainActor
+    func testManualPreparingRunningAndSnapshotActivityResume() async throws {
+        let defaults = UserDefaults(suiteName: "ProgressGates.\(UUID())")!
+        let service = ControlledMinimizationWindowService()
+        let window = ledgerWindow()
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        service.setReport(.init(windows: [window], coverage: .complete, issues: [], failedPIDs: []))
+        let listed = expectation(description: "preparing list")
+        let listGate = service.holdNext(.list) { listed.fulfill() }
+        let written = expectation(description: "running write")
+        let writeGate = service.holdNext(.minimize) { written.fulfill() }
+        defer { listGate.release(); writeGate.release() }
+        session.minimizeUnattachedWindows(knownWindows: [], refreshWindowList: true)
+        await fulfillment(of: [listed], timeout: 3)
+        guard case .preparing = session.minimizationProgress else { return XCTFail("List preparation must be visible") }
+        func activity() -> AttachedWindowSnapshotCoordinator.Activity {
+            .init(hasAttachments: true, isLoadingWorkspace: false, isApplyingWorkspaceWindows: false,
+                isMinimizingUnattached: session.isMinimizingUnattached, isRestoringMinimized: false)
+        }
+        XCTAssertFalse(activity().permitsSnapshots)
+        let coordinator = AttachedWindowSnapshotCoordinator(interval: .milliseconds(1), sampler: { _ in [] })
+        defer { coordinator.stop() }
+        let blocked = expectation(description: "busy snapshot provider remains stopped")
+        blocked.isInverted = true
+        coordinator.restart(activity: activity(), requestProvider: { blocked.fulfill(); return nil }, consume: { _ in })
+        await fulfillment(of: [blocked], timeout: 0.03)
+        listGate.release()
+        await fulfillment(of: [written], timeout: 3)
+        guard case .running = session.minimizationProgress else { return XCTFail("Write must be running") }
+        XCTAssertFalse(activity().permitsSnapshots)
+        writeGate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertTrue(activity().permitsSnapshots)
+        let resumed = expectation(description: "idle snapshot provider resumes")
+        coordinator.restart(activity: activity(), requestProvider: { resumed.fulfill(); return nil }, consume: { _ in })
+        await fulfillment(of: [resumed], timeout: 1)
+        guard case .completed(let summary) = session.minimizationProgress else { return XCTFail("Expected completed summary") }
+        XCTAssertEqual(summary.minimizedCount, 1)
+        XCTAssertEqual(summary.coverage, .complete)
+    }
+
     @MainActor
     func testDeferredRecoveryReclassifiesFixedCandidatesWithoutEnumeration() async throws {
         let defaults = UserDefaults(suiteName: "DeferredReconcile.\(UUID())")!
@@ -193,6 +304,10 @@ final class WorkspaceMinimizationTests: XCTestCase {
         XCTAssertEqual(session.automaticMinimizationSummary.minimizedCount, 1)
         XCTAssertEqual(session.automaticMinimizationSummary.issues.filter { $0 == enumerationIssue }.count, 1)
         XCTAssertTrue(session.statusMessage.contains("1 operation(s) failed."))
+        XCTAssertTrue(session.displayStatusMessage.contains("Window list confirmation was incomplete."))
+        guard case .completed(let completed) = session.minimizationProgress else { return XCTFail("Reconcile must publish cumulative completion") }
+        XCTAssertEqual(completed.failureCount, 1)
+        XCTAssertEqual(completed.coverage, .partial)
     }
 
     @MainActor
@@ -297,7 +412,7 @@ final class WorkspaceMinimizationTests: XCTestCase {
         XCTAssertNil(session.pendingAutomaticMinimization)
         XCTAssertEqual(service.snapshot.count(for: .list), 0)
         XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
-        XCTAssertEqual(session.statusMessage, "No other windows to minimize.")
+        XCTAssertEqual(session.statusMessage, "No other windows to minimize. Window list confirmation was incomplete.")
     }
 
     @MainActor
@@ -394,6 +509,9 @@ final class WorkspaceMinimizationTests: XCTestCase {
         XCTAssertEqual(session.activeWorkspaceID, board.id)
         XCTAssertEqual(session.attachedWindows.first?.window.id, registered.id)
         XCTAssertFalse(session.isLoadingWorkspace)
+        XCTAssertTrue(session.isMinimizingUnattached)
+        guard case .preparing = session.minimizationProgress else { return XCTFail("Candidate confirmation must be preparing") }
+        XCTAssertEqual(session.displayStatusMessage, "Board displayed; processing windows...")
         let written = expectation(description: "new target minimized")
         let write = service.holdNext(.minimize) { written.fulfill() }
         gate.release()
@@ -713,6 +831,34 @@ final class WorkspaceMinimizationTests: XCTestCase {
                 outcome: outcome, expectedLedgerVersion: version)))
             XCTAssertEqual(session.minimizedWindows.isEmpty, removes)
         }
+    }
+
+    @MainActor
+    func testOldExplicitRestoreKeepsLatestStatusAndCandidateProjection() async throws {
+        let service = ControlledMinimizationWindowService()
+        let defaults = UserDefaults(suiteName: "RestoreUIIntent.\(UUID())")!
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        let window = ledgerWindow()
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: window.id)
+        session.rememberMinimizedWindow(window)
+        let started = expectation(description: "old explicit restore held")
+        let gate = service.holdNext(.restore) { started.fulfill() }
+        defer { gate.release() }
+        var callbacks = 0
+        session.restoreMinimizedWindows { _ in callbacks += 1 }
+        await fulfillment(of: [started], timeout: 3)
+        _ = session.acceptSwitchIntent(target: session.workspaceStore.defaultWorkspace!.id, automaticEnabled: false)
+        session.statusMessage = "Latest Board displayed."
+        gate.release()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while session.isRestoringMinimized, ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        XCTAssertFalse(session.isRestoringMinimized)
+        XCTAssertTrue(session.minimizedWindows.isEmpty, "Physical restore must still update ledger")
+        XCTAssertEqual(callbacks, 0)
+        XCTAssertEqual(session.displayStatusMessage, "Latest Board displayed.")
     }
 
     @MainActor

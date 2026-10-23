@@ -140,6 +140,45 @@ final class WorkspaceSessionController: ObservableObject {
         let minimizeAfterSwitchCompletion: @MainActor () -> Void
     }
 
+    @Published private(set) var minimizationProgress: MinimizationProgress = .notRequested
+    @MainActor private var activeMinimizationPhase: MinimizationProgress = .preparing
+
+    @MainActor var displayStatusMessage: String {
+        switch minimizationProgress {
+        case .waiting, .preparing, .running:
+            return "Board displayed; processing windows..."
+        case .notRequested, .completed:
+            return statusMessage
+        }
+    }
+
+    @MainActor
+    private func updateMinimizationProgress() {
+        let pending = pendingAutomaticMinimization?.intentID == latestMinimizationIntent?.id
+            && pendingAutomaticMinimization != nil
+        let busy = activeMinimizationOperation != nil || pending
+        if isMinimizingUnattached != busy { isMinimizingUnattached = busy }
+        if pending {
+            minimizationProgress = .waiting
+        } else if let active = activeMinimizationOperation, isCurrentMinimizationOperation(active) {
+            minimizationProgress = activeMinimizationPhase
+        } else if activeMinimizationOperation != nil {
+            minimizationProgress = .waiting
+        } else {
+            switch minimizationProgress {
+            case .waiting, .preparing, .running: minimizationProgress = .notRequested
+            case .notRequested, .completed: break
+            }
+        }
+    }
+
+    @MainActor
+    private func prepareMinimization(_ request: MinimizationExecutionRequest) {
+        guard isCurrentMinimizationOperation(request) else { return }
+        activeMinimizationPhase = .preparing
+        updateMinimizationProgress()
+    }
+
     @MainActor private var minimizationGeneration: UInt64 = 0
     @MainActor private(set) var latestMinimizationIntent: SwitchMinimizationIntent?
     @MainActor private(set) var pendingAutomaticMinimization: MinimizationExecutionRequest?
@@ -164,6 +203,7 @@ final class WorkspaceSessionController: ObservableObject {
         windowCache: [WindowInfo] = [],
         minimizeAfterSwitchCompletion: @escaping @MainActor () -> Void = {}
     ) -> MinimizationIntentID? {
+        defer { updateMinimizationProgress() }
         guard workspaceStore.workspaces.contains(where: { $0.id == target }) else { return nil }
         minimizationGeneration += 1
         let id = MinimizationIntentID(value: minimizationGeneration)
@@ -172,6 +212,7 @@ final class WorkspaceSessionController: ObservableObject {
             source: source, notBefore: notBefore, windowCache: windowCache,
             minimizeAfterSwitchCompletion: minimizeAfterSwitchCompletion
         )
+        minimizationProgress = .notRequested
         pendingAutomaticMinimization = nil
         materializedMinimizationIntent = nil
         minimizationCandidateSnapshot = nil
@@ -187,6 +228,7 @@ final class WorkspaceSessionController: ObservableObject {
 
     @MainActor
     func materializeAutomaticRequest(intent: MinimizationIntentID, resolution: MinimizationResolution) {
+        defer { updateMinimizationProgress() }
         guard let latest = latestMinimizationIntent, latest.id == intent,
               latest.target == resolution.targetBoardID else { return }
         guard latest.automaticEnabled, !resolution.composedReferenceIDs.isEmpty else {
@@ -210,6 +252,7 @@ final class WorkspaceSessionController: ObservableObject {
 
     @MainActor
     func requestMinimizationReconcile(intent: MinimizationIntentID, snapshot: CandidateSnapshot) {
+        defer { updateMinimizationProgress() }
         guard latestMinimizationIntent?.id == intent,
               latestMinimizationIntent?.automaticEnabled == true,
               materializedMinimizationIntent == intent,
@@ -243,10 +286,12 @@ final class WorkspaceSessionController: ObservableObject {
     @MainActor
     @discardableResult
     func takeNextMinimizationOperation() -> MinimizationExecutionRequest? {
+        defer { updateMinimizationProgress() }
         guard activeMinimizationOperation == nil,
               let pending = pendingAutomaticMinimization,
               pending.intentID == latestMinimizationIntent?.id else { return nil }
         pendingAutomaticMinimization = nil
+        activeMinimizationPhase = .waiting
         activeMinimizationOperation = pending
         return pending
     }
@@ -254,12 +299,14 @@ final class WorkspaceSessionController: ObservableObject {
     @MainActor
     @discardableResult
     func startManualMinimizationOperation(candidateSource: CandidateSource) -> MinimizationExecutionRequest? {
+        defer { updateMinimizationProgress() }
         guard activeMinimizationOperation == nil, pendingAutomaticMinimization == nil,
               !isMinimizingUnattached, !isRestoringMinimized else { return nil }
         let request = MinimizationExecutionRequest(
             intentID: latestMinimizationIntent?.id ?? MinimizationIntentID(value: minimizationGeneration),
             operationID: UUID(), kind: .manual, candidateSource: candidateSource
         )
+        activeMinimizationPhase = .preparing
         activeMinimizationOperation = request
         return request
     }
@@ -273,11 +320,15 @@ final class WorkspaceSessionController: ObservableObject {
     /// Returns ownership of the next request to the caller that will launch its worker.
     @MainActor
     @discardableResult
-    func finishOperation(_ result: MinimizationOperationResult) -> MinimizationExecutionRequest? {
+    func finishOperation(_ result: MinimizationOperationResult, summary: OperationSummary? = nil) -> MinimizationExecutionRequest? {
+        defer { updateMinimizationProgress() }
         guard activeMinimizationOperation?.operationID == result.operationID,
               activeMinimizationOperation?.intentID == result.intentID else { return nil }
         completedMinimizationOperations.insert(result.operationID)
         recordedMinimizationReceipts = recordedMinimizationReceipts.filter { $0.operationID != result.operationID }
+        if let active = activeMinimizationOperation, isCurrentMinimizationOperation(active) {
+            minimizationProgress = .completed(summary ?? result.summary)
+        }
         activeMinimizationOperation = nil
         return takeNextMinimizationOperation()
     }
@@ -387,7 +438,7 @@ final class WorkspaceSessionController: ObservableObject {
     @Published private(set) var minimizedWindows: [WindowInfo] = []
     @Published var isLoadingWorkspace = false
     @Published var isApplyingWorkspaceWindows = false
-    @Published var isMinimizingUnattached = false
+    @Published private(set) var isMinimizingUnattached = false
     @Published var isRestoringMinimized = false
     @Published var statusMessage = "Select a window to attach it to the board."
     @Published private(set) var currentBoardComposition: ResolvedBoardComposition = .empty
@@ -1260,6 +1311,10 @@ final class WorkspaceSessionController: ObservableObject {
               operation.operationID == proposal.operationID,
               operation.intentID == proposal.intentID,
               isCurrentMinimizationOperation(operation) else { return .stop(.superseded) }
+        if case .running = activeMinimizationPhase {} else {
+            activeMinimizationPhase = .running
+            updateMinimizationProgress()
+        }
         guard proposal.hasMatchingCandidateIdentity else { return .skip(.identityChanged) }
         let protection = protectionSnapshot()
         let window: WindowInfo
@@ -1324,6 +1379,7 @@ final class WorkspaceSessionController: ObservableObject {
         request: MinimizationExecutionRequest) {
         guard minimizationWorker?.id == request.operationID,
               activeMinimizationOperation?.operationID == request.operationID else { return }
+        var completedSummary = result.summary
         if isCurrentMinimizationOperation(request) {
             var summary = result.summary
             if request.kind != .manual {
@@ -1355,17 +1411,19 @@ final class WorkspaceSessionController: ObservableObject {
                     requestMinimizationReconcile(intent: request.intentID, snapshot: snapshot)
                 }
             }
+            completedSummary = summary
             statusMessage = request.kind == .manual && summary.minimizedCount == 0 &&
                 summary.restoredCount == 0 && summary.failureCount == 0
                 ? "No other windows to minimize."
                 : Self.minimizeStatus(minimizedCount: summary.minimizedCount,
                     restoredAttachedCount: summary.restoredCount, failedCount: summary.failureCount)
+            if completedSummary.coverage != .complete {
+                statusMessage += " Window list confirmation was incomplete."
+            }
         }
         minimizationWorker = nil
-        if let next = finishOperation(result) {
+        if let next = finishOperation(result, summary: completedSummary) {
             launchAutomaticMinimization(next)
-        } else {
-            isMinimizingUnattached = false
         }
     }
 
@@ -1373,10 +1431,11 @@ final class WorkspaceSessionController: ObservableObject {
     private func launchAutomaticMinimization(_ request: MinimizationExecutionRequest) {
         guard activeMinimizationOperation?.operationID == request.operationID,
               minimizationWorker == nil else { return }
-        isMinimizingUnattached = true
+        updateMinimizationProgress()
         let notBefore = latestMinimizationIntent?.notBefore ?? .now
         let task = Task.detached(priority: .utility) {
             try? await ContinuousClock().sleep(until: notBefore)
+            await self.prepareMinimization(request)
             let service = self.windowServiceFactory()
             let result = await UnattachedWindowMinimizationExecutor().run(request: request, service: service,
                 authorize: { self.authorizeStep($0) }, restorePlan: { self.protectionSnapshot() },
@@ -1394,7 +1453,7 @@ final class WorkspaceSessionController: ObservableObject {
         guard let request = startManualMinimizationOperation(candidateSource:
             refreshWindowList ? .refresh(fallback: baseWindows) : .known(baseWindows)) else { return }
         let originalAttachments = attachedWindows
-        isMinimizingUnattached = true
+        updateMinimizationProgress()
         statusMessage = "Preparing other windows..."
         let task = Task.detached(priority: .userInitiated) {
             let service = self.windowServiceFactory()
@@ -1524,6 +1583,7 @@ final class WorkspaceSessionController: ObservableObject {
                 self.recordedMinimizationReceipts = self.recordedMinimizationReceipts.filter { $0.operationID != operationID }
                 self.isRestoringMinimized = false
                 defer { self.drainAutomaticMinimization() }
+                guard intentID == (self.latestMinimizationIntent?.id ?? MinimizationIntentID(value: 0)) else { return }
                 mergeWindows(resolvedRestoredWindows)
                 if resolvedFailureCount == 0 {
                     self.statusMessage = "Restored \(resolvedRestoredWindows.count) minimized window(s)."

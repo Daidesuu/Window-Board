@@ -61,8 +61,7 @@ final class WindowBoardStatusItemController: NSObject {
             }
             .store(in: &cancellables)
 
-        appState.session.$statusMessage
-            .receive(on: RunLoop.main)
+        Self.statusUpdates(for: appState.session)
             .sink { [weak self] _ in
                 self?.rebuildMenu()
             }
@@ -76,6 +75,14 @@ final class WindowBoardStatusItemController: NSObject {
             .store(in: &cancellables)
     }
 
+    static func statusUpdates(for session: WorkspaceSessionController) -> AnyPublisher<Void, Never> {
+        session.$statusMessage
+            .combineLatest(session.$minimizationProgress)
+            .map { _ in () }
+            .receive(on: RunLoop.main)
+            .eraseToAnyPublisher()
+    }
+
     private func rebuildMenu() {
         updateStatusItemImage()
 
@@ -83,7 +90,7 @@ final class WindowBoardStatusItemController: NSObject {
         menu.autoenablesItems = false
 
         let statusItem = NSMenuItem(
-            title: appState.session.isLoadingWorkspace ? "Status: Loading..." : "Status: \(appState.session.statusMessage)",
+            title: appState.session.isLoadingWorkspace ? "Status: Loading..." : "Status: \(appState.session.displayStatusMessage)",
             action: nil,
             keyEquivalent: ""
         )
