@@ -17,6 +17,40 @@ enum WorkspaceSwitchSource {
     case launcher
 }
 
+/// Deliberately excludes AX handles, titles, URLs and string window identifiers.
+struct MinimizationDiagnosticEvent {
+    enum Phase { case started, superseded, finished, handoff }
+    struct IssueCount {
+        let stage: WindowInspectionIssue.Stage
+        let pid: pid_t?
+        let failure: WindowInspectionIssue.Failure
+        var count: Int
+    }
+    let phase: Phase
+    let intentID: MinimizationIntentID
+    let operationID: UUID
+    let boardID: UUID?
+    let revision: Int
+    let source: WorkspaceSwitchSource?
+    let kind: MinimizationExecutionRequest.Kind
+    let nextOperationID: UUID?
+    let nextIntentID: MinimizationIntentID?
+    let endReason: MinimizationOperationResult.EndReason?
+    let interruptionReason: WindowOperationStopReason?
+    let appliesToLatest: Bool
+    let candidateCount: Int
+    let registeredCount: Int
+    let sameApplicationProtectedCount: Int
+    let noOpCount: Int
+    let minimizedCount: Int
+    let restoredCount: Int
+    let readFailureCount: Int
+    let writeFailureCount: Int
+    let enumerationCount: Int
+    let coverage: WindowEnumerationReport.Coverage
+    let issues: [IssueCount]
+}
+
 struct BoardSwitchTarget: Identifiable, Equatable {
     let primaryBoardID: SavedWorkspace.ID
     let selectedBoardID: SavedWorkspace.ID
@@ -179,6 +213,59 @@ final class WorkspaceSessionController: ObservableObject {
         updateMinimizationProgress()
     }
 
+    private let minimizationDiagnosticSink: ((MinimizationDiagnosticEvent) -> Void)?
+    @MainActor private var diagnosticContext: (board: UUID?, revision: Int, source: WorkspaceSwitchSource?)?
+    @MainActor private var diagnosticSuperseded = false
+
+    @MainActor
+    private func startDiagnostic(_ request: MinimizationExecutionRequest) {
+        diagnosticContext = (latestMinimizationIntent?.target ?? activeWorkspaceID, workspaceSwitchRevision, latestMinimizationIntent?.source)
+        diagnosticSuperseded = false
+        emitDiagnostic(.started, request: request)
+    }
+
+    @MainActor
+    private func emitDiagnostic(_ phase: MinimizationDiagnosticEvent.Phase,
+        request: MinimizationExecutionRequest, summary: OperationSummary = OperationSummary(),
+        endReason: MinimizationOperationResult.EndReason? = nil,
+        next: MinimizationExecutionRequest? = nil,
+        context: (board: UUID?, revision: Int, source: WorkspaceSwitchSource?)? = nil) {
+        #if !DEBUG
+        guard minimizationDiagnosticSink != nil else { return }
+        #endif
+        let context = context ?? diagnosticContext
+        var issues: [MinimizationDiagnosticEvent.IssueCount] = []
+        for issue in summary.issues {
+            if let index = issues.firstIndex(where: { $0.stage == issue.stage && $0.pid == issue.pid && $0.failure == issue.failure }) {
+                issues[index].count += 1
+            } else {
+                issues.append(.init(stage: issue.stage, pid: issue.pid, failure: issue.failure, count: 1))
+            }
+        }
+        let event = MinimizationDiagnosticEvent(phase: phase, intentID: request.intentID,
+            operationID: request.operationID, boardID: context?.board, revision: context?.revision ?? 0,
+            source: context?.source, kind: request.kind, nextOperationID: next?.operationID,
+            nextIntentID: next?.intentID, endReason: endReason,
+            interruptionReason: summary.interruptionReason,
+            appliesToLatest: isCurrentMinimizationOperation(request),
+            candidateCount: summary.candidateCount, registeredCount: summary.registeredCount,
+            sameApplicationProtectedCount: summary.sameApplicationProtectedCount,
+            noOpCount: summary.noOpCount, minimizedCount: summary.minimizedCount,
+            restoredCount: summary.restoredCount, readFailureCount: summary.readFailureCount,
+            writeFailureCount: summary.writeFailureCount, enumerationCount: summary.enumerationCount,
+            coverage: summary.coverage, issues: issues)
+        minimizationDiagnosticSink?(event)
+        Self.logEvent([
+            "minimization phase=\(event.phase) intent=\(event.intentID.value) operation=\(event.operationID)",
+            "board=\(String(describing: event.boardID)) revision=\(event.revision) source=\(String(describing: event.source)) kind=\(event.kind)",
+            "nextOperation=\(String(describing: event.nextOperationID)) nextIntent=\(String(describing: event.nextIntentID?.value))",
+            "end=\(String(describing: event.endReason)) interruption=\(String(describing: event.interruptionReason)) latest=\(event.appliesToLatest)",
+            "candidates=\(event.candidateCount) registered=\(event.registeredCount) sameAppProtected=\(event.sameApplicationProtectedCount)",
+            "noop=\(event.noOpCount) minimized=\(event.minimizedCount) restored=\(event.restoredCount) readFailed=\(event.readFailureCount)",
+            "writeFailed=\(event.writeFailureCount) enumerations=\(event.enumerationCount) coverage=\(event.coverage) issues=\(event.issues)"
+        ].joined(separator: " "))
+    }
+
     @MainActor private var minimizationGeneration: UInt64 = 0
     @MainActor private(set) var latestMinimizationIntent: SwitchMinimizationIntent?
     @MainActor private(set) var pendingAutomaticMinimization: MinimizationExecutionRequest?
@@ -212,6 +299,10 @@ final class WorkspaceSessionController: ObservableObject {
             source: source, notBefore: notBefore, windowCache: windowCache,
             minimizeAfterSwitchCompletion: minimizeAfterSwitchCompletion
         )
+        if let active = activeMinimizationOperation, !diagnosticSuperseded {
+            emitDiagnostic(.superseded, request: active)
+            diagnosticSuperseded = true
+        }
         minimizationProgress = .notRequested
         pendingAutomaticMinimization = nil
         materializedMinimizationIntent = nil
@@ -293,6 +384,7 @@ final class WorkspaceSessionController: ObservableObject {
         pendingAutomaticMinimization = nil
         activeMinimizationPhase = .waiting
         activeMinimizationOperation = pending
+        startDiagnostic(pending)
         return pending
     }
 
@@ -308,6 +400,7 @@ final class WorkspaceSessionController: ObservableObject {
         )
         activeMinimizationPhase = .preparing
         activeMinimizationOperation = request
+        startDiagnostic(request)
         return request
     }
 
@@ -322,15 +415,24 @@ final class WorkspaceSessionController: ObservableObject {
     @discardableResult
     func finishOperation(_ result: MinimizationOperationResult, summary: OperationSummary? = nil) -> MinimizationExecutionRequest? {
         defer { updateMinimizationProgress() }
-        guard activeMinimizationOperation?.operationID == result.operationID,
-              activeMinimizationOperation?.intentID == result.intentID else { return nil }
+        guard let active = activeMinimizationOperation,
+              active.operationID == result.operationID,
+              active.intentID == result.intentID else { return nil }
+        let context = diagnosticContext
+        emitDiagnostic(.finished, request: active, summary: summary ?? result.summary, endReason: result.endReason)
         completedMinimizationOperations.insert(result.operationID)
         recordedMinimizationReceipts = recordedMinimizationReceipts.filter { $0.operationID != result.operationID }
         if let active = activeMinimizationOperation, isCurrentMinimizationOperation(active) {
             minimizationProgress = .completed(summary ?? result.summary)
         }
         activeMinimizationOperation = nil
-        return takeNextMinimizationOperation()
+        let next = takeNextMinimizationOperation()
+        if let next {
+            emitDiagnostic(.handoff, request: active, endReason: result.endReason, next: next, context: context)
+        } else {
+            diagnosticContext = nil
+        }
+        return next
     }
 
     let workspaceStore: WorkspaceStore
@@ -457,12 +559,14 @@ final class WorkspaceSessionController: ObservableObject {
         workspaceStore: WorkspaceStore,
         defaults: UserDefaults = .standard,
         boardCompositionStore: BoardCompositionStore? = nil,
+        minimizationDiagnosticSink: ((MinimizationDiagnosticEvent) -> Void)? = nil,
         windowServiceFactory: @escaping () -> any WorkspaceWindowOperating = { AccessibilityWindowService() }
     ) {
         self.workspaceStore = workspaceStore
         self.defaults = defaults
         self.boardCompositionStore = boardCompositionStore ?? BoardCompositionStore(defaults: defaults)
         self.windowServiceFactory = windowServiceFactory
+        self.minimizationDiagnosticSink = minimizationDiagnosticSink
         workspaceStore.ensureDefaultWorkspace()
         let storedActiveWorkspaceID = defaults.string(forKey: BoardStorageKeys.activeBoardID).flatMap(UUID.init(uuidString:))
         activeWorkspaceID = storedActiveWorkspaceID

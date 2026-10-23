@@ -5,6 +5,121 @@ import XCTest
 
 final class WorkspaceMinimizationTests: XCTestCase {
     @MainActor
+    func testDiagnosticNormalZeroAndEnumerationFailureRemainDistinct() async throws {
+        for coverage in [WindowEnumerationReport.Coverage.complete, .failed] {
+            var diagnostics: [MinimizationDiagnosticEvent] = []
+            let defaults = UserDefaults(suiteName: "DiagnosticCoverage.\(UUID())")!
+            let service = ControlledMinimizationWindowService()
+            let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+                defaults: defaults, minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
+            let issues: [WindowInspectionIssue] = coverage == .complete ? [] : [
+                .init(stage: .enumerateApplications, pid: nil, windowID: "PRIVATE", failure: .invalidValue)]
+            service.setReport(.init(windows: [], coverage: coverage, issues: issues, failedPIDs: []))
+            session.minimizeUnattachedWindows(knownWindows: [], refreshWindowList: true)
+            await waitForAutomaticIdle(session)
+            let event = try XCTUnwrap(diagnostics.last { $0.phase == .finished })
+            XCTAssertEqual(event.candidateCount, 0)
+            XCTAssertEqual(event.coverage, coverage)
+            XCTAssertEqual(event.enumerationCount, 1)
+            XCTAssertEqual(event.issues.count, coverage == .complete ? 0 : 1)
+            XCTAssertFalse(String(describing: event).contains("PRIVATE"))
+        }
+    }
+
+    @MainActor
+    func testDiagnosticMixedCandidatesAndOperationFailures() async throws {
+        var diagnostics: [MinimizationDiagnosticEvent] = []
+        let defaults = UserDefaults(suiteName: "DiagnosticMixed.\(UUID())")!
+        let service = ControlledMinimizationWindowService()
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
+        func window(_ id: String, _ pid: pid_t, bundle: String? = nil) -> WindowInfo {
+            WindowInfo(id: id, appName: id, title: "PRIVATE", pid: pid,
+                bundleIdentifier: bundle, bundleURL: nil, documentURL: nil,
+                axWindow: AXUIElementCreateApplication(pid), windowNumber: id == "terminal" ? 499 : UInt32(pid), position: nil)
+        }
+        let registered = window("registered", 401, bundle: "com.apple.Terminal")
+        let terminal = window("terminal", 401, bundle: "com.apple.Terminal")
+        let target = window("target", 402)
+        let noop = window("noop", 403)
+        let unknown = window("unknown", 404)
+        let failed = window("failed", 405)
+        session.attachedWindows = [AttachedWindow(window: registered, lastBoardOrigin: .zero, lastWindowOrigin: .zero, lastAppliedOrigin: nil, pendingReleaseOrigin: nil)]
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: noop.id)
+        service.setObservation(.init(state: .failure(.init(stage: .readMinimized, pid: unknown.pid,
+            windowID: unknown.id, failure: .invalidValue)), quality: .diagnostic), for: unknown.id)
+        service.setWriteFailure(.init(stage: .writeMinimized, pid: failed.pid,
+            windowID: failed.id, failure: .ax(.cannotComplete)), minimized: true, for: failed.id)
+        service.setReport(.init(windows: [registered, terminal, target, noop, unknown, failed],
+            coverage: .complete, issues: [], failedPIDs: []))
+        session.minimizeUnattachedWindows(knownWindows: [], refreshWindowList: true)
+        await waitForAutomaticIdle(session)
+        let summary = try XCTUnwrap(diagnostics.last { $0.phase == .finished })
+        XCTAssertEqual(summary.kind, .manual)
+        XCTAssertEqual(summary.candidateCount, 6)
+        XCTAssertEqual(summary.registeredCount, 1)
+        XCTAssertEqual(summary.sameApplicationProtectedCount, 1)
+        XCTAssertEqual(summary.noOpCount, 2) // registered restore check and pre-minimized target
+        XCTAssertEqual(summary.minimizedCount, 1)
+        XCTAssertEqual(summary.readFailureCount, 1)
+        XCTAssertEqual(summary.writeFailureCount, 1)
+        XCTAssertEqual(summary.enumerationCount, 1)
+        XCTAssertEqual(summary.issues.count, 2)
+        XCTAssertEqual(diagnostics.map { $0.phase }, [.started, .finished])
+    }
+
+    @MainActor
+    func testDiagnosticOperationBoundariesAndSanitizedSummary() throws {
+        var events: [MinimizationDiagnosticEvent] = []
+        let defaults = UserDefaults(suiteName: "Diagnostic.\(UUID())")!
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, minimizationDiagnosticSink: { events.append($0) })
+        let target = session.workspaceStore.defaultWorkspace!.id
+        let intent = try XCTUnwrap(session.acceptSwitchIntent(target: target, automaticEnabled: true, source: .statusItem))
+        materialize(session, intent, target)
+        let old = try XCTUnwrap(session.takeNextMinimizationOperation())
+        let latest = try XCTUnwrap(session.acceptSwitchIntent(target: target, automaticEnabled: true, source: .launcher))
+        materialize(session, latest, target)
+        var summary = OperationSummary()
+        summary.candidateCount = 6
+        summary.registeredCount = 1
+        summary.sameApplicationProtectedCount = 1
+        summary.noOpCount = 1
+        summary.minimizedCount = 1
+        summary.readFailureCount = 1
+        summary.writeFailureCount = 1
+        summary.enumerationCount = 1
+        summary.coverage = .partial
+        summary.issues = [.init(stage: .readMinimized, pid: 42,
+            windowID: "PRIVATE title or URL", failure: .invalidValue)]
+        let next = try XCTUnwrap(session.finishOperation(.init(operationID: old.operationID,
+            intentID: old.intentID, summary: summary, endReason: .superseded)))
+        _ = session.finishOperation(.init(operationID: next.operationID, intentID: next.intentID,
+            summary: OperationSummary(), endReason: .empty))
+        XCTAssertEqual(events.map { $0.phase }, [.started, .superseded, .finished, .started, .handoff, .finished])
+        let finished = try XCTUnwrap(events.first { $0.phase == .finished })
+        XCTAssertEqual(finished.intentID, intent)
+        XCTAssertEqual(finished.operationID, old.operationID)
+        XCTAssertEqual(finished.source, .statusItem)
+        XCTAssertFalse(finished.appliesToLatest)
+        XCTAssertEqual(finished.candidateCount, 6)
+        XCTAssertEqual(finished.registeredCount, 1)
+        XCTAssertEqual(finished.sameApplicationProtectedCount, 1)
+        XCTAssertEqual(finished.noOpCount, 1)
+        XCTAssertEqual(finished.minimizedCount, 1)
+        XCTAssertEqual(finished.readFailureCount, 1)
+        XCTAssertEqual(finished.writeFailureCount, 1)
+        XCTAssertEqual(finished.enumerationCount, 1)
+        XCTAssertEqual(finished.coverage, .partial)
+        XCTAssertEqual(finished.issues.first?.pid, 42)
+        XCTAssertFalse(String(describing: finished).contains("PRIVATE"))
+        XCTAssertEqual(events.first { $0.phase == .handoff }?.nextIntentID, latest)
+        XCTAssertEqual(events.last?.candidateCount, 0)
+        XCTAssertEqual(events.last?.enumerationCount, 0)
+        XCTAssertTrue(events.last?.appliesToLatest == true)
+    }
+
+    @MainActor
     func testProgressProjectionRetainsLatestBusyUntilLastSlotFinishes() throws {
         let session = makeSession()
         let target = session.workspaceStore.defaultWorkspace!.id
@@ -266,7 +381,9 @@ final class WorkspaceMinimizationTests: XCTestCase {
             workspaceURLString: nil, offsetX: 0, offsetY: 0)
         let store = WorkspaceStore(defaults: defaults)
         let board = store.saveWorkspace(name: "Summary", windows: [reference])
-        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults, windowServiceFactory: { service })
+        var diagnostics: [MinimizationDiagnosticEvent] = []
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
         let enumerationIssue = WindowInspectionIssue(stage: .enumerateWindows, pid: 90,
             windowID: nil, failure: .invalidValue)
         service.setReport(.init(windows: [old, failed], coverage: .partial, issues: [enumerationIssue], failedPIDs: [90]))
@@ -308,6 +425,14 @@ final class WorkspaceMinimizationTests: XCTestCase {
         guard case .completed(let completed) = session.minimizationProgress else { return XCTFail("Reconcile must publish cumulative completion") }
         XCTAssertEqual(completed.failureCount, 1)
         XCTAssertEqual(completed.coverage, .partial)
+        let reconciles = diagnostics.filter { $0.phase == .finished && $0.kind == .reconcile }
+        XCTAssertEqual(reconciles.count, 2)
+        XCTAssertEqual(reconciles.map { $0.writeFailureCount }, [1, 1])
+        XCTAssertEqual(reconciles.map { $0.candidateCount }, [2, 2])
+        XCTAssertEqual(reconciles.map { $0.minimizedCount }, [1, 1])
+        XCTAssertEqual(reconciles.map { $0.enumerationCount }, [1, 1])
+        XCTAssertEqual(reconciles.last?.issues.filter { $0.stage == .enumerateWindows }.first?.count, 1)
+
     }
 
     @MainActor
@@ -363,7 +488,8 @@ final class WorkspaceMinimizationTests: XCTestCase {
                 title: registered.title, bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
                 workspaceURLString: nil, offsetX: 0, offsetY: 0)
             let board = store.saveWorkspace(name: "Latest", windows: [reference])
-            let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults, windowServiceFactory: { service })
+            var diagnostics: [MinimizationDiagnosticEvent] = []
+            let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults, minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
             service.setReport(.init(windows: [registered, other], coverage: .complete, issues: [], failedPIDs: []))
             if fail {
                 service.setWriteFailure(.init(stage: .writeMinimized, pid: registered.pid,
@@ -390,6 +516,12 @@ final class WorkspaceMinimizationTests: XCTestCase {
             XCTAssertNotEqual(session.activeMinimizationOperation?.operationID, manual.operationID)
             XCTAssertEqual(session.minimizedWindows.map(\.id), fail ? [] : [registered.id])
             XCTAssertEqual(callbacks, 0)
+            let oldDiagnostic = try XCTUnwrap(diagnostics.first { $0.phase == .finished && $0.operationID == manual.operationID })
+            XCTAssertFalse(oldDiagnostic.appliesToLatest)
+            XCTAssertEqual(oldDiagnostic.minimizedCount, fail ? 0 : 1)
+            XCTAssertEqual(oldDiagnostic.writeFailureCount, fail ? 1 : 0)
+            XCTAssertTrue(diagnostics.contains { $0.phase == .superseded && $0.operationID == manual.operationID })
+            XCTAssertTrue(diagnostics.contains { $0.phase == .handoff && $0.operationID == manual.operationID && $0.nextOperationID == session.activeMinimizationOperation?.operationID })
             latestGate.release()
             await waitForAutomaticIdle(session)
             XCTAssertEqual(session.minimizedWindows.map(\.id), [other.id])
@@ -541,8 +673,9 @@ final class WorkspaceMinimizationTests: XCTestCase {
                 _ = composition.includeRoot(included.id, for: board.id,
                     availableBoardIDs: Set(store.workspaces.map(\.id)))
             }
+            var diagnostics: [MinimizationDiagnosticEvent] = []
             let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
-                boardCompositionStore: composition, windowServiceFactory: { service })
+                boardCompositionStore: composition, minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
             service.setReport(.init(windows: [registered], coverage: .complete, issues: [], failedPIDs: []))
             let displayed = expectation(description: "displayed \(mode)")
             session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
@@ -553,6 +686,11 @@ final class WorkspaceMinimizationTests: XCTestCase {
             XCTAssertEqual(service.snapshot.count(for: .list), ["report", "included"].contains(mode) ? 1 : 0)
             XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
             XCTAssertEqual(service.snapshot.count(for: .restore), 0)
+            if ["off", "empty"].contains(mode) {
+                XCTAssertTrue(diagnostics.isEmpty)
+            } else {
+                XCTAssertEqual(diagnostics.last?.enumerationCount, mode == "report" ? 0 : 1)
+            }
         }
     }
 
