@@ -30,6 +30,7 @@ final class BoardFrontingCoordinatorTests: XCTestCase {
             boardSelectionDelay: .milliseconds(10),
             boardClickDebounce: 0
         )
+        let latestAction = expectation(description: "Latest scheduled selection ran")
         var firstCount = 0
         var secondCount = 0
 
@@ -41,10 +42,13 @@ final class BoardFrontingCoordinatorTests: XCTestCase {
         coordinator.scheduleBoardSelection(
             isEnabled: { true },
             hasAvailableWindows: { true },
-            perform: { secondCount += 1 }
+            perform: {
+                secondCount += 1
+                latestAction.fulfill()
+            }
         )
 
-        try? await Task.sleep(for: .milliseconds(30))
+        await fulfillment(of: [latestAction], timeout: 1)
         XCTAssertEqual(firstCount, 0)
         XCTAssertEqual(secondCount, 1)
     }

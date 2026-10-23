@@ -75,33 +75,43 @@ final class AttachedWindowSnapshotCoordinatorTests: XCTestCase {
     }
 
     func testRestartDiscardsResultFromPreviousGeneration() async {
-        let probe = SnapshotSamplerProbe(firstCallDelay: .milliseconds(45))
+        let firstStarted = expectation(description: "Old generation sampler entered")
+        let firstReturned = expectation(description: "Old generation sampler returned")
+        let latestConsumed = expectation(description: "New generation snapshot consumed")
+        let gate = SnapshotRestartGate()
         let fixture = makeSnapshotFixture()
         let coordinator = AttachedWindowSnapshotCoordinator(
             interval: .milliseconds(5),
-            sampler: { requests in await probe.sample(requests) }
+            sampler: { requests in
+                let call = await gate.beginCall()
+                if call == 1 {
+                    firstStarted.fulfill()
+                    // A real synchronous AX call can finish despite cancellation.
+                    await gate.waitForRelease()
+                    firstReturned.fulfill()
+                }
+                return requests.map {
+                    AttachedWindowSnapshot(attachmentID: $0.attachmentID,
+                        windowID: $0.window.id, title: "sample-\(call)",
+                        origin: $0.window.position, isMinimized: false)
+                }
+            }
         )
         var consumedTitles: [String] = []
-
-        coordinator.restart(
-            activity: activeSnapshotActivity,
-            requestProvider: { fixture.batch },
-            consume: { result in
+        coordinator.restart(activity: activeSnapshotActivity,
+            requestProvider: { fixture.batch }, consume: { _ in
+                XCTFail("Old generation consumed after restart")
+            })
+        await fulfillment(of: [firstStarted], timeout: 1)
+        coordinator.restart(activity: activeSnapshotActivity,
+            requestProvider: { fixture.batch }, consume: { result in
                 consumedTitles.append(contentsOf: result.snapshots.compactMap(\.title))
-            }
-        )
-        try? await Task.sleep(for: .milliseconds(15))
-        coordinator.restart(
-            activity: activeSnapshotActivity,
-            requestProvider: { fixture.batch },
-            consume: { result in
-                consumedTitles.append(contentsOf: result.snapshots.compactMap(\.title))
-            }
-        )
-
-        try? await Task.sleep(for: .milliseconds(65))
+                latestConsumed.fulfill()
+                coordinator.stop()
+            })
+        await gate.release()
+        await fulfillment(of: [firstReturned, latestConsumed], timeout: 1)
         coordinator.stop()
-
         XCTAssertFalse(consumedTitles.contains("sample-1"))
         XCTAssertTrue(consumedTitles.contains("sample-2"))
     }
@@ -332,5 +342,28 @@ private actor SnapshotSamplerProbe {
                 isMinimized: false
             )
         }
+    }
+}
+
+/// Keeps the old AX-like sample in flight until the test has restarted sampling.
+private actor SnapshotRestartGate {
+    private var callCount = 0
+    private var released = false
+    private var continuation: CheckedContinuation<Void, Never>?
+
+    func beginCall() -> Int {
+        callCount += 1
+        return callCount
+    }
+
+    func waitForRelease() async {
+        guard !released else { return }
+        await withCheckedContinuation { continuation = $0 }
+    }
+
+    func release() {
+        released = true
+        continuation?.resume()
+        continuation = nil
     }
 }
