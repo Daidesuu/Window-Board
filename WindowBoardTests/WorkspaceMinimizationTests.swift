@@ -662,6 +662,7 @@ final class WorkspaceMinimizationTests: XCTestCase {
             defaults.set(mode != "off", forKey: "minimizeUnattachedOnWorkspaceSwitch")
             let service = ControlledMinimizationWindowService()
             let registered = ledgerWindow()
+            let other = ledgerWindow(pid: 73, number: 12, id: "unregistered")
             let reference = SavedWindowReference(id: UUID(), displayName: "old", appName: "App", title: "old",
                 bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil, workspaceURLString: nil,
                 offsetX: 0, offsetY: 0)
@@ -676,7 +677,7 @@ final class WorkspaceMinimizationTests: XCTestCase {
             var diagnostics: [MinimizationDiagnosticEvent] = []
             let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
                 boardCompositionStore: composition, minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
-            service.setReport(.init(windows: [registered], coverage: .complete, issues: [], failedPIDs: []))
+            service.setReport(.init(windows: [registered, other], coverage: .complete, issues: [], failedPIDs: []))
             let displayed = expectation(description: "displayed \(mode)")
             session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
                 windowCache: mode == "report" ? nil : [registered], completion: { _ in displayed.fulfill() })
@@ -684,14 +685,99 @@ final class WorkspaceMinimizationTests: XCTestCase {
             await waitForAutomaticIdle(session)
             // Resolution itself enumerates once only when no cache is provided.
             XCTAssertEqual(service.snapshot.count(for: .list), ["report", "included"].contains(mode) ? 1 : 0)
-            XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
+            XCTAssertEqual(service.snapshot.count(for: .minimize), ["report", "included"].contains(mode) ? 1 : 0)
             XCTAssertEqual(service.snapshot.count(for: .restore), 0)
             if ["off", "empty"].contains(mode) {
                 XCTAssertTrue(diagnostics.isEmpty)
             } else {
                 XCTAssertEqual(diagnostics.last?.enumerationCount, mode == "report" ? 0 : 1)
+                XCTAssertEqual(session.minimizedWindows.map(\.id), [other.id])
+                XCTAssertEqual(session.attachedWindows.map(\.window.id), [registered.id])
             }
         }
+    }
+
+    @MainActor
+    func testAutomaticCandidateCoverageUsesFreshIdentityAndOnlyFailedScopeFallbackOnce() async throws {
+        for coverage in [WindowEnumerationReport.Coverage.complete, .partial, .failed] {
+            let defaults = UserDefaults(suiteName: "CandidateCoverage.\(UUID())")!
+            defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+            let service = ControlledMinimizationWindowService()
+            let registered = ledgerWindow()
+            let stale = ledgerWindow(pid: 73, number: 12, id: "same-candidate")
+            let fresh = ledgerWindow(pid: 74, number: 13, id: stale.id).updatingTitle("fresh")
+            let failedScope = ledgerWindow(pid: 75, number: 14, id: "failed-scope")
+            let healthyScope = ledgerWindow(pid: 76, number: 15, id: "healthy-stale")
+            let reference = SavedWindowReference(id: UUID(), displayName: registered.title,
+                appName: registered.appName, title: registered.title, bundleIdentifier: nil,
+                bundleURLString: nil, documentURLString: nil, workspaceURLString: nil, offsetX: 0, offsetY: 0)
+            let store = WorkspaceStore(defaults: defaults)
+            let board = store.saveWorkspace(name: "Coverage", windows: [reference])
+            let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+                windowServiceFactory: { service })
+            let issue = WindowInspectionIssue(stage: .enumerateWindows, pid: failedScope.pid,
+                windowID: nil, failure: .invalidValue)
+            // A fully failed confirmation supplies no fresh candidates. Partial
+            // failure retains successful candidates and supplements only PID 75.
+            service.setReport(.init(windows: coverage == .failed ? [] : [registered, fresh],
+                coverage: coverage, issues: coverage == .complete ? [] : [issue],
+                failedPIDs: coverage == .complete ? [] : [failedScope.pid]))
+            let listed = expectation(description: "confirmation held \(coverage)")
+            let gate = service.holdNext(.list) { listed.fulfill() }
+            defer { gate.release() }
+            let displayed = expectation(description: "cache resolved \(coverage)")
+            session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+                windowCache: [registered, stale, failedScope, healthyScope], completion: { _ in displayed.fulfill() })
+            await fulfillment(of: [displayed, listed], timeout: 3)
+            XCTAssertEqual(session.attachedWindows.map(\.window.id), [registered.id])
+            XCTAssertFalse(session.isLoadingWorkspace)
+            XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
+            gate.release()
+            await waitForAutomaticIdle(session)
+            let expected = coverage == .complete ? [fresh] : coverage == .partial ? [fresh, failedScope] : [failedScope]
+            let attempts = service.snapshot.events.filter { $0.operation == .minimize && $0.phase == .started }
+            XCTAssertEqual(Set(attempts.compactMap(\.windowID)), Set(expected.map(\.id)))
+            XCTAssertEqual(attempts.count, expected.count)
+            XCTAssertEqual(session.minimizedWindows.map { LiveWindowIdentity(window: $0) },
+                expected.map { LiveWindowIdentity(window: $0) })
+            XCTAssertEqual(service.snapshot.count(for: .list), 1, "Incomplete confirmation must terminate without enumeration retry")
+            XCTAssertEqual(session.automaticMinimizationSummary.coverage, coverage)
+            XCTAssertFalse(service.snapshot.events.contains { $0.onMainThread })
+        }
+    }
+
+    @MainActor
+    func testMemberSelectionWithinDisplayedCompositionDoesNotIssueIntentOrWindowWork() async throws {
+        let defaults = UserDefaults(suiteName: "MemberSelection.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let registered = ledgerWindow()
+        let reference = SavedWindowReference(id: UUID(), displayName: registered.title,
+            appName: registered.appName, title: registered.title, bundleIdentifier: nil,
+            bundleURLString: nil, documentURLString: nil, workspaceURLString: nil, offsetX: 0, offsetY: 0)
+        let store = WorkspaceStore(defaults: defaults)
+        let primary = store.saveWorkspace(name: "Primary", windows: [])
+        let included = store.saveWorkspace(name: "Included", windows: [reference])
+        let composition = BoardCompositionStore(defaults: defaults)
+        _ = composition.includeRoot(included.id, for: primary.id, availableBoardIDs: Set(store.workspaces.map(\.id)))
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            boardCompositionStore: composition, windowServiceFactory: { service })
+        service.setReport(.init(windows: [registered], coverage: .complete, issues: [], failedPIDs: []))
+        let displayed = expectation(description: "composition displayed")
+        session.switchWorkspace(id: primary.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [registered], completion: { _ in displayed.fulfill() })
+        await fulfillment(of: [displayed], timeout: 3)
+        await waitForAutomaticIdle(session)
+        let intent = try XCTUnwrap(session.latestMinimizationIntent?.id)
+        let before = service.snapshot.events.count
+        XCTAssertTrue(session.requestMemberSelection(memberBoardID: included.id, groupPrimaryID: primary.id))
+        XCTAssertEqual(session.selectedWorkspaceID, included.id)
+        XCTAssertEqual(session.activeWorkspaceID, primary.id)
+        XCTAssertEqual(session.latestMinimizationIntent?.id, intent)
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(service.snapshot.events.count, before, "Member selection adds no enumeration, read, minimize or restore")
+        XCTAssertNil(session.pendingAutomaticMinimization)
+        XCTAssertNil(session.activeMinimizationOperation)
     }
 
     @MainActor
