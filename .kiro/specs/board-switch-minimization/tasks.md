@@ -138,7 +138,7 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
   - _Requirements: 4.2, 5.5, 5.7_
 
 - [ ] 5. 既存操作へ新しい処理を統合する
-- [ ] 5.1 統合：自動最小化を表示先行の切替処理へ接続する
+- [x] 5.1 統合：自動最小化を表示先行の切替処理へ接続する
   - 既存の解決結果を最新の受付情報へ結び付け、キャッシュ解決だけでは未登録候補が完全とみなさないようにする。
   - 取得済み結果の再利用と表示後の必要な補完を実行部へ渡し、現在の登録集合による操作許可と結果記帳をSessionへ戻す。
   - 最新設定がOFF・合成参照が空なら新しい補完・最小化・補償復元を起動せず、古い要求の復活を防ぐ。
@@ -270,3 +270,4 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
 - 4.2: finishOperationは枠を次要求へ移してその要求を返す。5.1のworker接続では返却要求を必ず起動する。same-target待機要求は最新contextでprivate経路へ再投入し旧batch/callbackを抑止する。
 - 4.3: step単位の重複追跡は終了時解放し、完了operation UUIDで遅延duplicateを拒否する。UUID保持量の評価は統合レビューで確認する。
 - 4.4: normal確認済みの窓はalreadyDesiredや書込失敗後normalでも候補復帰callbackへ返す。書込失敗診断とnormal状態への収束を別集計・表示とする。
+- 5.1: 自動workerはfinishOperationの返却要求を即launchする。旧手動は終端drainだけ接続済みで、準備/worker枠と最新UIguardの全面統合は5.2で行う。最大同時書込1はgate試験シナリオの証明であり全AX並列数ではない。

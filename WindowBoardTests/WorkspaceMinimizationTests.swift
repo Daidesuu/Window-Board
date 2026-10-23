@@ -4,6 +4,138 @@ import XCTest
 
 final class WorkspaceMinimizationTests: XCTestCase {
     @MainActor
+    func testCachedSwitchPublishesBeforeCandidateRefreshAndMinimizesNewWindow() async throws {
+        let defaults = UserDefaults(suiteName: "AutoIntegration.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let registered = ledgerWindow(pid: 72, number: 11)
+        let other = WindowInfo(id: "new", appName: "Other", title: "new", pid: 73,
+            bundleIdentifier: nil, bundleURL: nil, documentURL: nil,
+            axWindow: AXUIElementCreateApplication(73), windowNumber: 12, position: nil)
+        let reference = SavedWindowReference(id: UUID(), displayName: "old", appName: "App", title: "old",
+            bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil, workspaceURLString: nil,
+            offsetX: 0, offsetY: 0)
+        let store = WorkspaceStore(defaults: defaults)
+        let board = store.saveWorkspace(name: "Target", windows: [reference])
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            windowServiceFactory: { service })
+        service.setReport(.init(windows: [registered, other], coverage: .complete, issues: [], failedPIDs: []))
+        let listed = expectation(description: "post-display candidate refresh")
+        let gate = service.holdNext(.list) { listed.fulfill() }
+        defer { gate.release() }
+        let displayed = expectation(description: "board displayed")
+        session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [registered], completion: { _ in displayed.fulfill() })
+        await fulfillment(of: [displayed, listed], timeout: 3)
+        XCTAssertEqual(session.activeWorkspaceID, board.id)
+        XCTAssertEqual(session.attachedWindows.first?.window.id, registered.id)
+        XCTAssertFalse(session.isLoadingWorkspace)
+        let written = expectation(description: "new target minimized")
+        let write = service.holdNext(.minimize) { written.fulfill() }
+        gate.release()
+        await fulfillment(of: [written], timeout: 3)
+        write.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(service.snapshot.count(for: .list), 1)
+        XCTAssertEqual(service.snapshot.events.filter { $0.operation == .minimize && $0.phase == .started }.map(\.windowID), [other.id])
+        XCTAssertFalse(service.snapshot.events.contains { $0.onMainThread })
+    }
+
+    @MainActor
+    func testSwitchResolutionReportReusedAndOffOrEmptyAddsNoFeatureCalls() async throws {
+        for mode in ["report", "off", "empty", "included"] {
+            let defaults = UserDefaults(suiteName: "AutoBoundary.\(UUID())")!
+            defaults.set(mode != "off", forKey: "minimizeUnattachedOnWorkspaceSwitch")
+            let service = ControlledMinimizationWindowService()
+            let registered = ledgerWindow()
+            let reference = SavedWindowReference(id: UUID(), displayName: "old", appName: "App", title: "old",
+                bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil, workspaceURLString: nil,
+                offsetX: 0, offsetY: 0)
+            let store = WorkspaceStore(defaults: defaults)
+            let board = store.saveWorkspace(name: mode, windows: ["empty", "included"].contains(mode) ? [] : [reference])
+            let composition = BoardCompositionStore(defaults: defaults)
+            if mode == "included" {
+                let included = store.saveWorkspace(name: "Included", windows: [reference])
+                _ = composition.includeRoot(included.id, for: board.id,
+                    availableBoardIDs: Set(store.workspaces.map(\.id)))
+            }
+            let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+                boardCompositionStore: composition, windowServiceFactory: { service })
+            service.setReport(.init(windows: [registered], coverage: .complete, issues: [], failedPIDs: []))
+            let displayed = expectation(description: "displayed \(mode)")
+            session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+                windowCache: mode == "report" ? nil : [registered], completion: { _ in displayed.fulfill() })
+            await fulfillment(of: [displayed], timeout: 3)
+            await waitForAutomaticIdle(session)
+            // Resolution itself enumerates once only when no cache is provided.
+            XCTAssertEqual(service.snapshot.count(for: .list), ["report", "included"].contains(mode) ? 1 : 0)
+            XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
+            XCTAssertEqual(service.snapshot.count(for: .restore), 0)
+        }
+    }
+
+    @MainActor
+    func testInflightOldSuccessRecordedAndLatestSwitchRestoresItsAttachment() async throws {
+        let defaults = UserDefaults(suiteName: "AutoHandoff.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let a = ledgerWindow()
+        let b = WindowInfo(id: "b", appName: "Other", title: "B", pid: 73, bundleIdentifier: nil,
+            bundleURL: nil, documentURL: nil, axWindow: AXUIElementCreateApplication(73),
+            windowNumber: 12, position: nil)
+        func reference(_ window: WindowInfo) -> SavedWindowReference {
+            SavedWindowReference(id: UUID(), displayName: window.title, appName: window.appName, title: window.title,
+                bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil, workspaceURLString: nil,
+                offsetX: 0, offsetY: 0)
+        }
+        let store = WorkspaceStore(defaults: defaults)
+        let boardA = store.saveWorkspace(name: "A", windows: [reference(a)])
+        let boardB = store.saveWorkspace(name: "B", windows: [reference(b)])
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            windowServiceFactory: { service })
+        service.setReport(.init(windows: [a, b], coverage: .complete, issues: [], failedPIDs: []))
+        let oldWrite = expectation(description: "old minimizes B inflight")
+        let gate = service.holdNext(.minimize) { oldWrite.fulfill() }
+        defer { gate.release() }
+        session.switchWorkspace(id: boardA.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [a, b])
+        await fulfillment(of: [oldWrite], timeout: 3)
+        let newDisplayed = expectation(description: "latest B displayed before old write completes")
+        session.switchWorkspace(id: boardB.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [a, b], completion: { _ in newDisplayed.fulfill() })
+        await fulfillment(of: [newDisplayed], timeout: 3)
+        XCTAssertEqual(session.activeWorkspaceID, boardB.id)
+        gate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.activeWorkspaceID, boardB.id)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 2)
+        XCTAssertEqual(service.snapshot.count(for: .restore), 1)
+        XCTAssertEqual(session.minimizedWindows.map(\.id), [a.id])
+        XCTAssertNil(session.pendingAutomaticMinimization)
+        XCTAssertNil(session.activeMinimizationOperation)
+        let writes = service.snapshot.events.filter { $0.operation == .minimize || $0.operation == .restore }
+        var activeWrites = 0
+        for event in writes {
+            activeWrites += event.phase == .started ? 1 : -1
+            XCTAssertLessThanOrEqual(activeWrites, 1)
+        }
+        XCTAssertEqual(activeWrites, 0)
+    }
+
+    @MainActor
+    private func waitForAutomaticIdle(_ session: WorkspaceSessionController) async {
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        // Include the layout-to-materialization turn after display publication.
+        repeat {
+            try? await Task.sleep(for: .milliseconds(5))
+            if !session.isLoadingWorkspace && !session.isApplyingWorkspaceWindows &&
+                !session.isMinimizingUnattached && session.pendingAutomaticMinimization == nil &&
+                session.activeMinimizationOperation == nil { return }
+        } while ContinuousClock.now < deadline
+        XCTFail("automatic minimization did not settle")
+    }
+
+    @MainActor
     func testLatestPendingReplacesAndEveryEndReasonHandsOffWithoutOldFinishReleasingSlot() throws {
         for reason: MinimizationOperationResult.EndReason in [.completed, .failed, .empty, .superseded, .cancelled] {
             for startsAutomatically in [false, true] {

@@ -166,6 +166,9 @@ final class WorkspaceSessionController: ObservableObject {
     @MainActor private(set) var pendingAutomaticMinimization: MinimizationExecutionRequest?
     @MainActor private(set) var activeMinimizationOperation: MinimizationExecutionRequest?
     @MainActor private var materializedMinimizationIntent: MinimizationIntentID?
+    @MainActor private var minimizationWorker: (id: UUID, task: Task<Void, Never>)?
+    @MainActor private var minimizationCandidateSnapshot: CandidateSnapshot?
+    @MainActor private var minimizationKnownWindows: [WindowInfo] = []
 
     @MainActor
     @discardableResult
@@ -187,6 +190,9 @@ final class WorkspaceSessionController: ObservableObject {
         )
         pendingAutomaticMinimization = nil
         materializedMinimizationIntent = nil
+        minimizationCandidateSnapshot = nil
+        minimizationKnownWindows = Self.mergeMinimizationWindows(windowCache, fallback: minimizationKnownWindows)
+        minimizationWorker?.task.cancel()
         return id
     }
 
@@ -204,9 +210,9 @@ final class WorkspaceSessionController: ObservableObject {
         let source: CandidateSource
         if let report = resolution.report {
             source = .reuse(CandidateSnapshot(report: report, origin: .switchResolution,
-                intentID: intent, capturedAt: .now, fallback: latest.windowCache))
+                intentID: intent, capturedAt: .now, fallback: minimizationKnownWindows))
         } else {
-            source = .refresh(fallback: latest.windowCache)
+            source = .refresh(fallback: minimizationKnownWindows)
         }
         pendingAutomaticMinimization = MinimizationExecutionRequest(
             intentID: intent, operationID: UUID(), kind: .automatic, candidateSource: source
@@ -975,6 +981,7 @@ final class WorkspaceSessionController: ObservableObject {
             let service = self.windowServiceFactory()
             let resolveStart = Date()
             var availableWindows = windowCache ?? []
+            var enumerationReport: WindowEnumerationReport?
             var resolution = WorkspaceWindowResolver.resolve(
                 references: composedReferences,
                 candidates: availableWindows,
@@ -983,7 +990,9 @@ final class WorkspaceSessionController: ObservableObject {
 
             if windowCache == nil || !resolution.unresolvedReferences.isEmpty {
                 let listWindowsStart = Date()
-                availableWindows = service.listWindows()
+                let report = service.listWindowsReport()
+                enumerationReport = report
+                availableWindows = report.windows
                 Self.logDuration("workspace listWindows", since: listWindowsStart)
             }
 
@@ -1023,8 +1032,7 @@ final class WorkspaceSessionController: ObservableObject {
             let unresolvedAttachmentsForDeferredRecovery = resolvedAttachedWindows.filter {
                 resolvedUnavailableAttachmentIDs.contains($0.id)
             }
-            let minimizeCandidateWindows = Self.mergeWindows(resolvedAvailableWindows, into: windowCache ?? [])
-            var minimizeUnavailableAttachmentIDs = resolvedUnavailableAttachmentIDs
+            let resolvedEnumerationReport = enumerationReport
             Self.logDuration("workspace resolve", since: resolveStart)
 
             let batchUpdateStart = Date()
@@ -1122,7 +1130,6 @@ final class WorkspaceSessionController: ObservableObject {
 
                 if !failedAttachments.isEmpty {
                     deferredRecoveryAttachments.append(contentsOf: failedAttachments)
-                    minimizeUnavailableAttachmentIDs.formUnion(failedAttachments.map(\.id))
                     await MainActor.run {
                         self.applyDeferredRecovery(
                             [:],
@@ -1182,27 +1189,129 @@ final class WorkspaceSessionController: ObservableObject {
             }
 
             if shouldMinimizeAfterSwitch {
-                let attachedWindowsToKeep = resolvedAttachedWindows
-                let candidateWindowsToMinimize = minimizeCandidateWindows
-                let unavailableAttachmentIDsToProtect = minimizeUnavailableAttachmentIDs
                 await MainActor.run {
-                    minimizeAfterSwitchCompletion()
-                }
-                Task.detached(priority: .utility) {
-                    try? await Task.sleep(for: .milliseconds(150))
-                    Self.logEvent("deferred minimize start")
-                    let minimizeService = self.windowServiceFactory()
-                    await self.minimizeUnattachedAfterWorkspaceSwitch(
-                        keeping: attachedWindowsToKeep,
-                        candidateWindows: candidateWindowsToMinimize,
-                        unavailableAttachmentIDs: unavailableAttachmentIDsToProtect,
-                        workspaceID: workspace.id,
-                        service: minimizeService,
-                        completion: {}
-                    )
+                    guard self.latestMinimizationIntent?.id == intentID,
+                          self.workspaceSwitchRevision == switchRevision else { return }
+                    self.minimizationKnownWindows = Self.mergeMinimizationWindows(resolvedAvailableWindows,
+                        fallback: self.minimizationKnownWindows)
+                    self.materializeAutomaticRequest(intent: intentID, resolution: MinimizationResolution(
+                        targetBoardID: workspace.id, composedReferenceIDs: Set(composedReferences.map(\.id)),
+                        report: resolvedEnumerationReport, switchRevision: switchRevision,
+                        notBefore: self.latestMinimizationIntent!.notBefore))
+                    if !composedReferences.isEmpty {
+                        self.latestMinimizationIntent?.minimizeAfterSwitchCompletion()
+                    }
+                    self.drainAutomaticMinimization()
                 }
             }
         }
+    }
+
+    // Candidate fallback needs fresh same-ID handles; generic mergeWindows
+    // deliberately retains its established cache-first semantics elsewhere.
+    private static func mergeMinimizationWindows(_ fresh: [WindowInfo], fallback: [WindowInfo]) -> [WindowInfo] {
+        let freshIDs = Set(fresh.map(\.id))
+        return fresh + fallback.filter { !freshIDs.contains($0.id) }
+    }
+
+    @MainActor
+    func protectionSnapshot() -> ProtectionSnapshot {
+        ProtectionSnapshot(records: attachedWindows.map { attachment in
+            ProtectionRecord(attachmentID: attachment.id, window: attachment.window,
+                savedReference: attachment.savedReference,
+                isAvailable: !unavailableAttachedWindowIDs.contains(attachment.id) && attachment.window.pid != 0,
+                isReconnecting: reconnectingAttachedWindowIDs.contains(attachment.id),
+                lastWindowOrigin: attachment.lastWindowOrigin)
+        })
+    }
+
+    @MainActor
+    func authorizeStep(_ proposal: StepProposal) -> StepAuthorization {
+        guard let operation = activeMinimizationOperation,
+              operation.operationID == proposal.operationID,
+              operation.intentID == proposal.intentID,
+              isCurrentMinimizationOperation(operation) else { return .stop(.superseded) }
+        guard proposal.hasMatchingCandidateIdentity else { return .skip(.identityChanged) }
+        let protection = protectionSnapshot()
+        let window: WindowInfo
+        let classification: CandidateClassification
+        switch proposal.kind {
+        case .minimizeCandidate:
+            window = proposal.candidateWindow
+            classification = UnattachedWindowMinimizationPolicy.classify(window, protection: protection)
+            if classification == .registered { return .skip(.registered) }
+            if classification == .sameApplicationProtected { return .skip(.sameApplicationProtected) }
+        case .restoreAttachment:
+            guard let record = protection.records.first(where: { $0.attachmentID == proposal.attachmentID })
+                else { return .skip(.noLongerRegistered) }
+            guard record.isAvailable else { return .skip(.unavailable) }
+            guard !record.isReconnecting else { return .skip(.reconnecting) }
+            guard record.identity == proposal.candidateIdentity else { return .skip(.identityChanged) }
+            window = record.window
+            classification = .registered
+        }
+        let identity = LiveWindowIdentity(window: window)
+        return .perform(WindowOperationPermit(operationID: proposal.operationID, intentID: proposal.intentID,
+            stepID: proposal.stepID, kind: proposal.kind, identity: identity, window: window,
+            attachmentID: proposal.attachmentID, expectedLedgerVersion: minimizedLedger[identity]?.entryVersion,
+            protectionFingerprint: protection.fingerprint, classification: classification))
+    }
+
+    @MainActor
+    private func drainAutomaticMinimization() {
+        // Until manual preparation moves into the common slot in 5.2, retain
+        // pending work and let the legacy manual terminal paths drain it.
+        guard minimizationWorker == nil, !isMinimizingUnattached, !isRestoringMinimized,
+              let request = takeNextMinimizationOperation() else { return }
+        launchAutomaticMinimization(request)
+    }
+
+    @MainActor
+    private func launchAutomaticMinimization(_ request: MinimizationExecutionRequest) {
+        guard activeMinimizationOperation?.operationID == request.operationID,
+              minimizationWorker == nil else { return }
+        isMinimizingUnattached = true
+        let notBefore = latestMinimizationIntent?.notBefore ?? .now
+        let task = Task.detached(priority: .utility) {
+            try? await ContinuousClock().sleep(until: notBefore)
+            let service = self.windowServiceFactory()
+            let result = await UnattachedWindowMinimizationExecutor().run(request: request, service: service,
+                authorize: { self.authorizeStep($0) }, restorePlan: { self.protectionSnapshot() },
+                record: { receipt in
+                    // Physical successes remain in the ledger even after this intent expires.
+                    self.commitReceipt(receipt)
+                    if !receipt.desiredMinimized,
+                       self.canApplyMinimizationReceipt(receipt, to: receipt.window),
+                       let attachment = self.attachedWindows.first(where: {
+                           LiveWindowIdentity(window: $0.window) == receipt.identity
+                       }) {
+                        switch receipt.outcome {
+                        case .changed, .alreadyDesired:
+                            self.minimizedAttachedWindowIDs.remove(attachment.id)
+                        default: break
+                        }
+                    }
+                })
+            await MainActor.run {
+                guard self.minimizationWorker?.id == request.operationID else { return }
+                let current = self.isCurrentMinimizationOperation(request)
+                if current {
+                    self.minimizationCandidateSnapshot = result.candidateSnapshot
+                    if let snapshot = result.candidateSnapshot {
+                        self.minimizationKnownWindows = Self.mergeMinimizationWindows(snapshot.report.windows,
+                            fallback: snapshot.fallback)
+                    }
+                    self.statusMessage = Self.minimizeStatus(minimizedCount: result.summary.minimizedCount,
+                        restoredAttachedCount: result.summary.restoredCount, failedCount: result.summary.failureCount)
+                }
+                self.minimizationWorker = nil
+                self.isMinimizingUnattached = false
+                if let next = self.finishOperation(result) {
+                    self.launchAutomaticMinimization(next)
+                }
+            }
+        }
+        minimizationWorker = (request.operationID, task)
     }
 
     @MainActor
@@ -1271,6 +1380,7 @@ final class WorkspaceSessionController: ObservableObject {
                 guard !windowsToMinimize.isEmpty else {
                     self.isMinimizingUnattached = false
                     self.statusMessage = "No other windows to minimize."
+                    self.drainAutomaticMinimization()
                     return
                 }
 
@@ -1347,6 +1457,7 @@ final class WorkspaceSessionController: ObservableObject {
             await MainActor.run {
                 self.recordedMinimizationReceipts = self.recordedMinimizationReceipts.filter { $0.operationID != operationID }
                 self.isRestoringMinimized = false
+                defer { self.drainAutomaticMinimization() }
                 mergeWindows(resolvedRestoredWindows)
                 if resolvedFailureCount == 0 {
                     self.statusMessage = "Restored \(resolvedRestoredWindows.count) minimized window(s)."
@@ -1357,57 +1468,6 @@ final class WorkspaceSessionController: ObservableObject {
         }
     }
 
-    private func minimizeUnattachedAfterWorkspaceSwitch(
-        keeping attachedWindows: [AttachedWindow],
-        candidateWindows: [WindowInfo],
-        unavailableAttachmentIDs: Set<AttachedWindow.ID>,
-        workspaceID: SavedWorkspace.ID,
-        service: any WorkspaceWindowOperating,
-        completion: @escaping @MainActor () -> Void
-    ) async {
-        let shouldStart = await MainActor.run {
-            guard self.activeWorkspaceID == workspaceID,
-                  !self.isMinimizingUnattached,
-                  !attachedWindows.isEmpty else {
-                return false
-            }
-
-            self.isMinimizingUnattached = true
-            self.statusMessage = "Minimizing other windows..."
-            return true
-        }
-
-        guard shouldStart else {
-            return
-        }
-
-        let minimizeStart = Date()
-        let result = Self.minimizeUnattachedWindows(
-            keeping: attachedWindows,
-            candidateWindows: candidateWindows,
-            unavailableAttachmentIDs: unavailableAttachmentIDs,
-            service: service
-        )
-        Self.logDuration("minimizeUnattachedAfterWorkspaceSwitch", since: minimizeStart)
-
-        await MainActor.run {
-            for window in result.minimizedWindows {
-                self.rememberMinimizedWindow(window)
-            }
-            guard self.activeWorkspaceID == workspaceID else {
-                self.isMinimizingUnattached = false
-                return
-            }
-
-            self.isMinimizingUnattached = false
-            self.statusMessage = Self.minimizeStatus(
-                minimizedCount: result.minimizedWindows.count,
-                restoredAttachedCount: result.restoredAttachedWindows.count,
-                failedCount: result.failedCount
-            )
-            completion()
-        }
-    }
 
     func detachWindow(id: AttachedWindow.ID, boardOrigin: CGPoint?) {
         let ownerBoardID = attachmentOwnerBoardIDs[id] ?? activeWorkspaceID
@@ -1882,6 +1942,7 @@ final class WorkspaceSessionController: ObservableObject {
                     self.rememberMinimizedWindow(window)
                 }
                 self.isMinimizingUnattached = false
+                defer { self.drainAutomaticMinimization() }
                 guard self.workspaceSwitchRevision == switchRevision else { return }
                 let minimizedIDs = Set(result.minimizedWindows.map(\.id))
                 removeWindows(minimizedIDs)
