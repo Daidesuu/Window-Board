@@ -139,6 +139,7 @@ private enum LayoutOperationResult {
 final class WorkspaceSessionController: ObservableObject {
     private struct PendingWorkspaceSwitch {
         let workspaceID: SavedWorkspace.ID
+        let minimizationIntentID: MinimizationIntentID
         let selectedBoardID: SavedWorkspace.ID?
         let boardOrigin: CGPoint?
         let source: WorkspaceSwitchSource
@@ -148,6 +149,120 @@ final class WorkspaceSessionController: ObservableObject {
         let completion: @MainActor (_ shouldBringBoardToFront: Bool) -> Void
         let deferredWindowApplicationCompletion: @MainActor () -> Void
         let minimizeAfterSwitchCompletion: @MainActor () -> Void
+    }
+
+    struct SwitchMinimizationIntent {
+        let id: MinimizationIntentID
+        let target: SavedWorkspace.ID
+        let automaticEnabled: Bool
+        let source: WorkspaceSwitchSource
+        let notBefore: ContinuousClock.Instant
+        let windowCache: [WindowInfo]
+        let minimizeAfterSwitchCompletion: @MainActor () -> Void
+    }
+
+    @MainActor private var minimizationGeneration: UInt64 = 0
+    @MainActor private(set) var latestMinimizationIntent: SwitchMinimizationIntent?
+    @MainActor private(set) var pendingAutomaticMinimization: MinimizationExecutionRequest?
+    @MainActor private(set) var activeMinimizationOperation: MinimizationExecutionRequest?
+    @MainActor private var materializedMinimizationIntent: MinimizationIntentID?
+
+    @MainActor
+    @discardableResult
+    func acceptSwitchIntent(
+        target: SavedWorkspace.ID,
+        automaticEnabled: Bool,
+        source: WorkspaceSwitchSource = .mainWindow,
+        notBefore: ContinuousClock.Instant = .now,
+        windowCache: [WindowInfo] = [],
+        minimizeAfterSwitchCompletion: @escaping @MainActor () -> Void = {}
+    ) -> MinimizationIntentID? {
+        guard workspaceStore.workspaces.contains(where: { $0.id == target }) else { return nil }
+        minimizationGeneration += 1
+        let id = MinimizationIntentID(value: minimizationGeneration)
+        latestMinimizationIntent = SwitchMinimizationIntent(
+            id: id, target: target, automaticEnabled: automaticEnabled,
+            source: source, notBefore: notBefore, windowCache: windowCache,
+            minimizeAfterSwitchCompletion: minimizeAfterSwitchCompletion
+        )
+        pendingAutomaticMinimization = nil
+        materializedMinimizationIntent = nil
+        return id
+    }
+
+    @MainActor
+    func materializeAutomaticRequest(intent: MinimizationIntentID, resolution: MinimizationResolution) {
+        guard let latest = latestMinimizationIntent, latest.id == intent,
+              latest.target == resolution.targetBoardID else { return }
+        guard latest.automaticEnabled, !resolution.composedReferenceIDs.isEmpty else {
+            pendingAutomaticMinimization = nil
+            materializedMinimizationIntent = nil
+            return
+        }
+        guard materializedMinimizationIntent != intent else { return }
+        materializedMinimizationIntent = intent
+        let source: CandidateSource
+        if let report = resolution.report {
+            source = .reuse(CandidateSnapshot(report: report, origin: .switchResolution,
+                intentID: intent, capturedAt: .now, fallback: latest.windowCache))
+        } else {
+            source = .refresh(fallback: latest.windowCache)
+        }
+        pendingAutomaticMinimization = MinimizationExecutionRequest(
+            intentID: intent, operationID: UUID(), kind: .automatic, candidateSource: source
+        )
+    }
+
+    @MainActor
+    func requestMinimizationReconcile(intent: MinimizationIntentID, snapshot: CandidateSnapshot) {
+        guard latestMinimizationIntent?.id == intent,
+              materializedMinimizationIntent == intent,
+              snapshot.intentID == intent else { return }
+        if pendingAutomaticMinimization?.kind == .automatic { return }
+        pendingAutomaticMinimization = MinimizationExecutionRequest(
+            intentID: intent, operationID: UUID(), kind: .reconcile, candidateSource: .reuse(snapshot)
+        )
+    }
+
+    /// Consumes pending work only when the shared manual/automatic slot is free.
+    @MainActor
+    @discardableResult
+    func takeNextMinimizationOperation() -> MinimizationExecutionRequest? {
+        guard activeMinimizationOperation == nil,
+              let pending = pendingAutomaticMinimization,
+              pending.intentID == latestMinimizationIntent?.id else { return nil }
+        pendingAutomaticMinimization = nil
+        activeMinimizationOperation = pending
+        return pending
+    }
+
+    @MainActor
+    @discardableResult
+    func startManualMinimizationOperation(candidateSource: CandidateSource) -> MinimizationExecutionRequest? {
+        guard activeMinimizationOperation == nil, pendingAutomaticMinimization == nil,
+              !isMinimizingUnattached, !isRestoringMinimized else { return nil }
+        let request = MinimizationExecutionRequest(
+            intentID: latestMinimizationIntent?.id ?? MinimizationIntentID(value: minimizationGeneration),
+            operationID: UUID(), kind: .manual, candidateSource: candidateSource
+        )
+        activeMinimizationOperation = request
+        return request
+    }
+
+    @MainActor
+    func isCurrentMinimizationOperation(_ request: MinimizationExecutionRequest) -> Bool {
+        activeMinimizationOperation?.operationID == request.operationID
+            && request.intentID == (latestMinimizationIntent?.id ?? MinimizationIntentID(value: minimizationGeneration))
+    }
+
+    /// Returns ownership of the next request to the caller that will launch its worker.
+    @MainActor
+    @discardableResult
+    func finishOperation(_ result: MinimizationOperationResult) -> MinimizationExecutionRequest? {
+        guard activeMinimizationOperation?.operationID == result.operationID,
+              activeMinimizationOperation?.intentID == result.intentID else { return nil }
+        activeMinimizationOperation = nil
+        return takeNextMinimizationOperation()
     }
 
     let workspaceStore: WorkspaceStore
@@ -405,25 +520,8 @@ final class WorkspaceSessionController: ObservableObject {
     ) -> Bool {
         guard activeWorkspaceID == groupPrimaryID,
               currentBoardComposition.uniqueBoards.contains(where: { $0.id == memberBoardID }),
-              let workspace = workspaceStore.workspaces.first(where: { $0.id == memberBoardID }) else {
+              workspaceStore.workspaces.contains(where: { $0.id == memberBoardID }) else {
             return false
-        }
-        if isLoadingWorkspace {
-            pendingWorkspaceSwitch = PendingWorkspaceSwitch(
-                workspaceID: groupPrimaryID,
-                selectedBoardID: memberBoardID,
-                boardOrigin: nil,
-                source: .statusItem,
-                followMode: .none,
-                windowCache: nil,
-                mergeWindows: { _ in },
-                completion: { _ in },
-                deferredWindowApplicationCompletion: {},
-                minimizeAfterSwitchCompletion: {}
-            )
-            selectedWorkspaceID = memberBoardID
-            workspaceName = workspace.name
-            return true
         }
         return selectMemberBoard(memberBoardID)
     }
@@ -693,14 +791,48 @@ final class WorkspaceSessionController: ObservableObject {
         minimizeAfterSwitchCompletion: @escaping @MainActor () -> Void = {},
         persistCurrentWorkspaceBeforeSwitch: Bool = true
     ) {
+        performSwitchWorkspace(
+            id: workspaceID, selectedBoardID: selectedBoardID, boardOrigin: boardOrigin,
+            source: source, followMode: followMode, windowCache: windowCache,
+            mergeWindows: mergeWindows, completion: completion,
+            deferredWindowApplicationCompletion: deferredWindowApplicationCompletion,
+            minimizeAfterSwitchCompletion: minimizeAfterSwitchCompletion,
+            persistCurrentWorkspaceBeforeSwitch: persistCurrentWorkspaceBeforeSwitch
+        )
+    }
+
+    @MainActor
+    private func performSwitchWorkspace(
+        id workspaceID: SavedWorkspace.ID,
+        selectedBoardID: SavedWorkspace.ID? = nil,
+        boardOrigin: CGPoint?,
+        source: WorkspaceSwitchSource,
+        followMode: FollowMode,
+        windowCache: [WindowInfo]? = nil,
+        mergeWindows: @escaping @MainActor ([WindowInfo]) -> Void = { _ in },
+        completion: @escaping @MainActor (_ shouldBringBoardToFront: Bool) -> Void = { _ in },
+        deferredWindowApplicationCompletion: @escaping @MainActor () -> Void = {},
+        minimizeAfterSwitchCompletion: @escaping @MainActor () -> Void = {},
+        persistCurrentWorkspaceBeforeSwitch: Bool = true,
+        acceptedMinimizationIntentID: MinimizationIntentID? = nil
+    ) {
         guard let workspace = workspaceStore.workspaces.first(where: { $0.id == workspaceID }) else {
             statusMessage = "Board not found."
             return
         }
 
+        guard let intentID = acceptedMinimizationIntentID ?? acceptSwitchIntent(
+            target: workspaceID,
+            automaticEnabled: defaults.bool(forKey: minimizeUnattachedOnWorkspaceSwitchKey),
+            source: source, notBefore: .now.advanced(by: .milliseconds(150)),
+            windowCache: windowCache ?? [],
+            minimizeAfterSwitchCompletion: minimizeAfterSwitchCompletion
+        ) else { return }
+
         if isLoadingWorkspace {
             pendingWorkspaceSwitch = PendingWorkspaceSwitch(
                 workspaceID: workspaceID,
+                minimizationIntentID: intentID,
                 selectedBoardID: selectedBoardID,
                 boardOrigin: boardOrigin,
                 source: source,
@@ -749,7 +881,7 @@ final class WorkspaceSessionController: ObservableObject {
                 uniquingKeysWith: { current, _ in current }
             )
         }
-        let shouldMinimizeAfterSwitch = defaults.bool(forKey: minimizeUnattachedOnWorkspaceSwitchKey)
+        let shouldMinimizeAfterSwitch = latestMinimizationIntent?.automaticEnabled == true
         let shouldRestoreMissingWindows = defaults.bool(forKey: restoreMissingWindowsOnWorkspaceSwitchKey)
         let shouldDeferWindowApplication = windowCache != nil
         let plannedAttachedWindows = WorkspaceWindowResolver.placeholderAttachments(
@@ -831,28 +963,26 @@ final class WorkspaceSessionController: ObservableObject {
                 var selectedBoardIDForBatch = resolvedSelectedBoardID
                 if let pendingSwitch = self.pendingWorkspaceSwitch {
                     self.pendingWorkspaceSwitch = nil
-                    if pendingSwitch.workspaceID == workspace.id {
-                        if let pendingSelectedWorkspaceID = pendingSwitch.selectedBoardID,
-                           boardComposition.uniqueBoards.contains(where: { $0.id == pendingSelectedWorkspaceID }) {
-                            selectedBoardIDForBatch = pendingSelectedWorkspaceID
-                        }
-                    } else {
-                        self.isLoadingWorkspace = false
-                        self.switchWorkspace(
-                            id: pendingSwitch.workspaceID,
-                            selectedBoardID: pendingSwitch.selectedBoardID,
-                            boardOrigin: pendingSwitch.boardOrigin,
-                            source: pendingSwitch.source,
-                            followMode: pendingSwitch.followMode,
-                            windowCache: pendingSwitch.windowCache,
-                            mergeWindows: pendingSwitch.mergeWindows,
-                            completion: pendingSwitch.completion,
-                            deferredWindowApplicationCompletion: pendingSwitch.deferredWindowApplicationCompletion,
-                            minimizeAfterSwitchCompletion: pendingSwitch.minimizeAfterSwitchCompletion,
-                            persistCurrentWorkspaceBeforeSwitch: false
-                        )
-                        return
-                    }
+                    self.isLoadingWorkspace = false
+                    self.performSwitchWorkspace(
+                        id: pendingSwitch.workspaceID,
+                        selectedBoardID: pendingSwitch.selectedBoardID,
+                        boardOrigin: pendingSwitch.boardOrigin,
+                        source: pendingSwitch.source,
+                        followMode: pendingSwitch.followMode,
+                        windowCache: pendingSwitch.windowCache,
+                        mergeWindows: pendingSwitch.mergeWindows,
+                        completion: pendingSwitch.completion,
+                        deferredWindowApplicationCompletion: pendingSwitch.deferredWindowApplicationCompletion,
+                        minimizeAfterSwitchCompletion: pendingSwitch.minimizeAfterSwitchCompletion,
+                        persistCurrentWorkspaceBeforeSwitch: false,
+                        acceptedMinimizationIntentID: pendingSwitch.minimizationIntentID
+                    )
+                    return
+                }
+                if let selected = self.selectedWorkspaceID,
+                   boardComposition.uniqueBoards.contains(where: { $0.id == selected }) {
+                    selectedBoardIDForBatch = selected
                 }
 
                 self.attachedWindows = resolvedAttachedWindows
