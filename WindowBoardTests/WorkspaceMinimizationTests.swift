@@ -532,6 +532,66 @@ final class WorkspaceMinimizationTests: XCTestCase {
     }
 
     @MainActor
+    func testEmptyOrFailedManualPreparationStillHandsOffToLatestAutomaticRequest() async throws {
+        for coverage in [WindowEnumerationReport.Coverage.complete, .failed] {
+            let defaults = UserDefaults(suiteName: "ManualPreparationTerminal.\(UUID())")!
+            defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+            let service = ControlledMinimizationWindowService()
+            let registered = ledgerWindow().updatingTitle("Registered")
+            let other = ledgerWindow(pid: 73, number: 12, id: "other").updatingTitle("Other")
+            let store = WorkspaceStore(defaults: defaults)
+            let board = store.saveWorkspace(name: "Latest", windows: [SavedWindowReference(id: UUID(),
+                displayName: registered.title, appName: registered.appName, title: registered.title,
+                bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+                workspaceURLString: nil, offsetX: 0, offsetY: 0)])
+            var finished: [MinimizationDiagnosticEvent] = []
+            let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+                minimizationDiagnosticSink: { event in
+                    if event.phase == .finished {
+                        finished.append(event)
+                        // Supply the subsequent request independently of the old
+                        // preparation's empty or failed report.
+                        service.setReport(.init(windows: [registered, other], coverage: .complete, issues: [], failedPIDs: []))
+                    }
+                }, windowServiceFactory: { service })
+            service.setReport(.init(windows: [], coverage: coverage,
+                issues: coverage == .failed ? [.init(stage: .enumerateApplications, pid: nil,
+                    windowID: nil, failure: .invalidValue)] : [], failedPIDs: []))
+            let preparing = expectation(description: "manual preparation held")
+            let manualGate = service.holdNext(.list) { preparing.fulfill() }
+            let automaticPreparing = expectation(description: "latest automatic owns next list")
+            let automaticGate = service.holdNext(.list) { automaticPreparing.fulfill() }
+            defer { manualGate.release(); automaticGate.release() }
+            var obsoleteCallbacks = 0
+            session.minimizeUnattachedWindows(knownWindows: [], refreshWindowList: true,
+                mergeWindows: { _ in obsoleteCallbacks += 1 }, removeWindows: { _ in obsoleteCallbacks += 1 })
+            await fulfillment(of: [preparing], timeout: 3)
+            let old = try XCTUnwrap(session.activeMinimizationOperation)
+            let displayed = expectation(description: "latest Board displayed")
+            session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow,
+                followMode: .none, windowCache: [registered], completion: { _ in displayed.fulfill() })
+            await fulfillment(of: [displayed], timeout: 3)
+            manualGate.release()
+            await fulfillment(of: [automaticPreparing], timeout: 3)
+            XCTAssertEqual(finished.count, 1)
+            XCTAssertEqual(finished.first?.operationID, old.operationID)
+            XCTAssertFalse(finished.first?.appliesToLatest ?? true)
+            XCTAssertEqual(obsoleteCallbacks, 0)
+            XCTAssertEqual(session.activeWorkspaceID, board.id)
+            XCTAssertEqual(session.attachedWindows.map(\.window.id), [registered.id])
+            XCTAssertTrue(session.isMinimizingUnattached)
+            XCTAssertEqual(session.activeMinimizationOperation?.kind, .automatic)
+            XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
+            automaticGate.release()
+            await waitForAutomaticIdle(session)
+            XCTAssertEqual(service.snapshot.events.filter { $0.operation == .minimize && $0.phase == .started }.map(\.windowID), [other.id])
+            XCTAssertEqual(obsoleteCallbacks, 0)
+            XCTAssertNil(session.pendingAutomaticMinimization)
+            XCTAssertNil(session.activeMinimizationOperation)
+        }
+    }
+
+    @MainActor
     func testEmptyManualFinishesAndDoesNotResubmitCompletedAutomaticWork() async throws {
         let defaults = UserDefaults(suiteName: "ManualEmpty.\(UUID())")!
         let service = ControlledMinimizationWindowService()
@@ -829,6 +889,103 @@ final class WorkspaceMinimizationTests: XCTestCase {
     }
 
     @MainActor
+    func testThreeSwitchesWhileOldWriteHeldConvergeOnlyToLatestBoard() async throws {
+        let defaults = UserDefaults(suiteName: "ThreeSwitchHandoff.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let a = ledgerWindow(id: "a").updatingTitle("A")
+        let b = ledgerWindow(pid: 73, number: 12, id: "b").updatingTitle("B")
+        let c = ledgerWindow(pid: 74, number: 13, id: "c").updatingTitle("C")
+        let other = ledgerWindow(pid: 75, number: 14, id: "other")
+        let store = WorkspaceStore(defaults: defaults)
+        func board(_ name: String, _ window: WindowInfo) -> SavedWorkspace {
+            store.saveWorkspace(name: name, windows: [SavedWindowReference(id: UUID(),
+                displayName: window.id, appName: window.appName, title: window.title,
+                bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+                workspaceURLString: nil, offsetX: 0, offsetY: 0)])
+        }
+        let boardA = board("A", a), boardB = board("B", b), boardC = board("C", c)
+        var diagnostics: [MinimizationDiagnosticEvent] = []
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
+        // C is the first unregistered candidate for A; the remaining candidates
+        // prove that superseding A stops its next operation boundary.
+        service.setReport(.init(windows: [c, other, b, a], coverage: .complete, issues: [], failedPIDs: []))
+        let oldWriting = expectation(description: "A write to C is in flight")
+        let oldGate = service.holdNext(.minimize) { oldWriting.fulfill() }
+        let restoring = expectation(description: "latest C compensates old physical success")
+        let restoreGate = service.holdNext(.restore) { restoring.fulfill() }
+        defer { oldGate.release(); restoreGate.release() }
+        session.switchWorkspace(id: boardA.id, boardOrigin: nil, source: .mainWindow,
+            followMode: .none, windowCache: [a, b, c, other])
+        await fulfillment(of: [oldWriting], timeout: 3)
+        let oldOperation = try XCTUnwrap(session.activeMinimizationOperation)
+        let bDisplayed = expectation(description: "B displayed while A is held")
+        session.switchWorkspace(id: boardB.id, boardOrigin: nil, source: .statusItem,
+            followMode: .none, windowCache: [a, b, c, other], completion: { _ in bDisplayed.fulfill() })
+        let bIntent = try XCTUnwrap(session.latestMinimizationIntent)
+        XCTAssertEqual(bIntent.target, boardB.id)
+        XCTAssertEqual(bIntent.source, .statusItem)
+        await fulfillment(of: [bDisplayed], timeout: 3)
+        let cPending = expectation(description: "C materialized pending while A owns slot")
+        var observedPending = false
+        let subscription = session.$minimizationProgress.sink { progress in
+            if case .waiting = progress, session.latestMinimizationIntent?.target == boardC.id,
+               session.pendingAutomaticMinimization?.intentID == session.latestMinimizationIntent?.id,
+               !observedPending {
+                observedPending = true
+                cPending.fulfill()
+            }
+        }
+        defer { subscription.cancel() }
+        let cDisplayed = expectation(description: "C displayed before old write returns")
+        session.switchWorkspace(id: boardC.id, boardOrigin: nil, source: .launcher,
+            followMode: .none, windowCache: [a, b, c, other], completion: { _ in cDisplayed.fulfill() })
+        let cIntent = try XCTUnwrap(session.latestMinimizationIntent)
+        XCTAssertGreaterThan(cIntent.id, bIntent.id)
+        XCTAssertEqual(cIntent.source, .launcher)
+        XCTAssertTrue(cIntent.automaticEnabled)
+        XCTAssertGreaterThanOrEqual(cIntent.notBefore, bIntent.notBefore)
+        await fulfillment(of: [cDisplayed, cPending], timeout: 3)
+        XCTAssertEqual(session.activeWorkspaceID, boardC.id)
+        XCTAssertEqual(session.activeMinimizationOperation?.operationID, oldOperation.operationID)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 1)
+        oldGate.release()
+        await fulfillment(of: [restoring], timeout: 3)
+        XCTAssertEqual(session.activeWorkspaceID, boardC.id)
+        XCTAssertEqual(session.attachedWindows.map(\.window.id), [c.id])
+        XCTAssertEqual(session.activeMinimizationOperation?.intentID, cIntent.id)
+        XCTAssertTrue(session.isMinimizingUnattached)
+        XCTAssertEqual(session.displayStatusMessage, "Board displayed; processing windows...")
+        let oldFinished = try XCTUnwrap(diagnostics.first { $0.phase == .finished && $0.operationID == oldOperation.operationID })
+        XCTAssertFalse(oldFinished.appliesToLatest)
+        XCTAssertEqual(oldFinished.minimizedCount, 1)
+        XCTAssertFalse(diagnostics.contains { $0.phase == .started && $0.intentID == bIntent.id })
+        restoreGate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.activeWorkspaceID, boardC.id)
+        XCTAssertEqual(session.attachedWindows.map(\.window.id), [c.id])
+        XCTAssertEqual(Set(session.minimizedWindows.map(\.id)), Set([a.id, b.id, other.id]))
+        XCTAssertEqual(try service.minimizedObservation(of: c).state.get(), false)
+        let writes = service.snapshot.events.filter { $0.operation == .minimize || $0.operation == .restore }
+        let starts = writes.filter { $0.phase == .started }
+        XCTAssertEqual(starts.filter { $0.operation == .minimize && $0.windowID == c.id }.count, 1)
+        XCTAssertEqual(starts.filter { $0.operation == .restore && $0.windowID == c.id }.count, 1)
+        for window in [a, b, other] {
+            XCTAssertEqual(starts.filter { $0.operation == .minimize && $0.windowID == window.id }.count, 1)
+        }
+        var activeWrites = 0
+        for event in writes {
+            activeWrites += event.phase == .started ? 1 : -1
+            XCTAssertTrue((0...1).contains(activeWrites), "Only one minimization/restore write may be active")
+        }
+        XCTAssertEqual(activeWrites, 0)
+        XCTAssertFalse(writes.contains { $0.onMainThread })
+        XCTAssertNil(session.pendingAutomaticMinimization)
+        XCTAssertNil(session.activeMinimizationOperation)
+    }
+
+    @MainActor
     private func waitForAutomaticIdle(_ session: WorkspaceSessionController) async {
         let deadline = ContinuousClock.now.advanced(by: .seconds(3))
         // Include the layout-to-materialization turn after display publication.
@@ -952,6 +1109,60 @@ final class WorkspaceMinimizationTests: XCTestCase {
         XCTAssertEqual(session.latestMinimizationIntent?.id, latest.id)
         XCTAssertNil(session.pendingAutomaticMinimization)
         XCTAssertFalse(session.isLoadingWorkspace)
+    }
+
+    @MainActor
+    func testQueuedDifferentTargetsInvalidateAtAcceptanceAndReplayOnlyLatestContext() async throws {
+        let defaults = UserDefaults(suiteName: "QueuedDifferentTargets.\(UUID())")!
+        let service = ControlledMinimizationWindowService()
+        let registered = ledgerWindow().updatingTitle("Registered")
+        let other = ledgerWindow(pid: 73, number: 12, id: "other").updatingTitle("Other")
+        let store = WorkspaceStore(defaults: defaults)
+        let boardB = store.saveWorkspace(name: "Skipped B", windows: [])
+        let boardC = store.saveWorkspace(name: "Latest C", windows: [SavedWindowReference(id: UUID(),
+            displayName: registered.title, appName: registered.appName, title: registered.title,
+            bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+            workspaceURLString: nil, offsetX: 0, offsetY: 0)])
+        var diagnostics: [MinimizationDiagnosticEvent] = []
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
+        service.setReport(.init(windows: [registered, other], coverage: .complete, issues: [], failedPIDs: []))
+        let resolving = expectation(description: "initial load held")
+        let gate = service.holdNext(.list) { resolving.fulfill() }
+        defer { gate.release() }
+        var obsoleteCallbacks = 0
+        session.switchWorkspace(id: store.defaultWorkspace!.id, boardOrigin: nil,
+            source: .mainWindow, followMode: .none, completion: { _ in obsoleteCallbacks += 1 })
+        await fulfillment(of: [resolving], timeout: 3)
+        let initial = try XCTUnwrap(session.latestMinimizationIntent)
+        session.switchWorkspace(id: boardB.id, boardOrigin: nil, source: .mainWindow,
+            followMode: .none, completion: { _ in obsoleteCallbacks += 1 })
+        let queuedB = try XCTUnwrap(session.latestMinimizationIntent)
+        XCTAssertGreaterThan(queuedB.id, initial.id)
+        XCTAssertFalse(queuedB.automaticEnabled)
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let displayed = expectation(description: "latest queued callback")
+        session.switchWorkspace(id: boardC.id, boardOrigin: CGPoint(x: 40, y: 50), source: .statusItem,
+            followMode: .none, completion: { _ in displayed.fulfill() })
+        let latest = try XCTUnwrap(session.latestMinimizationIntent)
+        XCTAssertGreaterThan(latest.id, queuedB.id)
+        XCTAssertEqual(latest.target, boardC.id)
+        XCTAssertEqual(latest.source, .statusItem)
+        XCTAssertTrue(latest.automaticEnabled)
+        XCTAssertGreaterThanOrEqual(latest.notBefore, queuedB.notBefore)
+        XCTAssertNil(session.pendingAutomaticMinimization)
+        XCTAssertTrue(session.isLoadingWorkspace)
+        gate.release()
+        await fulfillment(of: [displayed], timeout: 3)
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.latestMinimizationIntent?.id, latest.id, "Replay must preserve accepted intent")
+        XCTAssertEqual(session.activeWorkspaceID, boardC.id)
+        XCTAssertEqual(session.attachedWindows.map(\.window.id), [registered.id])
+        XCTAssertEqual(obsoleteCallbacks, 0)
+        XCTAssertEqual(service.snapshot.events.filter { $0.operation == .minimize && $0.phase == .started }.map(\.windowID), [other.id])
+        XCTAssertEqual(diagnostics.filter { $0.phase == .started }.map(\.intentID), [latest.id])
+        XCTAssertNil(session.pendingAutomaticMinimization)
+        XCTAssertNil(session.activeMinimizationOperation)
     }
 
     @MainActor
