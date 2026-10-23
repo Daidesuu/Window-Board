@@ -147,6 +147,11 @@ final class WorkspaceSessionController: ObservableObject {
     @MainActor private var materializedMinimizationIntent: MinimizationIntentID?
     @MainActor private var minimizationWorker: (id: UUID, task: Task<Void, Never>)?
     @MainActor private var minimizationCandidateSnapshot: CandidateSnapshot?
+    @MainActor private var deferredReconcileIntent: MinimizationIntentID?
+    @MainActor private(set) var automaticMinimizationSummary = OperationSummary()
+    @MainActor private var automaticSummaryReceipts: Set<StepReceiptID> = []
+    @MainActor private var summarizedEnumerationOperations: Set<UUID> = []
+    @MainActor private var hasSummarizedAutomaticCandidateReport = false
     @MainActor private var minimizationKnownWindows: [WindowInfo] = []
 
     @MainActor
@@ -170,6 +175,11 @@ final class WorkspaceSessionController: ObservableObject {
         pendingAutomaticMinimization = nil
         materializedMinimizationIntent = nil
         minimizationCandidateSnapshot = nil
+        deferredReconcileIntent = nil
+        automaticMinimizationSummary = OperationSummary()
+        automaticSummaryReceipts.removeAll()
+        summarizedEnumerationOperations.removeAll()
+        hasSummarizedAutomaticCandidateReport = false
         minimizationKnownWindows = Self.mergeMinimizationWindows(windowCache, fallback: minimizationKnownWindows)
         minimizationWorker?.task.cancel()
         return id
@@ -201,12 +211,32 @@ final class WorkspaceSessionController: ObservableObject {
     @MainActor
     func requestMinimizationReconcile(intent: MinimizationIntentID, snapshot: CandidateSnapshot) {
         guard latestMinimizationIntent?.id == intent,
+              latestMinimizationIntent?.automaticEnabled == true,
               materializedMinimizationIntent == intent,
               snapshot.intentID == intent else { return }
         if pendingAutomaticMinimization?.kind == .automatic { return }
         pendingAutomaticMinimization = MinimizationExecutionRequest(
             intentID: intent, operationID: UUID(), kind: .reconcile, candidateSource: .reuse(snapshot)
         )
+    }
+
+    @MainActor
+    private func reconcileAfterDeferredRecovery(intent: MinimizationIntentID) {
+        guard latestMinimizationIntent?.id == intent,
+              latestMinimizationIntent?.automaticEnabled == true,
+              materializedMinimizationIntent == intent else { return }
+        // Full pending work observes current protection when it starts. During a
+        // full worker retain the request until its fixed snapshot is returned.
+        if pendingAutomaticMinimization?.kind == .automatic { return }
+        guard let snapshot = minimizationCandidateSnapshot else {
+            if activeMinimizationOperation?.intentID == intent,
+               activeMinimizationOperation?.kind == .automatic {
+                deferredReconcileIntent = intent
+            }
+            return
+        }
+        requestMinimizationReconcile(intent: intent, snapshot: snapshot)
+        drainAutomaticMinimization()
     }
 
     /// Consumes pending work only when the shared manual/automatic slot is free.
@@ -282,6 +312,24 @@ final class WorkspaceSessionController: ObservableObject {
         guard !completedMinimizationOperations.contains(receipt.operationID),
               receipt.identity == LiveWindowIdentity(window: receipt.window),
               recordedMinimizationReceipts.insert(receipt.id).inserted else { return false }
+        if let operation = activeMinimizationOperation, operation.kind != .manual,
+           operation.operationID == receipt.operationID,
+           isCurrentMinimizationOperation(operation),
+           automaticSummaryReceipts.insert(receipt.id).inserted {
+            switch receipt.outcome {
+            case .changed:
+                if receipt.desiredMinimized { automaticMinimizationSummary.minimizedCount += 1 }
+                else { automaticMinimizationSummary.restoredCount += 1 }
+            case .alreadyDesired: automaticMinimizationSummary.noOpCount += 1
+            case .readFailed(let issue):
+                automaticMinimizationSummary.readFailureCount += 1
+                automaticMinimizationSummary.issues.append(issue)
+            case .writeFailed(let issue, _):
+                automaticMinimizationSummary.writeFailureCount += 1
+                automaticMinimizationSummary.issues.append(issue)
+            case .skipped, .superseded: break
+            }
+        }
         if receipt.desiredMinimized, case .changed = receipt.outcome {
             upsertMinimizedWindow(receipt.window)
         }
@@ -1134,6 +1182,7 @@ final class WorkspaceSessionController: ObservableObject {
                         await self.recoverMissingAttachmentsAfterWorkspaceSwitch(
                             recoveryAttachments,
                             workspaceID: workspace.id,
+                            minimizationIntentID: intentID,
                             boardOrigin: effectiveBoardOrigin,
                             useSavedOrigin: shouldRestoreSavedOrigin,
                             service: recoveryService
@@ -1152,6 +1201,7 @@ final class WorkspaceSessionController: ObservableObject {
                         await self.recoverMissingAttachmentsAfterWorkspaceSwitch(
                             recoveryAttachments,
                             workspaceID: workspace.id,
+                            minimizationIntentID: intentID,
                             boardOrigin: effectiveBoardOrigin,
                             useSavedOrigin: shouldRestoreSavedOrigin,
                             service: recoveryService
@@ -1275,16 +1325,41 @@ final class WorkspaceSessionController: ObservableObject {
         guard minimizationWorker?.id == request.operationID,
               activeMinimizationOperation?.operationID == request.operationID else { return }
         if isCurrentMinimizationOperation(request) {
-            minimizationCandidateSnapshot = result.candidateSnapshot
-            if let snapshot = result.candidateSnapshot {
-                minimizationKnownWindows = Self.mergeMinimizationWindows(snapshot.report.windows,
-                    fallback: snapshot.fallback)
+            var summary = result.summary
+            if request.kind != .manual {
+                if let snapshot = result.candidateSnapshot {
+                    minimizationCandidateSnapshot = snapshot
+                    minimizationKnownWindows = Self.mergeMinimizationWindows(snapshot.report.windows,
+                        fallback: snapshot.fallback)
+                }
+                automaticMinimizationSummary.candidateCount = summary.candidateCount
+                automaticMinimizationSummary.registeredCount = summary.registeredCount
+                automaticMinimizationSummary.sameApplicationProtectedCount = summary.sameApplicationProtectedCount
+                automaticMinimizationSummary.coverage = summary.coverage
+                automaticMinimizationSummary.interruptionReason = summary.interruptionReason
+                if summary.enumerationCount > 0,
+                   summarizedEnumerationOperations.insert(request.operationID).inserted {
+                    automaticMinimizationSummary.enumerationCount += summary.enumerationCount
+                }
+                // Reconcile reuses this report. Preserve its diagnostics even
+                // when resolution supplied it without an executor enumeration,
+                // and do not append the same acquisition issues on each pass.
+                if !hasSummarizedAutomaticCandidateReport, let snapshot = result.candidateSnapshot {
+                    automaticMinimizationSummary.issues.append(contentsOf: snapshot.report.issues)
+                    hasSummarizedAutomaticCandidateReport = true
+                }
+                summary = automaticMinimizationSummary
+                if deferredReconcileIntent == request.intentID,
+                   let snapshot = minimizationCandidateSnapshot {
+                    deferredReconcileIntent = nil
+                    requestMinimizationReconcile(intent: request.intentID, snapshot: snapshot)
+                }
             }
-            statusMessage = request.kind == .manual && result.summary.minimizedCount == 0 &&
-                result.summary.restoredCount == 0 && result.summary.failureCount == 0
+            statusMessage = request.kind == .manual && summary.minimizedCount == 0 &&
+                summary.restoredCount == 0 && summary.failureCount == 0
                 ? "No other windows to minimize."
-                : Self.minimizeStatus(minimizedCount: result.summary.minimizedCount,
-                    restoredAttachedCount: result.summary.restoredCount, failedCount: result.summary.failureCount)
+                : Self.minimizeStatus(minimizedCount: summary.minimizedCount,
+                    restoredAttachedCount: summary.restoredCount, failedCount: summary.failureCount)
         }
         minimizationWorker = nil
         if let next = finishOperation(result) {
@@ -1705,11 +1780,14 @@ final class WorkspaceSessionController: ObservableObject {
     }
 
     @MainActor
-    private func applyDeferredRecovery(
+    func applyDeferredRecovery(
         _ recoveredAttachments: [AttachedWindow.ID: AttachedWindow],
         failedAttachments: [AttachedWindow],
-        workspaceID: SavedWorkspace.ID
+        workspaceID: SavedWorkspace.ID,
+        minimizationIntentID: MinimizationIntentID? = nil
     ) {
+        guard activeWorkspaceID == workspaceID else { return }
+        if let minimizationIntentID, latestMinimizationIntent?.id != minimizationIntentID { return }
         var recoveredCount = 0
         var failedCount = 0
 
@@ -1755,11 +1833,15 @@ final class WorkspaceSessionController: ObservableObject {
             }
             statusMessage = parts.joined(separator: " ")
         }
+        if recoveredCount > 0, let minimizationIntentID {
+            reconcileAfterDeferredRecovery(intent: minimizationIntentID)
+        }
     }
 
     private func recoverMissingAttachmentsAfterWorkspaceSwitch(
         _ attachments: [AttachedWindow],
         workspaceID: SavedWorkspace.ID,
+        minimizationIntentID: MinimizationIntentID,
         boardOrigin: CGPoint,
         useSavedOrigin: Bool,
         service: any WorkspaceWindowOperating
@@ -1771,7 +1853,8 @@ final class WorkspaceSessionController: ObservableObject {
 
         let attachmentIDs = Set(attachments.map(\.id))
         let shouldRecover = await MainActor.run {
-            guard self.activeWorkspaceID == workspaceID else {
+            guard self.activeWorkspaceID == workspaceID,
+                  self.latestMinimizationIntent?.id == minimizationIntentID else {
                 return false
             }
 
@@ -1796,16 +1879,18 @@ final class WorkspaceSessionController: ObservableObject {
         )
 
         await MainActor.run {
-            guard self.activeWorkspaceID == workspaceID else {
+            guard self.activeWorkspaceID == workspaceID,
+                  self.latestMinimizationIntent?.id == minimizationIntentID else {
                 return
             }
 
+            self.reconnectingAttachedWindowIDs.subtract(attachmentIDs)
             self.applyDeferredRecovery(
                 recoveredAttachments,
                 failedAttachments: attachments,
-                workspaceID: workspaceID
+                workspaceID: workspaceID,
+                minimizationIntentID: minimizationIntentID
             )
-            self.reconnectingAttachedWindowIDs.subtract(attachmentIDs)
         }
     }
 

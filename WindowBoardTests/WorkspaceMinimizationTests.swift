@@ -4,6 +4,198 @@ import XCTest
 
 final class WorkspaceMinimizationTests: XCTestCase {
     @MainActor
+    func testDeferredRecoveryReclassifiesFixedCandidatesWithoutEnumeration() async throws {
+        let defaults = UserDefaults(suiteName: "DeferredReconcile.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let old = ledgerWindow()
+        let replacement = ledgerWindow(pid: 74, number: 14, id: "replacement")
+        let reference = SavedWindowReference(id: UUID(), displayName: old.title, appName: old.appName,
+            title: old.title, bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+            workspaceURLString: nil, offsetX: 0, offsetY: 0)
+        let store = WorkspaceStore(defaults: defaults)
+        let board = store.saveWorkspace(name: "Recovered", windows: [reference])
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            windowServiceFactory: { service })
+        service.setReport(.init(windows: [old], coverage: .complete, issues: [], failedPIDs: []))
+        session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [old], completion: { _ in })
+        await waitForAutomaticIdle(session)
+        let attachment = try XCTUnwrap(session.attachedWindows.first)
+        let intent = try XCTUnwrap(session.latestMinimizationIntent?.id)
+        try service.setMinimized(true, for: replacement)
+        let before = service.snapshot.count(for: .list)
+        let recovered = AttachedWindow(attachmentID: attachment.id, window: replacement,
+            savedReference: attachment.savedReference, lastBoardOrigin: .zero,
+            lastWindowOrigin: .zero, lastAppliedOrigin: nil, pendingReleaseOrigin: nil)
+        session.applyDeferredRecovery([attachment.id: recovered], failedAttachments: [attachment],
+            workspaceID: board.id, minimizationIntentID: intent)
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(service.snapshot.count(for: .list), before)
+        XCTAssertTrue(service.snapshot.events.contains { $0.operation == .minimize && $0.windowID == old.id })
+        XCTAssertTrue(service.snapshot.events.contains { $0.operation == .restore && $0.windowID == replacement.id })
+        XCTAssertEqual(session.attachedWindows.first?.window.pid, replacement.pid)
+    }
+
+    @MainActor
+    func testDeferredRecoveryEligibilityRejectsOffEmptyUnmaterializedAndOldIntent() async throws {
+        for mode in ["off", "empty", "unmaterialized", "old"] {
+            let session = makeSession()
+            let target = session.workspaceStore.defaultWorkspace!.id
+            session.activeWorkspaceID = target
+            let intent = try XCTUnwrap(session.acceptSwitchIntent(target: target, automaticEnabled: mode != "off"))
+            if mode != "unmaterialized" { materialize(session, intent, target, empty: mode == "empty") }
+            if mode == "old" {
+                _ = session.acceptSwitchIntent(target: target, automaticEnabled: true)
+            }
+            let old = AttachedWindow(window: ledgerWindow(), lastBoardOrigin: .zero,
+                lastWindowOrigin: .zero, lastAppliedOrigin: nil, pendingReleaseOrigin: nil)
+            session.attachedWindows = [old]
+            let replacement = AttachedWindow(attachmentID: old.id, window: ledgerWindow(pid: 74),
+                lastBoardOrigin: .zero, lastWindowOrigin: .zero, lastAppliedOrigin: nil, pendingReleaseOrigin: nil)
+            session.applyDeferredRecovery([old.id: replacement], failedAttachments: [old],
+                workspaceID: target, minimizationIntentID: intent)
+            XCTAssertNil(session.pendingAutomaticMinimization, mode)
+            XCTAssertNil(session.activeMinimizationOperation, mode)
+            if mode == "old" { XCTAssertEqual(session.attachedWindows.first?.window.pid, old.window.pid) }
+        }
+    }
+
+    @MainActor
+    func testRecoveryWhileFullSnapshotPendingRevisitsFormerlyRegisteredCandidate() async throws {
+        let defaults = UserDefaults(suiteName: "SnapshotPending.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let old = ledgerWindow()
+        let other = WindowInfo(id: "other", appName: "Other", title: "Other", pid: 81,
+            bundleIdentifier: nil, bundleURL: nil, documentURL: nil,
+            axWindow: AXUIElementCreateApplication(81), windowNumber: 25, position: nil)
+        let replacement = ledgerWindow(pid: 74, number: 14, id: "replacement")
+        let store = WorkspaceStore(defaults: defaults)
+        let reference = SavedWindowReference(id: UUID(), displayName: old.title, appName: old.appName,
+            title: old.title, bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+            workspaceURLString: nil, offsetX: 0, offsetY: 0)
+        let board = store.saveWorkspace(name: "Pending", windows: [reference])
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults, windowServiceFactory: { service })
+        service.setReport(.init(windows: [old, other], coverage: .complete, issues: [], failedPIDs: []))
+        let started = expectation(description: "full worker has not returned its snapshot")
+        let gate = service.holdNext(.minimize) { started.fulfill() }
+        defer { gate.release() }
+        session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [old, other], completion: { _ in })
+        await fulfillment(of: [started], timeout: 3)
+        let attachment = try XCTUnwrap(session.attachedWindows.first)
+        let intent = try XCTUnwrap(session.latestMinimizationIntent?.id)
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: replacement.id)
+        let recovered = AttachedWindow(attachmentID: attachment.id, window: replacement,
+            savedReference: reference, lastBoardOrigin: .zero, lastWindowOrigin: .zero,
+            lastAppliedOrigin: nil, pendingReleaseOrigin: nil)
+        let lists = service.snapshot.count(for: .list)
+        session.applyDeferredRecovery([attachment.id: recovered], failedAttachments: [attachment],
+            workspaceID: board.id, minimizationIntentID: intent)
+        gate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(service.snapshot.count(for: .list), lists)
+        XCTAssertTrue(service.snapshot.events.contains { $0.operation == .minimize && $0.windowID == old.id })
+        XCTAssertTrue(service.snapshot.events.contains { $0.operation == .restore && $0.windowID == replacement.id })
+        XCTAssertEqual(session.automaticMinimizationSummary.minimizedCount, 2)
+        XCTAssertEqual(session.automaticMinimizationSummary.restoredCount, 1)
+    }
+
+    @MainActor
+    func testBackgroundSwitchRecoveryUsesOriginalIntentAndReconciles() async throws {
+        let defaults = UserDefaults(suiteName: "RealDeferredRoute.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        defaults.set(true, forKey: "restoreMissingWindowsOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let replacement = ledgerWindow()
+        let reference = SavedWindowReference(id: UUID(), displayName: replacement.title, appName: replacement.appName,
+            title: replacement.title, bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+            workspaceURLString: nil, offsetX: 0, offsetY: 0)
+        let store = WorkspaceStore(defaults: defaults)
+        let board = store.saveWorkspace(name: "Missing", windows: [reference])
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults, windowServiceFactory: { service })
+        // Resolution sees no window; hold the existing background recovery's poll.
+        service.holdNext(.list).release()
+        let polling = expectation(description: "background recovery poll")
+        let gate = service.holdNext(.list) { polling.fulfill() }
+        defer { gate.release() }
+        session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [], completion: { _ in })
+        await fulfillment(of: [polling], timeout: 3)
+        await waitForAutomaticIdle(session)
+        let intent = session.latestMinimizationIntent?.id
+        XCTAssertEqual(session.automaticMinimizationSummary.registeredCount, 0)
+        service.setReport(.init(windows: [replacement], coverage: .complete, issues: [], failedPIDs: []))
+        gate.release()
+        let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+        while (session.attachedWindows.first?.window.pid != replacement.pid ||
+               session.automaticMinimizationSummary.noOpCount != 1), ContinuousClock.now < deadline {
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.latestMinimizationIntent?.id, intent)
+        XCTAssertEqual(session.attachedWindows.first?.window.pid, replacement.pid)
+        XCTAssertEqual(session.automaticMinimizationSummary.noOpCount, 1)
+        XCTAssertEqual(service.snapshot.count(for: .list), 2)
+    }
+
+    @MainActor
+    func testReconcileRetainsFailureAndAutomaticSnapshotAfterManualCompletion() async throws {
+        let defaults = UserDefaults(suiteName: "SummarySnapshot.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let old = ledgerWindow()
+        let failed = WindowInfo(id: "failed", appName: "Other", title: "Other", pid: 81,
+            bundleIdentifier: nil, bundleURL: nil, documentURL: nil,
+            axWindow: AXUIElementCreateApplication(81), windowNumber: 25, position: nil)
+        let replacement = ledgerWindow(pid: 74, number: 14, id: "replacement")
+        let reference = SavedWindowReference(id: UUID(), displayName: old.title, appName: old.appName,
+            title: old.title, bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+            workspaceURLString: nil, offsetX: 0, offsetY: 0)
+        let store = WorkspaceStore(defaults: defaults)
+        let board = store.saveWorkspace(name: "Summary", windows: [reference])
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults, windowServiceFactory: { service })
+        let enumerationIssue = WindowInspectionIssue(stage: .enumerateWindows, pid: 90,
+            windowID: nil, failure: .invalidValue)
+        service.setReport(.init(windows: [old, failed], coverage: .partial, issues: [enumerationIssue], failedPIDs: [90]))
+        let issue = WindowInspectionIssue(stage: .writeMinimized, pid: failed.pid,
+            windowID: failed.id, failure: .invalidValue)
+        service.setWriteFailure(issue, minimized: true, for: failed.id)
+        session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [old, failed], completion: { _ in })
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.automaticMinimizationSummary.writeFailureCount, 1)
+        // A manual operation with a different, empty snapshot must not replace
+        // the automatic intent's retained candidate set.
+        session.minimizeUnattachedWindows(knownWindows: [], refreshWindowList: false,
+            mergeWindows: { _ in }, removeWindows: { _ in })
+        await waitForAutomaticIdle(session)
+        service.setWriteFailure(nil, minimized: true, for: failed.id)
+        service.setObservation(.init(state: .success(true), quality: .diagnostic), for: failed.id)
+        let attachment = try XCTUnwrap(session.attachedWindows.first)
+        let intent = try XCTUnwrap(session.latestMinimizationIntent?.id)
+        let recovered = AttachedWindow(attachmentID: attachment.id, window: replacement,
+            savedReference: reference, lastBoardOrigin: .zero, lastWindowOrigin: .zero,
+            lastAppliedOrigin: nil, pendingReleaseOrigin: nil)
+        session.applyDeferredRecovery([attachment.id: recovered], failedAttachments: [attachment],
+            workspaceID: board.id, minimizationIntentID: intent)
+        await waitForAutomaticIdle(session)
+        XCTAssertTrue(service.snapshot.events.contains { $0.operation == .minimize && $0.windowID == old.id })
+        XCTAssertEqual(session.automaticMinimizationSummary.candidateCount, 2)
+        XCTAssertEqual(session.automaticMinimizationSummary.writeFailureCount, 1)
+        // A further reconciliation performs no successful write, but cannot
+        // erase the failure from this same switch.
+        session.applyDeferredRecovery([attachment.id: recovered], failedAttachments: [attachment],
+            workspaceID: board.id, minimizationIntentID: intent)
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.automaticMinimizationSummary.writeFailureCount, 1)
+        XCTAssertEqual(session.automaticMinimizationSummary.minimizedCount, 1)
+        XCTAssertEqual(session.automaticMinimizationSummary.issues.filter { $0 == enumerationIssue }.count, 1)
+        XCTAssertTrue(session.statusMessage.contains("1 operation(s) failed."))
+    }
+
+    @MainActor
     func testManualPreparationOwnsSlotAndStalePreparationHandsOffToLatestBoard() async throws {
         let defaults = UserDefaults(suiteName: "ManualPreparation.\(UUID())")!
         defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
@@ -622,8 +814,8 @@ final class WorkspaceMinimizationTests: XCTestCase {
         XCTAssertEqual(session.statusMessage, "Restored 1 window(s). 1 window operation(s) reported an error.")
     }
 
-    private func ledgerWindow(pid: pid_t = 72, number: CGWindowID = 11) -> WindowInfo {
-        WindowInfo(id: "same", appName: "App", title: "old", pid: pid, bundleIdentifier: nil,
+    private func ledgerWindow(pid: pid_t = 72, number: CGWindowID = 11, id: String = "same") -> WindowInfo {
+        WindowInfo(id: id, appName: "App", title: "old", pid: pid, bundleIdentifier: nil,
             bundleURL: nil, documentURL: nil, axWindow: AXUIElementCreateApplication(pid),
             windowNumber: number, position: nil)
     }
