@@ -4,6 +4,163 @@ import XCTest
 @testable import WindowBoard
 
 final class WorkspaceMinimizationTests: XCTestCase {
+    /// The Status Item selector forwards these exact arguments to Session. Its
+    /// NSStatusBar/AppState lifecycle is intentionally outside this isolated test.
+    @MainActor
+    func testThreeEntryPathsPreserveComposedProtectionAndSavedStateWithAutomaticOnOrOff() async throws {
+        for enabled in [true, false] {
+            for source in [WorkspaceSwitchSource.mainWindow, .statusItem, .launcher] {
+                let suite = "EntryParity.\(UUID())"
+                let defaults = UserDefaults(suiteName: suite)!
+                defer { defaults.removePersistentDomain(forName: suite) }
+                defaults.set(enabled, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+                defaults.set(false, forKey: "restoreMissingWindowsOnWorkspaceSwitch")
+                let service = ControlledMinimizationWindowService()
+                func window(_ id: String, _ pid: pid_t, _ bundle: String, _ title: String,
+                            _ number: CGWindowID?) -> WindowInfo {
+                    WindowInfo(id: id, appName: bundle, title: title, pid: pid,
+                        bundleIdentifier: bundle, bundleURL: nil, documentURL: nil,
+                        axWindow: AXUIElementCreateApplication(pid), windowNumber: number,
+                        position: CGPoint(x: id.hasSuffix("other") ? 420 : 120, y: 140))
+                }
+                let terminal = window("terminal", 701, "com.apple.Terminal", "shell", 1)
+                let terminalOther = window("terminal-other", 701, "com.apple.Terminal", "other shell", 2)
+                let ambiguous = window("ambiguous", 702, "test.editor", "Untitled", nil)
+                let ambiguousOther = window("ambiguous-other", 702, "test.editor", "Untitled", nil)
+                let code = window("code", 703, "com.microsoft.VSCode", "project", nil)
+                let codeOther = window("code-other", 703, "com.microsoft.VSCode", "project", nil)
+                let other = window("other", 704, "test.other", "other", 3)
+                let registered = [terminal, ambiguous, code]
+                let candidates = registered + [terminalOther, ambiguousOther, codeOther, other]
+                func reference(_ window: WindowInfo) -> SavedWindowReference {
+                    SavedWindowReference(id: UUID(), displayName: window.id, appName: window.appName,
+                        title: window.title, bundleIdentifier: window.bundleIdentifier,
+                        bundleURLString: nil, documentURLString: nil, workspaceURLString: nil,
+                        offsetX: 17, offsetY: 23, originX: 120, originY: 140, width: 640, height: 480)
+                }
+                let references = registered.map(reference)
+                let store = WorkspaceStore(defaults: defaults)
+                let primary = store.saveWorkspace(name: "Primary", windows: Array(references.prefix(2)))
+                let included = store.saveWorkspace(name: "Included", windows: [references[2]])
+                let composition = BoardCompositionStore(defaults: defaults)
+                _ = composition.includeRoot(included.id, for: primary.id,
+                    availableBoardIDs: Set(store.workspaces.map(\.id)))
+                let savedBefore = store.workspaces
+                var diagnostics: [MinimizationDiagnosticEvent] = []
+                let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+                    boardCompositionStore: composition, minimizationDiagnosticSink: { diagnostics.append($0) },
+                    windowServiceFactory: { service })
+                service.setReport(.init(windows: candidates, coverage: .complete, issues: [], failedPIDs: []))
+                if source == .launcher {
+                    let target = try XCTUnwrap(session.boardSwitchTargets.first {
+                        $0.primaryBoardID == primary.id && $0.selectedBoardID == included.id
+                    })
+                    XCTAssertTrue(session.switchWorkspaceFromLauncher(target, followMode: .none,
+                        candidateWindows: registered))
+                } else {
+                    session.switchWorkspace(id: primary.id, selectedBoardID: included.id,
+                        boardOrigin: source == .mainWindow ? CGPoint(x: 30, y: 50) : nil,
+                        source: source, followMode: .none, windowCache: registered)
+                }
+                await waitForAutomaticIdle(session)
+                XCTAssertEqual(session.latestMinimizationIntent?.source, source)
+                XCTAssertEqual(session.activeWorkspaceID, primary.id)
+                XCTAssertEqual(session.selectedWorkspaceID, included.id)
+                XCTAssertEqual(session.attachedWindows.map(\.id), references.map(\.id))
+                XCTAssertEqual(session.attachedWindows.map(\.window.id), registered.map(\.id))
+                XCTAssertEqual(session.attachmentOwnerBoardIDs,
+                    [references[0].id: primary.id, references[1].id: primary.id, references[2].id: included.id])
+                XCTAssertEqual(store.workspaces, savedBefore, "Minimization must not rewrite names, order, ownership or layout")
+                XCTAssertEqual(WorkspaceStore(defaults: defaults).workspaces, savedBefore)
+                let attempted = service.snapshot.events.filter {
+                    $0.operation == .minimize && $0.phase == .started
+                }.compactMap(\.windowID)
+                XCTAssertEqual(attempted, enabled ? [codeOther.id, other.id] : [], "\(source)")
+                XCTAssertEqual(service.snapshot.count(for: .list), enabled ? 1 : 0)
+                XCTAssertEqual(service.snapshot.count(for: .restore), 0)
+                if enabled {
+                    let finished = try XCTUnwrap(diagnostics.last { $0.phase == .finished })
+                    XCTAssertEqual(finished.registeredCount, 3)
+                    XCTAssertEqual(finished.sameApplicationProtectedCount, 2)
+                } else {
+                    XCTAssertTrue(diagnostics.isEmpty)
+                }
+                XCTAssertEqual(Set(session.minimizedWindows.map(\.id)), enabled ? Set([codeOther.id, other.id]) : [])
+                XCTAssertFalse(session.isMinimizingUnattached)
+                XCTAssertFalse(service.snapshot.events.contains { $0.onMainThread })
+            }
+        }
+    }
+
+    @MainActor
+    func testLauncherAutomaticProgressFeedsStatusItemAndResumesSnapshotsAfterFailure() async throws {
+        let suite = "LauncherProgress.\(UUID())"
+        let defaults = UserDefaults(suiteName: suite)!
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let registered = ledgerWindow()
+        let other = ledgerWindow(pid: 73, number: 12, id: "failure")
+        let service = ControlledMinimizationWindowService()
+        service.setReport(.init(windows: [registered, other], coverage: .complete, issues: [], failedPIDs: []))
+        service.setWriteFailure(.init(stage: .writeMinimized, pid: other.pid,
+            windowID: other.id, failure: .invalidValue), minimized: true, for: other.id)
+        let store = WorkspaceStore(defaults: defaults)
+        let board = store.saveWorkspace(name: "Launcher", windows: [SavedWindowReference(id: UUID(),
+            displayName: registered.title, appName: registered.appName, title: registered.title,
+            bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+            workspaceURLString: nil, offsetX: 0, offsetY: 0)])
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            windowServiceFactory: { service })
+        let preparing = expectation(description: "automatic confirmation is held")
+        let listGate = service.holdNext(.list) { preparing.fulfill() }
+        defer { listGate.release() }
+        let menuProcessing = expectation(description: "Status Item observes automatic progress")
+        let menuFinished = expectation(description: "Status Item observes latest failure")
+        var sawProcessing = false, sawFinished = false
+        let subscription = WindowBoardStatusItemController.statusUpdates(for: session).sink {
+            if !session.isLoadingWorkspace, session.isMinimizingUnattached, !sawProcessing {
+                sawProcessing = true
+                XCTAssertEqual(session.displayStatusMessage, "Board displayed; processing windows...")
+                menuProcessing.fulfill()
+            }
+            if case .completed(let summary) = session.minimizationProgress, !sawFinished {
+                sawFinished = true
+                XCTAssertEqual(summary.failureCount, 1)
+                XCTAssertEqual(session.displayStatusMessage, session.statusMessage)
+                menuFinished.fulfill()
+            }
+        }
+        defer { subscription.cancel() }
+        let target = try XCTUnwrap(session.boardSwitchTargets.first { $0.primaryBoardID == board.id })
+        XCTAssertTrue(session.switchWorkspaceFromLauncher(target, followMode: .none, candidateWindows: [registered]))
+        await fulfillment(of: [preparing, menuProcessing], timeout: 3)
+        XCTAssertEqual(session.activeWorkspaceID, board.id)
+        func activity() -> AttachedWindowSnapshotCoordinator.Activity {
+            .init(hasAttachments: !session.attachedWindows.isEmpty,
+                isLoadingWorkspace: session.isLoadingWorkspace,
+                isApplyingWorkspaceWindows: session.isApplyingWorkspaceWindows,
+                isMinimizingUnattached: session.isMinimizingUnattached,
+                isRestoringMinimized: session.isRestoringMinimized)
+        }
+        XCTAssertFalse(activity().permitsSnapshots)
+        let coordinator = AttachedWindowSnapshotCoordinator(interval: .milliseconds(1), sampler: { _ in [] })
+        defer { coordinator.stop() }
+        let stopped = expectation(description: "automatic busy stops snapshot provider")
+        stopped.isInverted = true
+        coordinator.restart(activity: activity(), requestProvider: { stopped.fulfill(); return nil }, consume: { _ in })
+        await fulfillment(of: [stopped], timeout: 0.03)
+        listGate.release()
+        await fulfillment(of: [menuFinished], timeout: 3)
+        await waitForAutomaticIdle(session)
+        XCTAssertTrue(activity().permitsSnapshots)
+        let resumed = expectation(description: "automatic completion resumes snapshot provider")
+        coordinator.restart(activity: activity(), requestProvider: { resumed.fulfill(); return nil }, consume: { _ in })
+        await fulfillment(of: [resumed], timeout: 1)
+        XCTAssertEqual(service.snapshot.count(for: .list), 1)
+        XCTAssertTrue(session.statusMessage.contains("1 operation(s) failed."))
+        XCTAssertEqual(session.attachedWindows.map(\.window.id), [registered.id])
+    }
+
     @MainActor
     func testDiagnosticNormalZeroAndEnumerationFailureRemainDistinct() async throws {
         for coverage in [WindowEnumerationReport.Coverage.complete, .failed] {
