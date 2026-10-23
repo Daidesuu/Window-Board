@@ -367,6 +367,108 @@ final class WorkspaceMinimizationTests: XCTestCase {
     }
 
     @MainActor
+    func testMissingRecoverySettingControlsRealOpenActivateAndPollingForSameReferences() async throws {
+        let windows = [ledgerWindow(), ledgerWindow(pid: 74, number: 14, id: "second")]
+        let references = windows.enumerated().map { index, window in
+            SavedWindowReference(id: UUID(), displayName: window.title, appName: window.appName,
+                title: window.title, bundleIdentifier: nil, bundleURLString: nil,
+                documentURLString: index == 0 ? "file:///tmp/recovery-test.txt" : nil,
+                workspaceURLString: nil, offsetX: 0, offsetY: 0)
+        }
+        for restoreEnabled in [false, true] {
+            let defaults = UserDefaults(suiteName: "RecoverySetting.\(UUID())")!
+            defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+            defaults.set(restoreEnabled, forKey: "restoreMissingWindowsOnWorkspaceSwitch")
+            let service = RecoveryCountingService()
+            let store = WorkspaceStore(defaults: defaults)
+            let board = store.saveWorkspace(name: "Same missing references", windows: references)
+            let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+                windowServiceFactory: { service })
+            let polling = restoreEnabled ? expectation(description: "enabled recovery reaches its poll") : nil
+            // Initial switch resolution is empty. Only recovery may consume the second list.
+            service.base.holdNext(.list).release()
+            let gate = service.base.holdNext(.list) { polling?.fulfill() }
+            defer { gate.release() }
+            session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+                windowCache: [], completion: { _ in })
+            await waitForAutomaticIdle(session)
+            XCTAssertEqual(Set(session.attachedWindows.compactMap { $0.savedReference?.id }), Set(references.map(\.id)))
+            if restoreEnabled {
+                await fulfillment(of: [try XCTUnwrap(polling)], timeout: 3)
+                XCTAssertEqual(service.recoveryCounts.open, 1)
+                XCTAssertEqual(service.recoveryCounts.activate, 1)
+                service.base.setReport(.init(windows: windows, coverage: .complete, issues: [], failedPIDs: []))
+                gate.release()
+                let deadline = ContinuousClock.now.advanced(by: .seconds(3))
+                while !session.reconnectingAttachedWindowIDs.isEmpty, ContinuousClock.now < deadline {
+                    try? await Task.sleep(for: .milliseconds(5))
+                }
+                await waitForAutomaticIdle(session)
+                XCTAssertTrue(session.reconnectingAttachedWindowIDs.isEmpty)
+                XCTAssertEqual(Set(session.attachedWindows.map { $0.window.id }), Set(windows.map(\.id)))
+                XCTAssertEqual(service.base.snapshot.count(for: .list), 2)
+            } else {
+                // Wait for the switch pipeline, including its deferred-application tail.
+                XCTAssertEqual(service.recoveryCounts.open, 0)
+                XCTAssertEqual(service.recoveryCounts.activate, 0)
+                XCTAssertEqual(service.base.snapshot.count(for: .list), 1)
+                XCTAssertTrue(session.reconnectingAttachedWindowIDs.isEmpty)
+                XCTAssertEqual(session.attachedWindows.count, 2)
+                XCTAssertTrue(session.attachedWindows.allSatisfy { $0.window.pid == 0 })
+                XCTAssertEqual(session.unavailableAttachedWindowIDs.count, 2)
+            }
+            XCTAssertFalse(service.base.snapshot.events.contains { $0.operation == .minimize })
+        }
+    }
+
+    @MainActor
+    func testOldRecoveryCannotReplaceRegistrationAfterSamePrimaryReloadIntent() async throws {
+        let defaults = UserDefaults(suiteName: "SamePrimaryRecovery.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let old = ledgerWindow()
+        let replacement = ledgerWindow(pid: 74, number: 14, id: "stale-recovery")
+        let reference = SavedWindowReference(id: UUID(), displayName: old.title, appName: old.appName,
+            title: old.title, bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+            workspaceURLString: nil, offsetX: 0, offsetY: 0)
+        let store = WorkspaceStore(defaults: defaults)
+        let board = store.saveWorkspace(name: "Reload", windows: [reference])
+        var diagnostics: [MinimizationDiagnosticEvent] = []
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults,
+            minimizationDiagnosticSink: { diagnostics.append($0) }, windowServiceFactory: { service })
+        service.setReport(.init(windows: [old], coverage: .complete, issues: [], failedPIDs: []))
+        session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [old], completion: { _ in })
+        await waitForAutomaticIdle(session)
+        let oldIntent = try XCTUnwrap(session.latestMinimizationIntent?.id)
+        let attachment = try XCTUnwrap(session.attachedWindows.first)
+        let reached = expectation(description: "same-primary reload resolution held")
+        let gate = service.holdNext(.list) { reached.fulfill() }
+        defer { gate.release() }
+        session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [], completion: { _ in })
+        await fulfillment(of: [reached], timeout: 3)
+        XCTAssertNotEqual(session.latestMinimizationIntent?.id, oldIntent)
+        let currentWindows = session.attachedWindows.map { $0.window.id }
+        let lists = service.snapshot.count(for: .list)
+        let reconciles = diagnostics.filter { $0.kind == .reconcile }.count
+        let recovered = AttachedWindow(attachmentID: attachment.id, window: replacement,
+            savedReference: reference, lastBoardOrigin: .zero, lastWindowOrigin: .zero,
+            lastAppliedOrigin: nil, pendingReleaseOrigin: nil)
+        // Deliver the old completion while the latest same-Board intent is not materialized.
+        session.applyDeferredRecovery([attachment.id: recovered], failedAttachments: [attachment],
+            workspaceID: board.id, minimizationIntentID: oldIntent)
+        XCTAssertEqual(session.attachedWindows.map { $0.window.id }, currentWindows)
+        XCTAssertEqual(service.snapshot.count(for: .list), lists)
+        XCTAssertEqual(diagnostics.filter { $0.kind == .reconcile }.count, reconciles)
+        XCTAssertNil(session.pendingAutomaticMinimization)
+        gate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.attachedWindows.first?.window.id, old.id)
+        XCTAssertFalse(service.snapshot.events.contains { $0.windowID == replacement.id })
+    }
+
+    @MainActor
     func testReconcileRetainsFailureAndAutomaticSnapshotAfterManualCompletion() async throws {
         let defaults = UserDefaults(suiteName: "SummarySnapshot.\(UUID())")!
         defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
@@ -1511,4 +1613,37 @@ final class WorkspaceMinimizationTests: XCTestCase {
         session.materializeAutomaticRequest(intent: intent, resolution: .init(targetBoardID: target,
             composedReferenceIDs: empty ? [] : [UUID()], report: nil, switchRevision: 0, notBefore: .now))
     }
+}
+
+/// Counts actual recovery protocol calls while retaining the shared fake's operation gates.
+private final class RecoveryCountingService: WorkspaceWindowOperating {
+    let base = ControlledMinimizationWindowService()
+    private let lock = NSLock()
+    private var opened = 0
+    private var activated = 0
+    var recoveryCounts: (open: Int, activate: Int) {
+        lock.lock(); defer { lock.unlock() }
+        return (opened, activated)
+    }
+    func openSavedWindowReference(_ reference: SavedWindowReference) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        opened += 1
+        return false
+    }
+    func activateSavedApplication(_ reference: SavedWindowReference) -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        activated += 1
+        return false
+    }
+    func listWindows() -> [WindowInfo] { base.listWindows() }
+    func listWindowsReport() -> WindowEnumerationReport { base.listWindowsReport() }
+    func windows(matching window: WindowInfo) -> [WindowInfo] { base.windows(matching: window) }
+    func position(of window: WindowInfo) throws -> CGPoint { try base.position(of: window) }
+    func size(of window: WindowInfo) throws -> CGSize { try base.size(of: window) }
+    func setPosition(_ position: CGPoint, for window: WindowInfo) throws { try base.setPosition(position, for: window) }
+    func setSize(_ size: CGSize, for window: WindowInfo) throws { try base.setSize(size, for: window) }
+    func isMinimized(_ window: WindowInfo) -> Bool { base.isMinimized(window) }
+    func minimizedObservation(of window: WindowInfo) -> MinimizedObservation { base.minimizedObservation(of: window) }
+    func setMinimized(_ minimized: Bool, for window: WindowInfo) throws { try base.setMinimized(minimized, for: window) }
+    func raise(_ window: WindowInfo) { base.raise(window) }
 }
