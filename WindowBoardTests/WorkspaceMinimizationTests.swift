@@ -4,6 +4,178 @@ import XCTest
 
 final class WorkspaceMinimizationTests: XCTestCase {
     @MainActor
+    func testManualPreparationOwnsSlotAndStalePreparationHandsOffToLatestBoard() async throws {
+        let defaults = UserDefaults(suiteName: "ManualPreparation.\(UUID())")!
+        defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+        let service = ControlledMinimizationWindowService()
+        let old = ledgerWindow()
+        let latest = WindowInfo(id: "latest", appName: "Other", title: "Latest", pid: 73,
+            bundleIdentifier: nil, bundleURL: nil, documentURL: nil,
+            axWindow: AXUIElementCreateApplication(73), windowNumber: 12, position: nil)
+        let store = WorkspaceStore(defaults: defaults)
+        let reference = SavedWindowReference(id: UUID(), displayName: latest.title, appName: latest.appName,
+            title: latest.title, bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+            workspaceURLString: nil, offsetX: 0, offsetY: 0)
+        let board = store.saveWorkspace(name: "Latest", windows: [reference])
+        let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults, windowServiceFactory: { service })
+        service.setReport(.init(windows: [old, latest], coverage: .complete, issues: [], failedPIDs: []))
+        let preparing = expectation(description: "manual preparation")
+        let gate = service.holdNext(.list) { preparing.fulfill() }
+        defer { gate.release() }
+        var callbackCount = 0
+        session.minimizeUnattachedWindows(knownWindows: [old], refreshWindowList: true,
+            mergeWindows: { _ in callbackCount += 1 }, removeWindows: { _ in callbackCount += 1 })
+        await fulfillment(of: [preparing], timeout: 3)
+        let manual = try XCTUnwrap(session.activeMinimizationOperation)
+        XCTAssertEqual(manual.kind, .manual)
+        let displayed = expectation(description: "latest displayed")
+        session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+            windowCache: [latest], completion: { _ in displayed.fulfill() })
+        await fulfillment(of: [displayed], timeout: 3)
+        XCTAssertEqual(session.activeMinimizationOperation?.operationID, manual.operationID)
+        gate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.attachedWindows.map(\.window.id), [latest.id])
+        XCTAssertEqual(callbackCount, 0)
+        XCTAssertEqual(service.snapshot.events.filter { $0.operation == .minimize && $0.phase == .started }.map(\.windowID), [old.id])
+        XCTAssertEqual(service.snapshot.count(for: .list), 2)
+    }
+
+    @MainActor
+    func testManualInflightSuccessOrFailureKeepsLatestWorkerBusyAndPhysicalLedger() async throws {
+        for fail in [false, true] {
+            let defaults = UserDefaults(suiteName: "ManualInflight.\(UUID())")!
+            defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")
+            let service = ControlledMinimizationWindowService()
+            let other = ledgerWindow()
+            let registered = WindowInfo(id: "registered", appName: "Other", title: "Registered", pid: 73,
+                bundleIdentifier: nil, bundleURL: nil, documentURL: nil,
+                axWindow: AXUIElementCreateApplication(73), windowNumber: 12, position: nil)
+            let store = WorkspaceStore(defaults: defaults)
+            let reference = SavedWindowReference(id: UUID(), displayName: registered.title, appName: registered.appName,
+                title: registered.title, bundleIdentifier: nil, bundleURLString: nil, documentURLString: nil,
+                workspaceURLString: nil, offsetX: 0, offsetY: 0)
+            let board = store.saveWorkspace(name: "Latest", windows: [reference])
+            let session = WorkspaceSessionController(workspaceStore: store, defaults: defaults, windowServiceFactory: { service })
+            service.setReport(.init(windows: [registered, other], coverage: .complete, issues: [], failedPIDs: []))
+            if fail {
+                service.setWriteFailure(.init(stage: .writeMinimized, pid: registered.pid,
+                    windowID: registered.id, failure: .invalidValue), minimized: true, for: registered.id)
+            }
+            let manualWriting = expectation(description: "manual write in flight")
+            let oldGate = service.holdNext(.minimize) { manualWriting.fulfill() }
+            defer { oldGate.release() }
+            var callbacks = 0
+            session.minimizeUnattachedWindows(knownWindows: [registered],
+                removeWindows: { _ in callbacks += 1 })
+            await fulfillment(of: [manualWriting], timeout: 3)
+            let manual = try XCTUnwrap(session.activeMinimizationOperation)
+            let displayed = expectation(description: "latest displayed")
+            session.switchWorkspace(id: board.id, boardOrigin: nil, source: .mainWindow, followMode: .none,
+                windowCache: [registered], completion: { _ in displayed.fulfill() })
+            await fulfillment(of: [displayed], timeout: 3)
+            let latestWriting = expectation(description: "latest worker started")
+            let latestGate = service.holdNext(.minimize) { latestWriting.fulfill() }
+            defer { latestGate.release() }
+            oldGate.release()
+            await fulfillment(of: [latestWriting], timeout: 3)
+            XCTAssertTrue(session.isMinimizingUnattached)
+            XCTAssertNotEqual(session.activeMinimizationOperation?.operationID, manual.operationID)
+            XCTAssertEqual(session.minimizedWindows.map(\.id), fail ? [] : [registered.id])
+            XCTAssertEqual(callbacks, 0)
+            latestGate.release()
+            await waitForAutomaticIdle(session)
+            XCTAssertEqual(session.minimizedWindows.map(\.id), [other.id])
+            XCTAssertEqual(service.snapshot.count(for: .restore), fail ? 0 : 1)
+            XCTAssertNil(session.pendingAutomaticMinimization)
+            XCTAssertNil(session.activeMinimizationOperation)
+        }
+    }
+
+    @MainActor
+    func testEmptyManualFinishesAndDoesNotResubmitCompletedAutomaticWork() async throws {
+        let defaults = UserDefaults(suiteName: "ManualEmpty.\(UUID())")!
+        let service = ControlledMinimizationWindowService()
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        session.minimizeUnattachedWindows(knownWindows: [])
+        XCTAssertNotNil(session.activeMinimizationOperation)
+        await waitForAutomaticIdle(session)
+        XCTAssertNil(session.activeMinimizationOperation)
+        XCTAssertNil(session.pendingAutomaticMinimization)
+        XCTAssertEqual(service.snapshot.count(for: .list), 0)
+        XCTAssertEqual(service.snapshot.count(for: .minimize), 0)
+        XCTAssertEqual(session.statusMessage, "No other windows to minimize.")
+    }
+
+    @MainActor
+    func testManualPreparationDoesNotOverwriteReconnectedAttachmentInSameIntent() async throws {
+        let defaults = UserDefaults(suiteName: "ManualIdentity.\(UUID())")!
+        let service = ControlledMinimizationWindowService()
+        let original = ledgerWindow()
+        let replacement = ledgerWindow(pid: 74, number: 14)
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        session.attachedWindows = [AttachedWindow(window: original, lastBoardOrigin: .zero,
+            lastWindowOrigin: .zero, lastAppliedOrigin: nil, pendingReleaseOrigin: nil)]
+        service.setReport(.init(windows: [original], coverage: .complete, issues: [], failedPIDs: []))
+        let preparing = expectation(description: "manual list blocked")
+        let gate = service.holdNext(.list) { preparing.fulfill() }
+        defer { gate.release() }
+        session.minimizeUnattachedWindows(knownWindows: [], refreshWindowList: true)
+        await fulfillment(of: [preparing], timeout: 3)
+        let operation = try XCTUnwrap(session.activeMinimizationOperation)
+        session.attachedWindows[0].window = replacement
+        gate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertEqual(session.attachedWindows[0].window.pid, replacement.pid)
+        XCTAssertTrue(session.attachedWindows[0].window.axWindow === replacement.axWindow)
+        XCTAssertEqual(operation.kind, .manual)
+        XCTAssertEqual(service.snapshot.count(for: .list), 1)
+    }
+
+    @MainActor
+    func testManualInflightReceiptRetainsLedgerButDoesNotRemoveReplacementUI() async throws {
+        let defaults = UserDefaults(suiteName: "ManualReceiptIdentity.\(UUID())")!
+        let service = ControlledMinimizationWindowService()
+        let original = ledgerWindow()
+        let replacement = ledgerWindow(pid: 74, number: 14)
+        let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+            defaults: defaults, windowServiceFactory: { service })
+        let writing = expectation(description: "manual write blocked")
+        let gate = service.holdNext(.minimize) { writing.fulfill() }
+        defer { gate.release() }
+        var removed = Set<WindowInfo.ID>()
+        session.minimizeUnattachedWindows(knownWindows: [original], removeWindows: { removed.formUnion($0) })
+        await fulfillment(of: [writing], timeout: 3)
+        session.attachedWindows = [AttachedWindow(window: replacement, lastBoardOrigin: .zero,
+            lastWindowOrigin: .zero, lastAppliedOrigin: nil, pendingReleaseOrigin: nil)]
+        gate.release()
+        await waitForAutomaticIdle(session)
+        XCTAssertTrue(removed.isEmpty)
+        XCTAssertEqual(session.minimizedWindows.first?.pid, original.pid)
+        XCTAssertTrue(session.attachedWindows.first?.window.axWindow === replacement.axWindow)
+    }
+
+    @MainActor
+    func testManualRefreshReusesOneReportAndKnownModeDoesNotEnumerate() async throws {
+        for refresh in [false, true] {
+            let service = ControlledMinimizationWindowService()
+            let window = ledgerWindow()
+            service.setReport(.init(windows: [window], coverage: .unverifiedLegacy, issues: [], failedPIDs: []))
+            let defaults = UserDefaults(suiteName: "ManualEnumeration.\(UUID())")!
+            let session = WorkspaceSessionController(workspaceStore: WorkspaceStore(defaults: defaults),
+                defaults: defaults, windowServiceFactory: { service })
+            session.minimizeUnattachedWindows(knownWindows: [window], refreshWindowList: refresh)
+            await waitForAutomaticIdle(session)
+            XCTAssertEqual(service.snapshot.count(for: .list), refresh ? 1 : 0)
+            XCTAssertEqual(service.snapshot.count(for: .minimize), 1)
+            XCTAssertEqual(session.minimizedWindows.map(\.id), [window.id])
+            XCTAssertFalse(service.snapshot.events.contains { $0.onMainThread })
+        }
+    }
+
+    @MainActor
     func testCachedSwitchPublishesBeforeCandidateRefreshAndMinimizesNewWindow() async throws {
         let defaults = UserDefaults(suiteName: "AutoIntegration.\(UUID())")!
         defaults.set(true, forKey: "minimizeUnattachedOnWorkspaceSwitch")

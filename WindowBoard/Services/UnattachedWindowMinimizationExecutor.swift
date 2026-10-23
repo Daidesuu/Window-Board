@@ -25,8 +25,13 @@ struct UnattachedWindowMinimizationExecutor {
                 summary.interruptionReason = .superseded
                 return MinimizationOperationResult(operationID: request.operationID, intentID: request.intentID, summary: summary, endReason: .superseded)
             }
-            if existing.intentID == request.intentID && (request.kind == .reconcile || (existing.origin != .legacyCache && existing.report.coverage != .unverifiedLegacy)) {
+            if existing.intentID == request.intentID && (request.kind == .manual || request.kind == .reconcile || (existing.origin != .legacyCache && existing.report.coverage != .unverifiedLegacy)) {
                 snapshot = existing
+                // Manual preparation performed this enumeration in the same
+                // operation, including reports with legacy diagnostic quality.
+                if request.kind == .manual && existing.origin == .minimization {
+                    summary.enumerationCount = 1
+                }
             } else {
                 let report = service.listWindowsReport()
                 summary.enumerationCount = 1

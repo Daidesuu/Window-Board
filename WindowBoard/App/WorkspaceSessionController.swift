@@ -95,27 +95,6 @@ enum BoardWindowMutationResult: Equatable {
     }
 }
 
-private struct SessionAttachedWindowSnapshot {
-    let windowID: WindowInfo.ID
-    let appName: String
-    let title: String
-    let pid: pid_t
-    let bundleIdentifier: String?
-    let documentURL: URL?
-    let windowNumber: CGWindowID?
-    let origin: CGPoint
-    let window: WindowInfo
-    let isUnavailable: Bool
-    let isReconnecting: Bool
-    let protectsSameApplicationFromMinimize: Bool
-}
-
-private struct SessionMinimizeWindowsResult {
-    let minimizedWindows: [WindowInfo]
-    let restoredAttachedWindows: [WindowInfo]
-    let failedCount: Int
-}
-
 private struct SessionRestoreWindowsResult {
     let restoredWindows: [WindowInfo]
     let failedWindows: [WindowInfo]
@@ -1259,11 +1238,60 @@ final class WorkspaceSessionController: ObservableObject {
 
     @MainActor
     private func drainAutomaticMinimization() {
-        // Until manual preparation moves into the common slot in 5.2, retain
-        // pending work and let the legacy manual terminal paths drain it.
-        guard minimizationWorker == nil, !isMinimizingUnattached, !isRestoringMinimized,
+        guard minimizationWorker == nil, !isRestoringMinimized,
               let request = takeNextMinimizationOperation() else { return }
         launchAutomaticMinimization(request)
+    }
+
+    @MainActor
+    private func recordMinimizationReceipt(_ receipt: StepReceipt,
+        removeWindows: @MainActor (Set<WindowInfo.ID>) -> Void = { _ in }) {
+        // Physical results outlive intent validity; UI callbacks do not.
+        commitReceipt(receipt)
+        guard canApplyMinimizationReceipt(receipt, to: receipt.window) else { return }
+        switch receipt.outcome {
+        case .changed where receipt.desiredMinimized:
+            // A reconnect can reuse a display ID while the old AX write is in
+            // flight. Its physical success must not remove the replacement UI.
+            guard !attachedWindows.contains(where: {
+                $0.window.id == receipt.window.id &&
+                    (LiveWindowIdentity(window: $0.window) != receipt.identity ||
+                     $0.window.axWindow !== receipt.window.axWindow)
+            }) else { return }
+            removeWindows([receipt.window.id])
+        case .changed, .alreadyDesired:
+            if !receipt.desiredMinimized, let attachment = attachedWindows.first(where: {
+                LiveWindowIdentity(window: $0.window) == receipt.identity
+            }) {
+                minimizedAttachedWindowIDs.remove(attachment.id)
+            }
+        default: break
+        }
+    }
+
+    @MainActor
+    private func completeMinimization(_ result: MinimizationOperationResult,
+        request: MinimizationExecutionRequest) {
+        guard minimizationWorker?.id == request.operationID,
+              activeMinimizationOperation?.operationID == request.operationID else { return }
+        if isCurrentMinimizationOperation(request) {
+            minimizationCandidateSnapshot = result.candidateSnapshot
+            if let snapshot = result.candidateSnapshot {
+                minimizationKnownWindows = Self.mergeMinimizationWindows(snapshot.report.windows,
+                    fallback: snapshot.fallback)
+            }
+            statusMessage = request.kind == .manual && result.summary.minimizedCount == 0 &&
+                result.summary.restoredCount == 0 && result.summary.failureCount == 0
+                ? "No other windows to minimize."
+                : Self.minimizeStatus(minimizedCount: result.summary.minimizedCount,
+                    restoredAttachedCount: result.summary.restoredCount, failedCount: result.summary.failureCount)
+        }
+        minimizationWorker = nil
+        if let next = finishOperation(result) {
+            launchAutomaticMinimization(next)
+        } else {
+            isMinimizingUnattached = false
+        }
     }
 
     @MainActor
@@ -1277,39 +1305,70 @@ final class WorkspaceSessionController: ObservableObject {
             let service = self.windowServiceFactory()
             let result = await UnattachedWindowMinimizationExecutor().run(request: request, service: service,
                 authorize: { self.authorizeStep($0) }, restorePlan: { self.protectionSnapshot() },
-                record: { receipt in
-                    // Physical successes remain in the ledger even after this intent expires.
-                    self.commitReceipt(receipt)
-                    if !receipt.desiredMinimized,
-                       self.canApplyMinimizationReceipt(receipt, to: receipt.window),
-                       let attachment = self.attachedWindows.first(where: {
-                           LiveWindowIdentity(window: $0.window) == receipt.identity
-                       }) {
-                        switch receipt.outcome {
-                        case .changed, .alreadyDesired:
-                            self.minimizedAttachedWindowIDs.remove(attachment.id)
-                        default: break
-                        }
+                record: { self.recordMinimizationReceipt($0) })
+            await self.completeMinimization(result, request: request)
+        }
+        minimizationWorker = (request.operationID, task)
+    }
+
+    @MainActor
+    private func startManualMinimization(knownWindows: [WindowInfo], recentWindows: [WindowInfo],
+        refreshWindowList: Bool,
+        removeWindows: @escaping @MainActor (Set<WindowInfo.ID>) -> Void) {
+        let baseWindows = Self.mergeWindows(recentWindows, into: knownWindows)
+        guard let request = startManualMinimizationOperation(candidateSource:
+            refreshWindowList ? .refresh(fallback: baseWindows) : .known(baseWindows)) else { return }
+        let originalAttachments = attachedWindows
+        isMinimizingUnattached = true
+        statusMessage = "Preparing other windows..."
+        let task = Task.detached(priority: .userInitiated) {
+            let service = self.windowServiceFactory()
+            var source = request.candidateSource
+            var replacements: [AttachedWindow.ID: WindowInfo] = [:]
+            if refreshWindowList && !Task.isCancelled {
+                let report = service.listWindowsReport()
+                var fallback = baseWindows
+                for attachment in originalAttachments where attachment.window.pid != 0 {
+                    guard !Task.isCancelled else { break }
+                    guard await self.isCurrentMinimizationOperation(request) else { break }
+                    let candidates = service.windows(matching: attachment.window)
+                    fallback = Self.mergeMinimizationWindows(candidates, fallback: fallback)
+                    if let replacement = WindowMatching.bestReplacement(for: attachment.window, in: candidates) {
+                        replacements[attachment.id] = replacement
                     }
-                })
-            await MainActor.run {
-                guard self.minimizationWorker?.id == request.operationID else { return }
-                let current = self.isCurrentMinimizationOperation(request)
-                if current {
-                    self.minimizationCandidateSnapshot = result.candidateSnapshot
-                    if let snapshot = result.candidateSnapshot {
-                        self.minimizationKnownWindows = Self.mergeMinimizationWindows(snapshot.report.windows,
-                            fallback: snapshot.fallback)
-                    }
-                    self.statusMessage = Self.minimizeStatus(minimizedCount: result.summary.minimizedCount,
-                        restoredAttachedCount: result.summary.restoredCount, failedCount: result.summary.failureCount)
                 }
-                self.minimizationWorker = nil
-                self.isMinimizingUnattached = false
-                if let next = self.finishOperation(result) {
-                    self.launchAutomaticMinimization(next)
-                }
+                source = .reuse(CandidateSnapshot(report: report, origin: .minimization,
+                    intentID: request.intentID, capturedAt: .now, fallback: fallback))
             }
+            let preparedReplacements = replacements
+            let current = await MainActor.run {
+                guard self.isCurrentMinimizationOperation(request), !Task.isCancelled else { return false }
+                for original in originalAttachments {
+                    guard let replacement = preparedReplacements[original.id],
+                          let index = self.attachedWindows.firstIndex(where: { $0.id == original.id }),
+                          LiveWindowIdentity(window: self.attachedWindows[index].window) == LiveWindowIdentity(window: original.window),
+                          self.attachedWindows[index].window.axWindow === original.window.axWindow else { continue }
+                    let origin = replacement.position ?? self.attachedWindows[index].lastWindowOrigin
+                    self.attachedWindows[index].window = replacement
+                    self.attachedWindows[index].lastWindowOrigin = origin
+                    self.attachedWindows[index].lastAppliedOrigin = origin
+                    self.markAttachedWindowAvailable(original.id)
+                }
+                return true
+            }
+            let result: MinimizationOperationResult
+            if current {
+                let prepared = MinimizationExecutionRequest(intentID: request.intentID,
+                    operationID: request.operationID, kind: .manual, candidateSource: source)
+                result = await UnattachedWindowMinimizationExecutor().run(request: prepared, service: service,
+                    authorize: { self.authorizeStep($0) }, restorePlan: { self.protectionSnapshot() },
+                    record: { self.recordMinimizationReceipt($0, removeWindows: removeWindows) })
+            } else {
+                let reason: MinimizationOperationResult.EndReason = Task.isCancelled ? .cancelled : .superseded
+                result = MinimizationOperationResult(operationID: request.operationID, intentID: request.intentID,
+                    summary: OperationSummary(), endReason: reason)
+            }
+            await self.completeMinimization(result, request: request)
         }
         minimizationWorker = (request.operationID, task)
     }
@@ -1322,76 +1381,8 @@ final class WorkspaceSessionController: ObservableObject {
         mergeWindows: @escaping @MainActor ([WindowInfo]) -> Void = { _ in },
         removeWindows: @escaping @MainActor (Set<WindowInfo.ID>) -> Void = { _ in }
     ) {
-        guard !isMinimizingUnattached else {
-            return
-        }
-
-        let attachedWindowsToRefresh = attachedWindows
-        isMinimizingUnattached = true
-        statusMessage = "Preparing other windows..."
-
-        Task.detached(priority: .userInitiated) {
-            let service = self.windowServiceFactory()
-            let baseWindows = Self.mergeWindows(recentWindows, into: knownWindows)
-            let allWindows = refreshWindowList
-                ? Self.mergeWindows(baseWindows, into: service.listWindows())
-                : baseWindows
-            var refreshedAttachedWindows: [AttachedWindow.ID: WindowInfo] = [:]
-            var attachedCandidateWindows: [WindowInfo] = []
-
-            for attachedWindow in attachedWindowsToRefresh where refreshWindowList && attachedWindow.window.pid != 0 {
-                guard !Task.isCancelled else { return }
-
-                let candidates = service.windows(matching: attachedWindow.window)
-                attachedCandidateWindows.append(contentsOf: candidates)
-
-                if let replacement = WindowMatching.bestReplacement(for: attachedWindow.window, in: candidates) {
-                    refreshedAttachedWindows[attachedWindow.id] = replacement
-                }
-            }
-
-            let resolvedAttachedCandidateWindows = attachedCandidateWindows
-            let resolvedRefreshedAttachedWindows = refreshedAttachedWindows
-            await MainActor.run {
-                var effectiveWindows = Self.mergeWindows(recentWindows, into: allWindows)
-                effectiveWindows = Self.mergeWindows(resolvedAttachedCandidateWindows, into: effectiveWindows)
-                effectiveWindows = Self.mergeWindows(knownWindows, into: effectiveWindows)
-
-                for (attachmentID, replacement) in resolvedRefreshedAttachedWindows {
-                    guard let index = self.attachedWindows.firstIndex(where: { $0.id == attachmentID }) else {
-                        continue
-                    }
-
-                    let origin = replacement.position ?? self.attachedWindows[index].lastWindowOrigin
-                    self.attachedWindows[index].window = replacement
-                    self.attachedWindows[index].lastWindowOrigin = origin
-                    self.attachedWindows[index].lastAppliedOrigin = origin
-                    self.markAttachedWindowAvailable(attachmentID)
-                }
-
-                let attachedSnapshots = self.attachedWindowSnapshots()
-                let windowsToMinimize = effectiveWindows.filter {
-                    Self.shouldMinimizeWindow(
-                        $0,
-                        attachedSnapshots: attachedSnapshots
-                    )
-                }
-
-                guard !windowsToMinimize.isEmpty else {
-                    self.isMinimizingUnattached = false
-                    self.statusMessage = "No other windows to minimize."
-                    self.drainAutomaticMinimization()
-                    return
-                }
-
-                self.beginMinimizing(
-                    windowsToMinimize,
-                    attachedSnapshots: attachedSnapshots,
-                    mergeWindows: mergeWindows,
-                    removeWindows: removeWindows
-                )
-            }
-        }
+        startManualMinimization(knownWindows: knownWindows, recentWindows: recentWindows,
+            refreshWindowList: refreshWindowList, removeWindows: removeWindows)
     }
 
     @MainActor
@@ -1904,57 +1895,6 @@ final class WorkspaceSessionController: ObservableObject {
         }
     }
 
-    private func attachedWindowSnapshots() -> [SessionAttachedWindowSnapshot] {
-        attachedWindows.map { attachedWindow in
-            SessionAttachedWindowSnapshot(
-                windowID: attachedWindow.window.id,
-                appName: attachedWindow.window.appName,
-                title: attachedWindow.window.title,
-                pid: attachedWindow.window.pid,
-                bundleIdentifier: attachedWindow.window.bundleIdentifier,
-                documentURL: attachedWindow.window.documentURL,
-                windowNumber: attachedWindow.window.windowNumber,
-                origin: attachedWindow.lastWindowOrigin,
-                window: attachedWindow.window,
-                isUnavailable: isUnavailable(attachedWindow.id),
-                isReconnecting: isReconnecting(attachedWindow.id),
-                protectsSameApplicationFromMinimize: Self.shouldProtectSameApplicationFromMinimize(attachedWindow.window)
-            )
-        }
-    }
-
-    @MainActor
-    private func beginMinimizing(
-        _ windowsToMinimize: [WindowInfo],
-        attachedSnapshots: [SessionAttachedWindowSnapshot],
-        mergeWindows: @escaping @MainActor ([WindowInfo]) -> Void,
-        removeWindows: @escaping @MainActor (Set<WindowInfo.ID>) -> Void
-    ) {
-        statusMessage = "Minimizing \(windowsToMinimize.count) unattached window(s)..."
-        let switchRevision = workspaceSwitchRevision
-
-        Task.detached(priority: .userInitiated) {
-            let service = self.windowServiceFactory()
-            let result = Self.minimizeWindows(windowsToMinimize, attachedSnapshots: attachedSnapshots, service: service)
-
-            await MainActor.run {
-                for window in result.minimizedWindows {
-                    self.rememberMinimizedWindow(window)
-                }
-                self.isMinimizingUnattached = false
-                defer { self.drainAutomaticMinimization() }
-                guard self.workspaceSwitchRevision == switchRevision else { return }
-                let minimizedIDs = Set(result.minimizedWindows.map(\.id))
-                removeWindows(minimizedIDs)
-                self.statusMessage = Self.minimizeStatus(
-                    minimizedCount: result.minimizedWindows.count,
-                    restoredAttachedCount: result.restoredAttachedWindows.count,
-                    failedCount: result.failedCount
-                )
-            }
-        }
-    }
-
     private static func makeAttachedWindow(
         _ window: WindowInfo,
         attachmentID: AttachedWindow.ID = UUID(),
@@ -2234,197 +2174,6 @@ final class WorkspaceSessionController: ObservableObject {
         }
 
         return recoveredAttachments
-    }
-
-    private static func minimizeUnattachedWindows(
-        keeping attachedWindows: [AttachedWindow],
-        candidateWindows: [WindowInfo],
-        unavailableAttachmentIDs: Set<AttachedWindow.ID>,
-        service: any WorkspaceWindowOperating
-    ) -> SessionMinimizeWindowsResult {
-        let snapshots = attachedWindows.map {
-            let isUnavailable = $0.window.pid == 0 || unavailableAttachmentIDs.contains($0.id)
-            return SessionAttachedWindowSnapshot(
-                windowID: $0.window.id,
-                appName: $0.window.appName,
-                title: $0.window.title,
-                pid: $0.window.pid,
-                bundleIdentifier: $0.window.bundleIdentifier,
-                documentURL: $0.window.documentURL,
-                windowNumber: $0.window.windowNumber,
-                origin: $0.lastWindowOrigin,
-                window: $0.window,
-                isUnavailable: isUnavailable,
-                isReconnecting: false,
-                protectsSameApplicationFromMinimize: shouldProtectSameApplicationFromMinimize($0.window)
-            )
-        }
-        let windowsToMinimize = candidateWindows.filter {
-            shouldMinimizeWindow(
-                $0,
-                attachedSnapshots: snapshots
-            )
-        }
-        return minimizeWindows(windowsToMinimize, attachedSnapshots: snapshots, service: service)
-    }
-
-    private static func minimizeWindows(
-        _ windowsToMinimize: [WindowInfo],
-        attachedSnapshots: [SessionAttachedWindowSnapshot],
-        service: any WorkspaceWindowOperating
-    ) -> SessionMinimizeWindowsResult {
-        var minimizedWindows: [WindowInfo] = []
-        var restoredAttachedWindows: [WindowInfo] = []
-        var failedCount = 0
-
-        for window in windowsToMinimize {
-            guard !service.isMinimized(window) else {
-                continue
-            }
-
-            do {
-                try service.setMinimized(true, for: window)
-                minimizedWindows.append(window)
-            } catch {
-                failedCount += 1
-            }
-        }
-
-        for snapshot in attachedSnapshots {
-            guard !snapshot.isUnavailable, !snapshot.isReconnecting else {
-                continue
-            }
-
-            guard service.isMinimized(snapshot.window) else {
-                continue
-            }
-
-            do {
-                try service.setMinimized(false, for: snapshot.window)
-                restoredAttachedWindows.append(snapshot.window)
-            } catch {
-                failedCount += 1
-            }
-        }
-
-        return SessionMinimizeWindowsResult(
-            minimizedWindows: minimizedWindows,
-            restoredAttachedWindows: restoredAttachedWindows,
-            failedCount: failedCount
-        )
-    }
-
-    private static func shouldMinimizeWindow(
-        _ window: WindowInfo,
-        attachedSnapshots: [SessionAttachedWindowSnapshot]
-    ) -> Bool {
-        guard !isAttachedWindow(window, attachedSnapshots: attachedSnapshots) else {
-            return false
-        }
-
-        return !isAmbiguousSameAppWindow(window, attachedSnapshots: attachedSnapshots)
-    }
-
-    private static func isAttachedWindow(
-        _ window: WindowInfo,
-        attachedSnapshots: [SessionAttachedWindowSnapshot]
-    ) -> Bool {
-        for snapshot in attachedSnapshots {
-            if snapshot.windowID == window.id {
-                return true
-            }
-
-            if let snapshotWindowNumber = snapshot.windowNumber,
-               let windowNumber = window.windowNumber,
-               snapshot.pid == window.pid,
-               snapshotWindowNumber == windowNumber {
-                return true
-            }
-
-            guard snapshot.pid == window.pid,
-                  snapshot.appName == window.appName,
-                  snapshot.title == window.title,
-                  let candidateOrigin = window.position else {
-                continue
-            }
-
-            if originsMatch(snapshot.origin, candidateOrigin) {
-                return true
-            }
-        }
-
-        return false
-    }
-
-    private static func isAmbiguousSameAppWindow(
-        _ window: WindowInfo,
-        attachedSnapshots: [SessionAttachedWindowSnapshot]
-    ) -> Bool {
-        attachedSnapshots.contains { snapshot in
-            guard !snapshot.isUnavailable, !snapshot.isReconnecting else {
-                return false
-            }
-
-            guard isSameApplication(window, snapshot: snapshot) else {
-                return false
-            }
-
-            if isStrictMultiWindowApplication(window.bundleIdentifier)
-                || isStrictMultiWindowApplication(snapshot.bundleIdentifier) {
-                return false
-            }
-
-            if snapshot.protectsSameApplicationFromMinimize {
-                return true
-            }
-
-            if window.windowNumber != nil, snapshot.windowNumber != nil {
-                return false
-            }
-
-            if window.documentURL != nil, snapshot.documentURL != nil {
-                return false
-            }
-
-            let windowTitle = window.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            let snapshotTitle = snapshot.title.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !windowTitle.isEmpty,
-               !snapshotTitle.isEmpty,
-               windowTitle != snapshotTitle {
-                return false
-            }
-
-            return true
-        }
-    }
-
-    private static func isSameApplication(_ window: WindowInfo, snapshot: SessionAttachedWindowSnapshot) -> Bool {
-        if let windowBundleIdentifier = window.bundleIdentifier,
-           let snapshotBundleIdentifier = snapshot.bundleIdentifier {
-            return windowBundleIdentifier == snapshotBundleIdentifier
-        }
-
-        return window.pid == snapshot.pid || window.appName == snapshot.appName
-    }
-
-    private static func isStrictMultiWindowApplication(_ bundleIdentifier: String?) -> Bool {
-        guard let bundleIdentifier else {
-            return false
-        }
-
-        return SavedWindowReference.isVisualStudioCode(bundleIdentifier: bundleIdentifier)
-    }
-
-    private static func shouldProtectSameApplicationFromMinimize(_ window: WindowInfo) -> Bool {
-        let protectedBundleIdentifiers: Set<String> = [
-            "com.apple.Terminal"
-        ]
-
-        guard let bundleIdentifier = window.bundleIdentifier else {
-            return false
-        }
-
-        return protectedBundleIdentifiers.contains(bundleIdentifier)
     }
 
     private static func originsMatch(_ lhs: CGPoint, _ rhs: CGPoint) -> Bool {
