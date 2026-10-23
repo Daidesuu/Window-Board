@@ -7,26 +7,32 @@ final class AttachedWindowSnapshotCoordinatorTests: XCTestCase {
     func testSnapshotWaitsForIntervalBeforeFirstSample() async {
         let probe = SnapshotSamplerProbe()
         let fixture = makeSnapshotFixture()
+        let interval: Duration = .milliseconds(15)
+        let consumed = expectation(description: "First interval snapshot consumed")
         let coordinator = AttachedWindowSnapshotCoordinator(
-            interval: .milliseconds(15),
+            interval: interval,
             sampler: { requests in await probe.sample(requests) }
         )
-        var consumedCount = 0
-
+        let startedAt = ContinuousClock.now
         coordinator.restart(
             activity: activeSnapshotActivity,
             requestProvider: { fixture.batch },
-            consume: { _ in consumedCount += 1 }
+            consume: { _ in
+                consumed.fulfill()
+                coordinator.stop()
+            }
         )
 
-        try? await Task.sleep(for: .milliseconds(5))
-        let callsBeforeInterval = await probe.callCount
-        XCTAssertEqual(callsBeforeInterval, 0)
-        try? await Task.sleep(for: .milliseconds(25))
-        let callsAfterInterval = await probe.callCount
-        XCTAssertGreaterThanOrEqual(callsAfterInterval, 1)
-        XCTAssertGreaterThanOrEqual(consumedCount, 1)
+        await fulfillment(of: [consumed], timeout: 2)
         coordinator.stop()
+        let firstSampleAt = await probe.firstSampleAt
+        guard let firstSampleAt else {
+            XCTFail("Expected a first sample before consumption")
+            return
+        }
+        XCTAssertGreaterThanOrEqual(startedAt.duration(to: firstSampleAt), interval)
+        let callCount = await probe.callCount
+        XCTAssertEqual(callCount, 1)
     }
 
     func testInactiveSnapshotCoordinatorDoesNotSample() async {
@@ -320,6 +326,7 @@ private struct ReducerFixture {
 
 private actor SnapshotSamplerProbe {
     private(set) var callCount = 0
+    private(set) var firstSampleAt: ContinuousClock.Instant?
     private let firstCallDelay: Duration?
 
     init(firstCallDelay: Duration? = nil) {
@@ -329,6 +336,9 @@ private actor SnapshotSamplerProbe {
     func sample(_ requests: [AttachedWindowSnapshotRequest]) async -> [AttachedWindowSnapshot] {
         callCount += 1
         let call = callCount
+        if call == 1 {
+            firstSampleAt = ContinuousClock.now
+        }
         if call == 1, let firstCallDelay {
             try? await Task.sleep(for: firstCallDelay)
         }
