@@ -1284,7 +1284,8 @@ final class WindowMatchingTests: XCTestCase {
         service.minimizedWindowIDs = [restored.id, failed.id]
         service.minimizeWriteFailureIDs = [failed.id]
         let session = makeSession(service: service)
-        session.minimizedWindows = [restored, failed]
+        session.rememberMinimizedWindow(restored)
+        session.rememberMinimizedWindow(failed)
 
         session.restoreMinimizedWindows()
 

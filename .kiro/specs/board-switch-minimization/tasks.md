@@ -119,7 +119,7 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
   - _Boundary: WorkspaceSessionController_
   - _Requirements: 1.3, 1.4, 2.2, 3.1, 3.2, 3.3, 3.4, 4.5_
 
-- [ ] 4.3 実際に最小化した記録を画面結果と分けて保持する
+- [x] 4.3 実際に最小化した記録を画面結果と分けて保持する
   - 正常な非最小化状態からの書込成功を、要求失効後も復元台帳へ反映する。元から最小化済み・状態不明・書込失敗を新しい成功へ数えない。
   - 実窓の識別と記録の版で差分更新し、初回追加順を保って既存の公開一覧へ投影する。
   - 重複した操作結果を二度記帳せず、古い操作の画面・接続・候補更新は現行の受付世代と実行枠で抑止する。
@@ -268,3 +268,4 @@ Session本体の変更はSession / Workspace担当一人が逐次所有する。
 - 3.2: 復元失敗後の補助読取も再許可する。失効・識別/版変更時はobservedAfterなしの失敗receiptを保持し、新規読取を開始しない。
 - 4.1: 初期ユーザー追加テストtestSamePrimaryReloadIgnoresStaleDeferredApplicationFailureのMainActor注釈は、その未コミットテストと共に作業ツリーへ残した。既存部分だけ選択保存。
 - 4.2: finishOperationは枠を次要求へ移してその要求を返す。5.1のworker接続では返却要求を必ず起動する。same-target待機要求は最新contextでprivate経路へ再投入し旧batch/callbackを抑止する。
+- 4.3: step単位の重複追跡は終了時解放し、完了operation UUIDで遅延duplicateを拒否する。UUID保持量の評価は統合レビューで確認する。

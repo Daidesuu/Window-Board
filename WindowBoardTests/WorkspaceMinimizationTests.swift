@@ -1,3 +1,4 @@
+import ApplicationServices
 import XCTest
 @testable import WindowBoard
 
@@ -113,6 +114,81 @@ final class WorkspaceMinimizationTests: XCTestCase {
         XCTAssertEqual(session.latestMinimizationIntent?.id, latest.id)
         XCTAssertNil(session.pendingAutomaticMinimization)
         XCTAssertFalse(session.isLoadingWorkspace)
+    }
+
+    @MainActor
+    func testStalePhysicalSuccessIsRecordedWithoutPublishingOldUIAndDuplicateIsIdempotent() throws {
+        let session = makeSession()
+        let operation = try XCTUnwrap(session.startManualMinimizationOperation(candidateSource: .known([])))
+        let window = ledgerWindow()
+        let receipt = ledgerReceipt(operation, window: window)
+        let target = session.workspaceStore.defaultWorkspace!.id
+        _ = session.acceptSwitchIntent(target: target, automaticEnabled: false)
+        let status = session.statusMessage
+        let workspace = session.activeWorkspaceID
+        let references = session.workspaceStore.workspaces
+        XCTAssertFalse(session.commitReceipt(receipt))
+        let first = try XCTUnwrap(session.minimizedLedger[receipt.identity])
+        XCTAssertEqual(session.minimizedWindows.map(\.id), [window.id])
+        session.finishOperation(.init(operationID: operation.operationID, intentID: operation.intentID,
+            summary: OperationSummary(), endReason: .superseded))
+        XCTAssertFalse(session.commitReceipt(receipt))
+        XCTAssertEqual(session.minimizedLedger[receipt.identity]?.entryVersion, first.entryVersion)
+        XCTAssertEqual(session.statusMessage, status)
+        XCTAssertEqual(session.activeWorkspaceID, workspace)
+        XCTAssertEqual(session.workspaceStore.workspaces, references)
+    }
+
+    @MainActor
+    func testLedgerVersionsAdvanceWithoutChangingOrderAndDistinctLiveIdentitiesStaySeparate() throws {
+        let session = makeSession()
+        let operation = try XCTUnwrap(session.startManualMinimizationOperation(candidateSource: .known([])))
+        let first = ledgerWindow()
+        let otherPID = ledgerWindow(pid: 73)
+        let otherNumber = ledgerWindow(number: 12)
+        XCTAssertTrue(session.commitReceipt(ledgerReceipt(operation, window: first)))
+        let original = try XCTUnwrap(session.minimizedLedger[LiveWindowIdentity(window: first)])
+        XCTAssertTrue(session.canApplyMinimizationReceipt(ledgerReceipt(operation, window: first), to: first))
+        XCTAssertFalse(session.canApplyMinimizationReceipt(ledgerReceipt(operation, window: first), to: otherPID))
+        XCTAssertFalse(session.canApplyMinimizationReceipt(ledgerReceipt(operation, window: first), to: otherNumber))
+        session.rememberMinimizedWindow(otherPID)
+        session.rememberMinimizedWindow(otherNumber)
+        XCTAssertTrue(session.commitReceipt(ledgerReceipt(operation, window: first.updatingTitle("new"), step: 2)))
+        let updated = try XCTUnwrap(session.minimizedLedger[LiveWindowIdentity(window: first)])
+        XCTAssertGreaterThan(updated.entryVersion, original.entryVersion)
+        XCTAssertEqual(updated.insertionOrder, original.insertionOrder)
+        XCTAssertEqual(session.minimizedWindows.map { LiveWindowIdentity(window: $0) },
+            [first, otherPID, otherNumber].map { LiveWindowIdentity(window: $0) })
+        XCTAssertEqual(session.minimizedWindows.first?.title, "new")
+    }
+
+    @MainActor
+    func testOnlyChangedMinimizationCreatesLedgerEntry() throws {
+        let session = makeSession()
+        let operation = try XCTUnwrap(session.startManualMinimizationOperation(candidateSource: .known([])))
+        let issue = WindowInspectionIssue(stage: .readMinimized, pid: 72, windowID: "same", failure: .invalidValue)
+        let outcomes: [StepOutcome] = [.alreadyDesired, .readFailed(issue), .writeFailed(issue, observedAfter: nil),
+            .skipped(.registered), .superseded]
+        for (index, outcome) in outcomes.enumerated() {
+            XCTAssertTrue(session.commitReceipt(ledgerReceipt(operation, window: ledgerWindow(),
+                step: UInt64(index), outcome: outcome)))
+        }
+        XCTAssertTrue(session.commitReceipt(ledgerReceipt(operation, window: ledgerWindow(), step: 10, desired: false)))
+        XCTAssertTrue(session.minimizedLedger.isEmpty)
+        XCTAssertTrue(session.minimizedWindows.isEmpty)
+    }
+
+    private func ledgerWindow(pid: pid_t = 72, number: CGWindowID = 11) -> WindowInfo {
+        WindowInfo(id: "same", appName: "App", title: "old", pid: pid, bundleIdentifier: nil,
+            bundleURL: nil, documentURL: nil, axWindow: AXUIElementCreateApplication(pid),
+            windowNumber: number, position: nil)
+    }
+
+    private func ledgerReceipt(_ operation: MinimizationExecutionRequest, window: WindowInfo,
+                               step: UInt64 = 1, desired: Bool = true, outcome: StepOutcome = .changed) -> StepReceipt {
+        StepReceipt(operationID: operation.operationID, intentID: operation.intentID, stepID: step,
+            identity: LiveWindowIdentity(window: window), window: window, desiredMinimized: desired,
+            outcome: outcome, expectedLedgerVersion: nil)
     }
 
     @MainActor
