@@ -97,11 +97,12 @@ enum DragPayload {
         guard payload.hasPrefix(boardPrefix) else { return nil }
         let value = String(payload.dropFirst(boardPrefix.count))
         let parts = value.components(separatedBy: sourcePrimaryPrefix)
+        guard parts.count <= 2 else { return nil }
         guard let boardID = UUID(uuidString: parts[0]) else { return nil }
         let sourcePrimaryBoardID = parts.count == 2
             ? UUID(uuidString: parts[1])
             : nil
-        guard parts.count <= 2 else { return nil }
+        guard parts.count == 1 || sourcePrimaryBoardID != nil else { return nil }
         return SidebarBoardDragPayload(
             boardID: boardID,
             sourcePrimaryBoardID: sourcePrimaryBoardID
@@ -154,6 +155,7 @@ struct WindowBoardDropDelegate: DropDelegate {
     let acceptedKinds: Set<WindowBoardDragKind>
     let setTargeted: (Bool) -> Void
     let perform: (WindowBoardDragPayload, CGPoint) -> Void
+    var onFailure: (() -> Void)? = nil
 
     func validateDrop(info: DropInfo) -> Bool {
         provider(in: info) != nil
@@ -177,11 +179,13 @@ struct WindowBoardDropDelegate: DropDelegate {
         guard let (kind, provider) = provider(in: info) else { return false }
         let location = info.location
         let action = perform
+        let failure = onFailure
         switch kind {
         case .board:
             provider.loadObject(ofClass: NSString.self) { object, _ in
                 guard let payload = object as? String,
                       let id = DragPayload.boardID(from: payload) else {
+                    DispatchQueue.main.async { failure?() }
                     return
                 }
                 DispatchQueue.main.async {
@@ -190,7 +194,10 @@ struct WindowBoardDropDelegate: DropDelegate {
             }
         case .window:
             provider.loadDataRepresentation(forTypeIdentifier: kind.type.identifier) { data, _ in
-                guard let data, let id = WindowBoardDragPayload.id(from: data) else { return }
+                guard let data, let id = WindowBoardDragPayload.id(from: data) else {
+                    DispatchQueue.main.async { failure?() }
+                    return
+                }
                 DispatchQueue.main.async {
                     action(.window(id), location)
                 }

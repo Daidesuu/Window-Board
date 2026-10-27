@@ -61,12 +61,6 @@ enum AttachedWindowDisplayState: Equatable {
     }
 }
 
-enum SidebarBoardDropPosition {
-    case before
-    case child
-    case after
-}
-
 struct WorkspaceSidebarView: View {
     private let titlebarInsetHeight: CGFloat = 4
 
@@ -82,10 +76,15 @@ struct WorkspaceSidebarView: View {
     let restoreBoardLayout: (SidebarBoardSelection) -> Void
     let removeBoardWindows: (SavedWorkspace) -> Void
     let deleteBoard: (SavedWorkspace) -> Void
-    let separateBoard: (SidebarBoardDragPayload) -> Bool
-    let dropBoard: (SavedWorkspace.ID, SavedWorkspace.ID, SidebarBoardDropPosition) -> BoardCompositionMutationResult
+    let separateBoard: (SidebarBoardSelection) -> BoardCompositionMutationResult
+    let dropBoard: (SavedWorkspace.ID, SavedWorkspace.ID) -> BoardCompositionMutationResult
+    let includeChildBoard: (SavedWorkspace.ID, SavedWorkspace.ID) -> BoardCompositionMutationResult
+    let invalidBoardDrop: () -> Void
     let moveWindow: (AttachedWindow.ID, SavedWorkspace.ID) -> BoardWindowMutationResult
     @State private var pendingBoardDeletion: SavedWorkspace?
+    @State private var pendingChildBoard: SavedWorkspace?
+    @State private var mutationMessage: String?
+    @State private var messageRevision = UUID()
 
     private var currentBoardIDSet: Set<SavedWorkspace.ID> {
         Set(currentBoardIDs)
@@ -125,13 +124,14 @@ struct WorkspaceSidebarView: View {
                         .font(.callout)
                         .foregroundStyle(.secondary)
                 } else {
-                    ForEach(sidebarItems) { item in
+                    ForEach(Array(sidebarItems.enumerated()), id: \.element.id) { index, item in
                         switch item {
                         case let .group(group):
                             SidebarBoardTabGroup(
                                 group: group,
                                 isSelected: selection == .currentBoardGroup(primaryID: group.primaryBoardID),
                                 isComposite: true,
+                                showsSeparator: index > 0,
                                 selectBoard: selectBoard,
                                 contextMenu: { workspace in
                                     boardContextMenu(
@@ -143,11 +143,12 @@ struct WorkspaceSidebarView: View {
                                     )
                                 },
                                 dropBoard: performBoardDrop,
-                                moveWindow: moveWindow,
-                                separateBoard: separateBoard
+                                invalidBoardDrop: reportInvalidBoardDrop,
+                                moveWindow: moveWindow
                             )
-                            .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 6, trailing: 8))
+                            .listRowInsets(EdgeInsets())
                             .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                         case let .board(workspace):
                             SidebarBoardTabGroup(
                                 group: SidebarBoardGroup(
@@ -156,6 +157,7 @@ struct WorkspaceSidebarView: View {
                                 ),
                                 isSelected: selection == .board(workspace.id),
                                 isComposite: false,
+                                showsSeparator: index > 0,
                                 selectBoard: selectBoard,
                                 contextMenu: { board in
                                     boardContextMenu(
@@ -167,17 +169,19 @@ struct WorkspaceSidebarView: View {
                                     )
                                 },
                                 dropBoard: performBoardDrop,
-                                moveWindow: moveWindow,
-                                separateBoard: separateBoard
+                                invalidBoardDrop: reportInvalidBoardDrop,
+                                moveWindow: moveWindow
                             )
-                            .listRowInsets(EdgeInsets(top: 4, leading: 8, bottom: 6, trailing: 8))
+                            .listRowInsets(EdgeInsets())
                             .listRowBackground(Color.clear)
+                            .listRowSeparator(.hidden)
                         }
                     }
                 }
             }
         }
         .listStyle(.sidebar)
+        .listSectionSeparator(.hidden)
         .safeAreaInset(edge: .top, spacing: 0) {
             Color.clear
                 .frame(height: titlebarInsetHeight)
@@ -186,6 +190,33 @@ struct WorkspaceSidebarView: View {
             SidebarBoardDeletionDropZone(requestDelete: requestBoardDeletion)
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
+        }
+        .sheet(item: $pendingChildBoard) { child in
+            SidebarChildBoardPicker(
+                child: child,
+                parents: workspaces.filter { $0.id != child.id },
+                add: { parentID in
+                    let result = includeChildBoard(child.id, parentID)
+                    if result == .inserted { showMutationMessage(result.userMessage) }
+                    return result
+                }
+            )
+        }
+        .overlay(alignment: .bottom) {
+            if let mutationMessage {
+                Text(mutationMessage)
+                    .font(.callout)
+                    .padding(10)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(8)
+                    .allowsHitTesting(false)
+                    .accessibilityLabel(mutationMessage)
+            }
+        }
+        .task(id: messageRevision) {
+            guard mutationMessage != nil else { return }
+            do { try await Task.sleep(for: .seconds(4)) } catch { return }
+            mutationMessage = nil
         }
         .alert(
             deleteConfirmationTitle,
@@ -219,13 +250,13 @@ struct WorkspaceSidebarView: View {
         if workspace.id == activeWorkspaceID {
             Button("Current Board") {}
                 .disabled(true)
-        } else if currentBoardIDSet.contains(workspace.id) {
+        } else if currentBoardIDSet.contains(workspace.id), selection.groupPrimaryID != activeWorkspaceID {
             Button {
                 excludeBoard(workspace.id)
             } label: {
                 Label("Remove from Current Board", systemImage: "rectangle.badge.minus")
             }
-        } else {
+        } else if !currentBoardIDSet.contains(workspace.id) {
             Button {
                 includeBoard(workspace.id)
             } label: {
@@ -234,6 +265,20 @@ struct WorkspaceSidebarView: View {
         }
 
         Divider()
+
+        if selection.memberBoardID != selection.groupPrimaryID {
+            Button {
+                showMutationMessage(separateBoard(selection).userMessage)
+            } label: {
+                Label("この並列グループから外す", systemImage: "rectangle.badge.minus")
+            }
+        }
+
+        Button {
+            pendingChildBoard = workspace
+        } label: {
+            Label("子Boardとして追加…", systemImage: "arrow.turn.down.right")
+        }
 
         Button {
             showBoardSettings(workspace)
@@ -264,25 +309,6 @@ struct WorkspaceSidebarView: View {
         .disabled(workspace.isDefault)
     }
 
-    private func performBoardDrop(
-        _ sourceBoardID: SavedWorkspace.ID,
-        _ targetBoardID: SavedWorkspace.ID,
-        location: CGPoint,
-        height: CGFloat
-    ) -> Bool {
-        let edgeInset = min(12, height * 0.25)
-        let position: SidebarBoardDropPosition
-        if location.y < edgeInset {
-            position = .before
-        } else if location.y > height - edgeInset {
-            position = .after
-        } else {
-            position = .child
-        }
-        _ = dropBoard(sourceBoardID, targetBoardID, position)
-        return true
-    }
-
     private func requestBoardDeletion(_ payload: SidebarBoardDragPayload) {
         guard let workspace = workspaces.first(where: { $0.id == payload.boardID }) else {
             return
@@ -298,8 +324,71 @@ struct WorkspaceSidebarView: View {
         }
     }
 
+    private func performBoardDrop(_ sourceID: SavedWorkspace.ID, _ primaryID: SavedWorkspace.ID) -> BoardCompositionMutationResult {
+        let result = dropBoard(sourceID, primaryID)
+        showMutationMessage(result.userMessage)
+        return result
+    }
+
+    private func reportInvalidBoardDrop() {
+        invalidBoardDrop()
+        showMutationMessage("Boardのドラッグデータを読み取れませんでした。")
+    }
+
+    private func showMutationMessage(_ message: String) {
+        mutationMessage = message
+        messageRevision = UUID()
+    }
+
     private var deleteConfirmationTitle: String {
         "Delete \(pendingBoardDeletion?.name ?? "Board")?"
+    }
+}
+
+private struct SidebarChildBoardPicker: View {
+    let child: SavedWorkspace
+    let parents: [SavedWorkspace]
+    let add: (SavedWorkspace.ID) -> BoardCompositionMutationResult
+    @Environment(\.dismiss) private var dismiss
+    @State private var parentID: SavedWorkspace.ID?
+    @State private var errorMessage: String?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Text("子Boardとして追加")
+                .font(.headline)
+            Text("「\(child.name)」を追加する親Boardを選択してください。")
+            Picker("親Board", selection: $parentID) {
+                Text("選択してください").tag(Optional<SavedWorkspace.ID>.none)
+                ForEach(parents) { parent in
+                    Text(parent.name).tag(Optional(parent.id))
+                }
+            }
+            if let errorMessage {
+                Text(errorMessage)
+                    .foregroundStyle(.red)
+                    .font(.callout)
+            }
+            HStack {
+                Spacer()
+                Button("キャンセル") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("追加") {
+                    guard let parentID else { return }
+                    let result = add(parentID)
+                    if result == .inserted {
+                        dismiss()
+                    } else {
+                        errorMessage = result.userMessage
+                    }
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(parentID == nil)
+            }
+        }
+        .padding(24)
+        .frame(width: 380)
+        .onChange(of: parentID) { _, _ in errorMessage = nil }
     }
 }
 
@@ -307,56 +396,87 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
     let group: SidebarBoardGroup
     let isSelected: Bool
     let isComposite: Bool
+    let showsSeparator: Bool
     let selectBoard: (SidebarBoardSelection) -> Void
     @ViewBuilder let contextMenu: (SavedWorkspace) -> ContextMenu
-    let dropBoard: (SavedWorkspace.ID, SavedWorkspace.ID, CGPoint, CGFloat) -> Bool
+    let dropBoard: (SavedWorkspace.ID, SavedWorkspace.ID) -> BoardCompositionMutationResult
+    let invalidBoardDrop: () -> Void
     let moveWindow: (AttachedWindow.ID, SavedWorkspace.ID) -> BoardWindowMutationResult
-    let separateBoard: (SidebarBoardDragPayload) -> Bool
     @State private var isHovering = false
     @State private var boardDropTargetID: SavedWorkspace.ID?
+    @State private var isBoardDropTargeted = false
 
     var body: some View {
-        if isComposite {
-            compositeBoardGroup
-        } else if let workspace = group.boards.first {
-            standardBoardRow(for: workspace)
+        Group {
+            if isComposite {
+                compositeBoardGroup
+            } else if let workspace = group.boards.first {
+                standardBoardRow(for: workspace)
+            }
         }
+        .padding(EdgeInsets(top: 4, leading: 8, bottom: 6, trailing: 8))
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .overlay(alignment: .top) {
+            if showsSeparator {
+                Rectangle()
+                    .fill(Color.primary.opacity(0.12))
+                    .frame(height: 1)
+                    .padding(.horizontal, 16)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if isBoardDropTargeted {
+                Text("並列Boardとして追加")
+                    .font(.caption.weight(.semibold))
+                    .padding(4)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 4))
+                    .allowsHitTesting(false)
+            }
+        }
+        .onDrop(
+            of: [WindowBoardDragKind.board.type.identifier],
+            delegate: WindowBoardDropDelegate(
+                acceptedKinds: [.board],
+                setTargeted: { isBoardDropTargeted = $0 },
+                perform: { payload, _ in
+                    if case let .board(boardID) = payload {
+                        _ = dropBoard(boardID, group.primaryBoardID)
+                    }
+                },
+                onFailure: invalidBoardDrop
+            )
+        )
     }
 
     private var compositeBoardGroup: some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                ScrollView(.horizontal) {
-                    HStack(spacing: 4) {
-                        ForEach(group.boards) { workspace in
-                            tab(for: workspace)
-                        }
-                    }
-                    .padding(.vertical, 3)
+            SidebarBoardGridLayout {
+                ForEach(Array(group.boards.enumerated()), id: \.element.id) { index, workspace in
+                    tab(for: workspace)
+                        .anchorPreference(key: SidebarBoardCellBoundsKey.self, value: .bounds) { [index: $0] }
                 }
-                .scrollIndicators(.hidden)
-                Spacer(minLength: 0)
-                Text("\(totalWindowCount)")
-                    .font(.caption.weight(.medium))
+            }
+            .overlayPreferenceValue(SidebarBoardCellBoundsKey.self) { anchors in
+                GeometryReader { geometry in
+                    let frames = anchors.keys.sorted().compactMap { anchors[$0].map { geometry[$0] } }
+                    SidebarBoardSeparators(segments: SidebarBoardGridMetrics.separatorSegments(width: geometry.size.width, frames: frames))
+                        .stroke(Color.primary.opacity(0.06), lineWidth: 1)
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+            }
+            HStack(spacing: 6) {
+                Text("\(totalWindowCount) windows")
+                    .font(.caption)
                     .foregroundStyle(.secondary)
-                    .accessibilityLabel("\(totalWindowCount) \(totalWindowCount == 1 ? "window" : "windows")")
+                Spacer(minLength: 0)
                 selectionIndicator
             }
-
-            SidebarGroupSeparationDropZone(
-                primaryBoardID: group.primaryBoardID,
-                separateBoard: separateBoard
-            )
+            .padding(.horizontal, 8)
         }
-        .padding(.horizontal, 6)
-        .padding(.vertical, 3)
-        .background(
-            isSelected
-                ? Color.accentColor.opacity(0.16)
-                : (isHovering ? Color.primary.opacity(0.045) : Color.clear),
-            in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-        )
-        .onHover { isHovering = $0 }
         .help(group.displayTitle)
     }
 
@@ -399,18 +519,17 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
         .help(workspace.displayName)
         .onDrop(
             of: [
-                WindowBoardDragKind.board.type.identifier,
                 WindowBoardDragKind.window.type.identifier
             ],
             delegate: WindowBoardDropDelegate(
-                acceptedKinds: [.board, .window],
+                acceptedKinds: [.window],
                 setTargeted: { isTargeted in
                     boardDropTargetID = isTargeted ? workspace.id : nil
                 },
-                perform: { payload, location in
+                perform: { payload, _ in
                     switch payload {
-                    case let .board(boardID):
-                        _ = dropBoard(boardID, workspace.id, location, 44)
+                    case .board:
+                        break
                     case let .window(windowID):
                         _ = moveWindow(windowID, workspace.id)
                     }
@@ -420,7 +539,7 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
         .background(
             isSelected
                 ? Color.accentColor.opacity(0.18)
-                : (isHovering ? Color.primary.opacity(0.045) : Color.clear),
+                : (isBoardDropTargeted ? Color.accentColor.opacity(0.12) : (isHovering ? Color.primary.opacity(0.045) : Color.clear)),
             in: RoundedRectangle(cornerRadius: 7, style: .continuous)
         )
         .overlay {
@@ -439,19 +558,16 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
                 .frame(width: 16)
             Text(workspace.name)
                 .font(.callout.weight(isSelected ? .semibold : .regular))
-                .lineLimit(1)
+                .lineLimit(2)
                 .truncationMode(.tail)
+                .fixedSize(horizontal: false, vertical: true)
         }
         .padding(.horizontal, 9)
-        .frame(
-            minWidth: isComposite ? 96 : nil,
-            maxWidth: isComposite ? 150 : .infinity,
-            minHeight: 28,
-            alignment: .leading
-        )
+        .padding(.vertical, 5)
+        .frame(maxWidth: .infinity, minHeight: 28, alignment: .leading)
         .background(
-            Color.primary.opacity(0.055),
-            in: Capsule()
+            isBoardDropTargeted ? Color.accentColor.opacity(0.12) : (isSelected ? Color.accentColor.opacity(0.16) : Color.clear),
+            in: RoundedRectangle(cornerRadius: 12, style: .continuous)
         )
         .contentShape(Rectangle())
         .boardDraggable(
@@ -470,20 +586,25 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
         )
         .contextMenu { contextMenu(workspace) }
         .help(workspace.displayName)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(workspace.displayName)
+        .accessibilityAddTraits(.isButton)
+        .accessibilityAction {
+            selectBoard(SidebarBoardSelection(memberBoardID: group.primaryBoardID, groupPrimaryID: group.primaryBoardID))
+        }
         .onDrop(
             of: [
-                WindowBoardDragKind.board.type.identifier,
                 WindowBoardDragKind.window.type.identifier
             ],
             delegate: WindowBoardDropDelegate(
-                acceptedKinds: [.board, .window],
+                acceptedKinds: [.window],
                 setTargeted: { isTargeted in
                     boardDropTargetID = isTargeted ? workspace.id : nil
                 },
-                perform: { payload, location in
+                perform: { payload, _ in
                     switch payload {
-                    case let .board(boardID):
-                        _ = dropBoard(boardID, workspace.id, location, 32)
+                    case .board:
+                        break
                     case let .window(windowID):
                         _ = moveWindow(windowID, workspace.id)
                     }
@@ -491,7 +612,7 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
             )
         )
         .overlay {
-            Capsule()
+            RoundedRectangle(cornerRadius: 12, style: .continuous)
                 .stroke(
                     isDropTargeted(workspace.id) ? Color.accentColor.opacity(0.75) : Color.clear,
                     lineWidth: 1.2
@@ -539,39 +660,107 @@ private struct SidebarBoardTabGroup<ContextMenu: View>: View {
     }
 }
 
-private struct SidebarGroupSeparationDropZone: View {
-    let primaryBoardID: SavedWorkspace.ID
-    let separateBoard: (SidebarBoardDragPayload) -> Bool
-    @State private var isTargeted = false
+/// Equal-width cells, measured at their actual column width without a height-feedback loop.
+struct SidebarBoardGridMetrics {
+    static let minimumColumnWidth: CGFloat = 96
+    static let spacing: CGFloat = 6
 
-    var body: some View {
-        Label("Remove from Current Board", systemImage: "rectangle.badge.minus")
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: isTargeted ? 30 : 8)
-            .background(
-                Color.secondary.opacity(isTargeted ? 0.09 : 0.001),
-                in: RoundedRectangle(cornerRadius: 7, style: .continuous)
-            )
-            .overlay {
-                RoundedRectangle(cornerRadius: 7, style: .continuous)
-                    .stroke(
-                        Color.secondary.opacity(isTargeted ? 0.45 : 0.001),
-                        style: StrokeStyle(lineWidth: 1, dash: [5, 4])
-                    )
+    static func resolvedWidth(_ proposedWidth: CGFloat?) -> CGFloat {
+        guard let proposedWidth, proposedWidth.isFinite else {
+            return minimumColumnWidth * 2 + spacing
+        }
+        return max(0, proposedWidth)
+    }
+
+    static func columnCount(for width: CGFloat) -> Int {
+        width >= minimumColumnWidth * 2 + spacing ? 2 : 1
+    }
+
+    static func columnWidth(for width: CGFloat) -> CGFloat {
+        let columns = columnCount(for: width)
+        return max(0, (width - CGFloat(columns - 1) * spacing) / CGFloat(columns))
+    }
+
+    static func frames(width: CGFloat, heights: [CGFloat]) -> [CGRect] {
+        let columns = columnCount(for: width)
+        let cellWidth = columnWidth(for: width)
+        var result: [CGRect] = []
+        var y: CGFloat = 0
+        for start in stride(from: 0, to: heights.count, by: columns) {
+            let end = min(start + columns, heights.count)
+            let rowHeight = heights[start..<end].max() ?? 0
+            for index in start..<end {
+                result.append(CGRect(x: CGFloat(index - start) * (cellWidth + spacing), y: y, width: cellWidth, height: rowHeight))
             }
-            .opacity(isTargeted ? 1 : 0.001)
-            .contentShape(Rectangle())
-            .onDrop(
-                of: [WindowBoardDragKind.board.type.identifier],
-                delegate: SidebarBoardPayloadDropDelegate(
-                    setTargeted: { isTargeted = $0 },
-                    perform: { payload in
-                        guard payload.sourcePrimaryBoardID == primaryBoardID else { return }
-                        _ = separateBoard(payload)
-                    }
-                )
-            )
+            y += rowHeight + spacing
+        }
+        return result
+    }
+
+    /// Decorative geometry derived from the same placed cell bounds as the grid.
+    static func separatorSegments(width: CGFloat, frames: [CGRect]) -> [SidebarBoardSeparatorSegment] {
+        let columns = columnCount(for: width)
+        var result: [SidebarBoardSeparatorSegment] = []
+        for start in stride(from: 0, to: frames.count, by: columns) {
+            let first = frames[start]
+            let end = min(start + columns, frames.count)
+            let rowBottom = frames[start..<end].map(\.maxY).max() ?? first.maxY
+            if columns == 2, end - start == 2, rowBottom - first.minY > 12 {
+                let x = (first.maxX + frames[start + 1].minX) / 2
+                result.append(SidebarBoardSeparatorSegment(start: CGPoint(x: x, y: first.minY + 6), end: CGPoint(x: x, y: rowBottom - 6)))
+            }
+            if end < frames.count, width > 16 {
+                let y = (rowBottom + frames[end].minY) / 2
+                result.append(SidebarBoardSeparatorSegment(start: CGPoint(x: 8, y: y), end: CGPoint(x: width - 8, y: y)))
+            }
+        }
+        return result
+    }
+}
+
+struct SidebarBoardSeparatorSegment: Equatable {
+    let start: CGPoint
+    let end: CGPoint
+}
+
+private struct SidebarBoardCellBoundsKey: PreferenceKey {
+    static var defaultValue: [Int: Anchor<CGRect>] { [:] }
+
+    static func reduce(value: inout [Int: Anchor<CGRect>], nextValue: () -> [Int: Anchor<CGRect>]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, latest in latest })
+    }
+}
+
+private struct SidebarBoardSeparators: Shape {
+    let segments: [SidebarBoardSeparatorSegment]
+
+    func path(in rect: CGRect) -> Path {
+        var path = Path()
+        for segment in segments {
+            path.move(to: segment.start)
+            path.addLine(to: segment.end)
+        }
+        return path
+    }
+}
+
+private struct SidebarBoardGridLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = SidebarBoardGridMetrics.resolvedWidth(proposal.width)
+        let frames = measuredFrames(width: width, subviews: subviews)
+        return CGSize(width: width, height: frames.last?.maxY ?? 0)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        for (subview, frame) in zip(subviews, measuredFrames(width: bounds.width, subviews: subviews)) {
+            subview.place(at: CGPoint(x: bounds.minX + frame.minX, y: bounds.minY + frame.minY), anchor: .topLeading, proposal: ProposedViewSize(frame.size))
+        }
+    }
+
+    private func measuredFrames(width: CGFloat, subviews: Subviews) -> [CGRect] {
+        let cellWidth = SidebarBoardGridMetrics.columnWidth(for: width)
+        let heights = subviews.map { $0.sizeThatFits(ProposedViewSize(width: cellWidth, height: nil)).height }
+        return SidebarBoardGridMetrics.frames(width: width, heights: heights)
     }
 }
 

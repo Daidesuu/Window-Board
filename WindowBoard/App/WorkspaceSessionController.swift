@@ -548,6 +548,7 @@ final class WorkspaceSessionController: ObservableObject {
 
     private var loadedWindowIDsByWorkspaceID: [SavedWorkspace.ID: [SavedWindowReference.ID: WindowInfo.ID]] = [:]
     private var pendingWorkspaceSwitch: PendingWorkspaceSwitch?
+    private var workspaceSwitchRevision = 0
     private let defaults: UserDefaults
     private let minimizeUnattachedOnWorkspaceSwitchKey = "minimizeUnattachedOnWorkspaceSwitch"
     private let restoreMissingWindowsOnWorkspaceSwitchKey = "restoreMissingWindowsOnWorkspaceSwitch"
@@ -1108,6 +1109,8 @@ final class WorkspaceSessionController: ObservableObject {
             persistActiveWorkspaceSnapshotForSwitch(boardOrigin: boardOrigin)
         }
         let requestedSelectedBoardID = selectedBoardID ?? workspaceID
+        workspaceSwitchRevision += 1
+        let switchRevision = workspaceSwitchRevision
         selectedWorkspaceID = requestedSelectedBoardID
         workspaceName = workspaceStore.workspaces.first(where: { $0.id == requestedSelectedBoardID })?.name
             ?? workspace.name
@@ -1219,6 +1222,7 @@ final class WorkspaceSessionController: ObservableObject {
 
             let batchUpdateStart = Date()
             await MainActor.run {
+                guard self.workspaceSwitchRevision == switchRevision else { return }
                 var selectedBoardIDForBatch = resolvedSelectedBoardID
                 if let pendingSwitch = self.pendingWorkspaceSwitch {
                     self.pendingWorkspaceSwitch = nil
@@ -1277,18 +1281,20 @@ final class WorkspaceSessionController: ObservableObject {
             }
             Self.logDuration("workspace mainActor batch update", since: batchUpdateStart)
             let shouldContinueSwitch = await MainActor.run {
-                self.activeWorkspaceID == workspace.id
+                self.activeWorkspaceID == workspace.id && self.workspaceSwitchRevision == switchRevision
             }
             guard shouldContinueSwitch else {
                 return
             }
 
             if shouldDeferWindowApplication {
-                await MainActor.run {
-                    if self.activeWorkspaceID == workspace.id {
-                        self.isApplyingWorkspaceWindows = true
-                    }
+                let shouldApply = await MainActor.run {
+                    guard self.activeWorkspaceID == workspace.id,
+                          self.workspaceSwitchRevision == switchRevision else { return false }
+                    self.isApplyingWorkspaceWindows = true
+                    return true
                 }
+                guard shouldApply else { return }
                 let applyPositionsStart = Date()
                 let applicationResult = Self.applyWorkspaceWindowPositions(resolvedAttachedWindows, service: service)
                 Self.logDuration("applyWorkspaceWindowPositions", since: applyPositionsStart)
@@ -1297,12 +1303,8 @@ final class WorkspaceSessionController: ObservableObject {
                 let failedAttachments = applicationResult.failedAttachments
                 var deferredRecoveryAttachments = unresolvedAttachmentsForDeferredRecovery
                 let shouldContinueAfterApply = await MainActor.run {
-                    guard self.activeWorkspaceID == workspace.id else {
-                        if self.isApplyingWorkspaceWindows {
-                            self.isApplyingWorkspaceWindows = false
-                        }
-                        return false
-                    }
+                    guard self.activeWorkspaceID == workspace.id,
+                          self.workspaceSwitchRevision == switchRevision else { return false }
 
                     return true
                 }
@@ -1313,6 +1315,7 @@ final class WorkspaceSessionController: ObservableObject {
                 if !failedAttachments.isEmpty {
                     deferredRecoveryAttachments.append(contentsOf: failedAttachments)
                     await MainActor.run {
+                        guard self.workspaceSwitchRevision == switchRevision else { return }
                         self.applyDeferredRecovery(
                             [:],
                             failedAttachments: failedAttachments,
@@ -1324,6 +1327,7 @@ final class WorkspaceSessionController: ObservableObject {
                     Self.raiseWorkspaceWindows(windowsToRaise, service: service)
                 }
                 await MainActor.run {
+                    guard self.workspaceSwitchRevision == switchRevision else { return }
                     deferredWindowApplicationCompletion()
                     if self.activeWorkspaceID == workspace.id {
                         self.isApplyingWorkspaceWindows = false
@@ -1337,6 +1341,7 @@ final class WorkspaceSessionController: ObservableObject {
                         await self.recoverMissingAttachmentsAfterWorkspaceSwitch(
                             recoveryAttachments,
                             workspaceID: workspace.id,
+                            switchRevision: switchRevision,
                             minimizationIntentID: intentID,
                             boardOrigin: effectiveBoardOrigin,
                             useSavedOrigin: shouldRestoreSavedOrigin,
@@ -1356,6 +1361,7 @@ final class WorkspaceSessionController: ObservableObject {
                         await self.recoverMissingAttachmentsAfterWorkspaceSwitch(
                             recoveryAttachments,
                             workspaceID: workspace.id,
+                            switchRevision: switchRevision,
                             minimizationIntentID: intentID,
                             boardOrigin: effectiveBoardOrigin,
                             useSavedOrigin: shouldRestoreSavedOrigin,
@@ -1366,7 +1372,7 @@ final class WorkspaceSessionController: ObservableObject {
             }
 
             let shouldContinueBeforeMinimize = await MainActor.run {
-                self.activeWorkspaceID == workspace.id
+                self.activeWorkspaceID == workspace.id && self.workspaceSwitchRevision == switchRevision
             }
             guard shouldContinueBeforeMinimize else {
                 return
@@ -2005,6 +2011,7 @@ final class WorkspaceSessionController: ObservableObject {
     private func recoverMissingAttachmentsAfterWorkspaceSwitch(
         _ attachments: [AttachedWindow],
         workspaceID: SavedWorkspace.ID,
+        switchRevision: Int,
         minimizationIntentID: MinimizationIntentID,
         boardOrigin: CGPoint,
         useSavedOrigin: Bool,
@@ -2018,6 +2025,7 @@ final class WorkspaceSessionController: ObservableObject {
         let attachmentIDs = Set(attachments.map(\.id))
         let shouldRecover = await MainActor.run {
             guard self.activeWorkspaceID == workspaceID,
+                  self.workspaceSwitchRevision == switchRevision,
                   self.latestMinimizationIntent?.id == minimizationIntentID else {
                 return false
             }
@@ -2044,6 +2052,7 @@ final class WorkspaceSessionController: ObservableObject {
 
         await MainActor.run {
             guard self.activeWorkspaceID == workspaceID,
+                  self.workspaceSwitchRevision == switchRevision,
                   self.latestMinimizationIntent?.id == minimizationIntentID else {
                 return
             }

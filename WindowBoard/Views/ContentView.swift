@@ -62,6 +62,8 @@ struct ContentView: View {
     @State private var detachAnimationTasks: [AttachedWindow.ID: Task<Void, Never>] = [:]
     @State private var applicationWindowRefreshTasksByPID: [pid_t: Task<Void, Never>] = [:]
     @State private var compositionStatusAfterReload: String?
+    @State private var hasPendingCompositionReload = false
+    @State private var activeWorkspaceFrontingToken: BoardFrontingCoordinator.WorkspaceToken?
 
     init(
         appState: WindowBoardAppState,
@@ -125,6 +127,7 @@ struct ContentView: View {
             prepareBoardSettings(for: session.activeWorkspaceID)
         }
         .onDisappear {
+            cancelTemporaryBoardWorkspaceFronting()
             stopAttachedWindowSnapshotTask()
             cancelEnergyTasks()
         }
@@ -160,9 +163,12 @@ struct ContentView: View {
         .onChange(of: session.minimizedWindows.count) { _, _ in
             syncStatusMenuState()
         }
-        .onChange(of: session.isLoadingWorkspace) { _, _ in
+        .onChange(of: session.isLoadingWorkspace) { _, isLoading in
             syncStatusMenuState()
             updateAttachedWindowSnapshotTaskForActivity()
+            if !isLoading && hasPendingCompositionReload {
+                reloadCurrentBoardComposition()
+            }
         }
         .onChange(of: session.isApplyingWorkspaceWindows) { _, _ in
             updateAttachedWindowSnapshotTaskForActivity()
@@ -275,7 +281,9 @@ struct ContentView: View {
             removeBoardWindows: removeBoardWindowsFromSidebar,
             deleteBoard: deleteBoardFromSidebar,
             separateBoard: separateBoardFromSidebar,
-            dropBoard: dropBoardInSidebar(_:onto:position:),
+            dropBoard: dropBoardInSidebar(_:onto:),
+            includeChildBoard: includeChildBoard(_:in:),
+            invalidBoardDrop: rejectBoardDrop,
             moveWindow: moveAttachedWindowToBoard(_:destinationBoardID:)
         )
     }
@@ -393,7 +401,7 @@ struct ContentView: View {
 
     private func excludeBoardFromCurrentBoard(_ boardID: SavedWorkspace.ID) {
         guard let primaryID = session.activeWorkspaceID else { return }
-        if isPermanentBoard(boardID) {
+        if boardCompositionStore.isGloballyIncluded(boardID) {
             _ = boardCompositionStore.excludeGlobalRoot(boardID)
         } else {
             _ = boardCompositionStore.excludeRoot(boardID, for: primaryID)
@@ -407,9 +415,7 @@ struct ContentView: View {
         in parentID: SavedWorkspace.ID
     ) -> BoardCompositionMutationResult {
         let availableBoardIDs = Set(workspaceStore.workspaces.map(\.id))
-        let result = isPermanentBoard(childID)
-            ? boardCompositionStore.includeGlobalRoot(childID, availableBoardIDs: availableBoardIDs)
-            : boardCompositionStore.includeChild(childID, in: parentID, availableBoardIDs: availableBoardIDs)
+        let result = boardCompositionStore.includeChild(childID, in: parentID, availableBoardIDs: availableBoardIDs)
         session.statusMessage = result.userMessage
         if result == .inserted {
             compositionStatusAfterReload = result.userMessage
@@ -421,50 +427,19 @@ struct ContentView: View {
     @discardableResult
     private func dropBoardInSidebar(
         _ sourceBoardID: SavedWorkspace.ID,
-        onto targetBoardID: SavedWorkspace.ID,
-        position: SidebarBoardDropPosition
+        onto groupPrimaryID: SavedWorkspace.ID
     ) -> BoardCompositionMutationResult {
         let availableBoardIDs = Set(workspaceStore.workspaces.map(\.id))
-        let result: BoardCompositionMutationResult
-        let affectedPrimaryID: SavedWorkspace.ID
-
-        switch position {
-        case .child:
-            affectedPrimaryID = targetBoardID
-            result = boardCompositionStore.includeChild(
-                sourceBoardID,
-                in: targetBoardID,
-                availableBoardIDs: availableBoardIDs
-            )
-
-        case .before, .after:
-            let targetGroup = sidebarProjection.groups.first { group in
-                group.boards.contains(where: { $0.id == targetBoardID })
-            }
-            affectedPrimaryID = targetGroup?.primaryBoardID ?? targetBoardID
-            if isPermanentBoard(sourceBoardID) {
-                result = boardCompositionStore.includeGlobalRoot(
-                    sourceBoardID,
-                    availableBoardIDs: availableBoardIDs
-                )
-            } else {
-                result = boardCompositionStore.includeRoot(
-                    sourceBoardID,
-                    for: affectedPrimaryID,
-                    availableBoardIDs: availableBoardIDs,
-                    relativeTo: targetBoardID,
-                    insertion: position == .before ? .before : .after
-                )
-            }
-        }
+        let result = boardCompositionStore.includeRoot(
+            sourceBoardID,
+            for: groupPrimaryID,
+            availableBoardIDs: availableBoardIDs
+        )
 
         session.statusMessage = result.userMessage
         guard result == .inserted else { return result }
 
-        let activeCompositionContainsTarget = session.currentBoardComposition.uniqueBoards.contains {
-            $0.id == targetBoardID
-        }
-        if session.activeWorkspaceID == affectedPrimaryID || activeCompositionContainsTarget {
+        if session.activeWorkspaceID == groupPrimaryID {
             compositionStatusAfterReload = result.userMessage
             reloadCurrentBoardComposition()
         }
@@ -503,10 +478,15 @@ struct ContentView: View {
     }
 
     private func reloadCurrentBoardComposition() {
-        guard let activeWorkspaceID = session.activeWorkspaceID,
-              !session.isLoadingWorkspace else {
+        guard let activeWorkspaceID = session.activeWorkspaceID else {
+            hasPendingCompositionReload = false
             return
         }
+        guard !session.isLoadingWorkspace else {
+            hasPendingCompositionReload = true
+            return
+        }
+        hasPendingCompositionReload = false
 
         loadWorkspace(
             id: activeWorkspaceID,
@@ -598,22 +578,21 @@ struct ContentView: View {
         deleteWorkspace(workspace.id)
     }
 
-    private func separateBoardFromSidebar(_ payload: SidebarBoardDragPayload) -> Bool {
-        guard payload.canRemoveFromCurrentBoard,
-              let primaryBoardID = payload.sourcePrimaryBoardID else {
-            session.statusMessage = "Drag a parallel board tab here to remove it from its Current Board."
-            return false
+    private func separateBoardFromSidebar(_ selection: SidebarBoardSelection) -> BoardCompositionMutationResult {
+        guard selection.memberBoardID != selection.groupPrimaryID else {
+            session.statusMessage = BoardCompositionMutationResult.selfReference.userMessage
+            return .selfReference
         }
 
-        let result = boardCompositionStore.excludeRoot(payload.boardID, for: primaryBoardID)
+        let result = boardCompositionStore.excludeRoot(selection.memberBoardID, for: selection.groupPrimaryID)
         session.statusMessage = result.userMessage
-        guard result == .removed else { return false }
+        guard result == .removed else { return result }
 
-        if session.activeWorkspaceID == primaryBoardID {
+        if session.activeWorkspaceID == selection.groupPrimaryID {
             compositionStatusAfterReload = result.userMessage
             reloadCurrentBoardComposition()
         }
-        return true
+        return result
     }
 
     private func detachAllFromMainView() {
@@ -1213,6 +1192,8 @@ struct ContentView: View {
     ) {
         let shouldTemporarilyFrontBoard = autoFrontMode == .off && shouldBringBoardToFrontAfterLoad
         let usesDeferredWindowApplication = true
+        // A new load can supersede the old deferred completion without fronting again.
+        cancelTemporaryBoardWorkspaceFronting()
         let workspaceFrontingToken = shouldTemporarilyFrontBoard
             ? beginTemporaryBoardWorkspaceFronting()
             : nil
@@ -1721,15 +1702,27 @@ struct ContentView: View {
     }
 
     private func beginTemporaryBoardWorkspaceFronting() -> BoardFrontingCoordinator.WorkspaceToken {
-        frontingCoordinator.beginWorkspaceFronting {
+        let token = frontingCoordinator.beginWorkspaceFronting {
             boardWindow?.level = .floating
             bringBoardWindowToFront()
         }
+        activeWorkspaceFrontingToken = token
+        return token
     }
 
     private func endTemporaryBoardWorkspaceFronting(token: BoardFrontingCoordinator.WorkspaceToken) {
+        guard activeWorkspaceFrontingToken == token else { return }
+        activeWorkspaceFrontingToken = nil
         frontingCoordinator.endWorkspaceFronting(token: token) {
             bringBoardWindowToFront()
+            applyBoardWindowLevel()
+        }
+    }
+
+    private func cancelTemporaryBoardWorkspaceFronting() {
+        guard let token = activeWorkspaceFrontingToken else { return }
+        activeWorkspaceFrontingToken = nil
+        frontingCoordinator.endWorkspaceFronting(token: token) {
             applyBoardWindowLevel()
         }
     }

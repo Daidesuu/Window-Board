@@ -7,6 +7,14 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		3D0000010000000000000005 /* PrototypeMotionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0000010000000000000006 /* PrototypeMotionTests.swift */; };
+		3D0000010000000000000003 /* PrototypeMotion.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0000010000000000000004 /* PrototypeMotion.swift */; };
+		3D0000010000000000000001 /* PrototypeBoardLayout.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D0000010000000000000002 /* PrototypeBoardLayout.swift */; };
+		3C0000010000000000000007 /* PrototypeDragSupportTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C0000010000000000000008 /* PrototypeDragSupportTests.swift */; };
+		3C0000010000000000000005 /* PrototypeBoardDragModelTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C0000010000000000000006 /* PrototypeBoardDragModelTests.swift */; };
+		3C0000010000000000000003 /* PrototypeDragSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C0000010000000000000004 /* PrototypeDragSupport.swift */; };
+		3C0000010000000000000001 /* PrototypeBoardDragModel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3C0000010000000000000002 /* PrototypeBoardDragModel.swift */; };
+		3B0000010000000000000001 /* SplitBoardPrototypeView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B0000010000000000000002 /* SplitBoardPrototypeView.swift */; };
 		1A0000010000000000000001 /* WindowBoardApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000011 /* WindowBoardApp.swift */; };
 		1A0000010000000000000002 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000012 /* ContentView.swift */; };
 		1A0000010000000000000003 /* WindowInfo.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1A0000010000000000000013 /* WindowInfo.swift */; };
@@ -105,6 +113,14 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
+		3D0000010000000000000006 /* PrototypeMotionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeMotionTests.swift; sourceTree = "<group>"; };
+		3D0000010000000000000004 /* PrototypeMotion.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeMotion.swift; sourceTree = "<group>"; };
+		3D0000010000000000000002 /* PrototypeBoardLayout.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeBoardLayout.swift; sourceTree = "<group>"; };
+		3C0000010000000000000008 /* PrototypeDragSupportTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeDragSupportTests.swift; sourceTree = "<group>"; };
+		3C0000010000000000000006 /* PrototypeBoardDragModelTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeBoardDragModelTests.swift; sourceTree = "<group>"; };
+		3C0000010000000000000004 /* PrototypeDragSupport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeDragSupport.swift; sourceTree = "<group>"; };
+		3C0000010000000000000002 /* PrototypeBoardDragModel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PrototypeBoardDragModel.swift; sourceTree = "<group>"; };
+		3B0000010000000000000002 /* SplitBoardPrototypeView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SplitBoardPrototypeView.swift; sourceTree = "<group>"; };
 		1A0000010000000000000010 /* WindowBoard.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = WindowBoard.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		1A0000010000000000000011 /* WindowBoardApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WindowBoardApp.swift; sourceTree = "<group>"; };
 		1A0000010000000000000012 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
@@ -260,6 +276,9 @@
 				5C0000010000000000000015 /* Support */,
 				3A0000010000000000000019 /* QuickLauncherTests.swift */,
 				1B0000010000000000000002 /* WindowMatchingTests.swift */,
+				3C0000010000000000000006 /* PrototypeBoardDragModelTests.swift */,
+				3C0000010000000000000008 /* PrototypeDragSupportTests.swift */,
+				3D0000010000000000000006 /* PrototypeMotionTests.swift */,
 				2A000001000000000000006C /* TreeBoardWindowControllerTests.swift */,
 				1D0000010000000000000004 /* BoardFrontingCoordinatorTests.swift */,
 				1D0000010000000000000008 /* AttachedWindowSnapshotCoordinatorTests.swift */,
@@ -290,6 +309,10 @@
 				1A000001000000000000002E /* BoardDetailViews.swift */,
 				1A0000010000000000000039 /* BoardCardViews.swift */,
 				1A0000010000000000000042 /* BoardSupportingViews.swift */,
+				3B0000010000000000000002 /* SplitBoardPrototypeView.swift */,
+				3C0000010000000000000004 /* PrototypeDragSupport.swift */,
+				3D0000010000000000000004 /* PrototypeMotion.swift */,
+				3D0000010000000000000002 /* PrototypeBoardLayout.swift */,
 				1A0000010000000000000044 /* BoardToolbarControls.swift */,
 				1B000001000000000000000E /* BoardAppIconViews.swift */,
 				1B0000010000000000000010 /* BoardCardInteractionSupport.swift */,
@@ -305,6 +328,7 @@
 				5C0000010000000000000003 /* WindowMinimizationModels.swift */,
 				5C0000010000000000000005 /* UnattachedWindowMinimizationPolicy.swift */,
 				1A0000010000000000000013 /* WindowInfo.swift */,
+				3C0000010000000000000002 /* PrototypeBoardDragModel.swift */,
 				1A0000010000000000000029 /* WindowMatching.swift */,
 				1B0000010000000000000012 /* WorkspaceWindowResolver.swift */,
 				1C0000010000000000000002 /* AttachedWindowRecoveryResolver.swift */,
@@ -642,6 +666,7 @@
 				1A0000010000000000000001 /* WindowBoardApp.swift in Sources */,
 				1A0000010000000000000002 /* ContentView.swift in Sources */,
 				1A0000010000000000000003 /* WindowInfo.swift in Sources */,
+				3C0000010000000000000001 /* PrototypeBoardDragModel.swift in Sources */,
 				1A0000010000000000000004 /* AccessibilityWindowService.swift in Sources */,
 				1A0000010000000000000005 /* BoardWindowObserver.swift in Sources */,
 				1A0000010000000000000006 /* WindowMoveScheduler.swift in Sources */,
@@ -663,6 +688,10 @@
 				1A000001000000000000002D /* BoardDetailViews.swift in Sources */,
 				1A000001000000000000002F /* BoardCardViews.swift in Sources */,
 				1A0000010000000000000041 /* BoardSupportingViews.swift in Sources */,
+				3B0000010000000000000001 /* SplitBoardPrototypeView.swift in Sources */,
+				3C0000010000000000000003 /* PrototypeDragSupport.swift in Sources */,
+				3D0000010000000000000003 /* PrototypeMotion.swift in Sources */,
+				3D0000010000000000000001 /* PrototypeBoardLayout.swift in Sources */,
 				1A0000010000000000000043 /* BoardToolbarControls.swift in Sources */,
 				1B000001000000000000000D /* BoardAppIconViews.swift in Sources */,
 				1B000001000000000000000F /* BoardCardInteractionSupport.swift in Sources */,
@@ -693,6 +722,9 @@
 				5C0000010000000000000012 /* ControlledMinimizationWindowService.swift in Sources */,
 				3A0000010000000000000009 /* QuickLauncherTests.swift in Sources */,
 				1B0000010000000000000001 /* WindowMatchingTests.swift in Sources */,
+				3C0000010000000000000005 /* PrototypeBoardDragModelTests.swift in Sources */,
+				3C0000010000000000000007 /* PrototypeDragSupportTests.swift in Sources */,
+				3D0000010000000000000005 /* PrototypeMotionTests.swift in Sources */,
 				1D0000010000000000000003 /* BoardFrontingCoordinatorTests.swift in Sources */,
 				1D0000010000000000000007 /* AttachedWindowSnapshotCoordinatorTests.swift in Sources */,
 				1F0000010000000000000003 /* BoardTreeStoreTests.swift in Sources */,

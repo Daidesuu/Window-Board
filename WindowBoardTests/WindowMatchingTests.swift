@@ -3,6 +3,90 @@ import XCTest
 @testable import WindowBoard
 
 final class WindowMatchingTests: XCTestCase {
+    func testSidebarSeparatorsFollowMeasuredRowsWithoutTrailingOrIntersectingLines() {
+        for width: CGFloat in [180, 204, 224, 284] {
+            let columns = SidebarBoardGridMetrics.columnCount(for: width)
+            for count in [2, 3, 5] {
+                let heights = (0..<count).map { CGFloat($0.isMultiple(of: 2) ? 28 : 44) }
+                let frames = SidebarBoardGridMetrics.frames(width: width, heights: heights)
+                let segments = SidebarBoardGridMetrics.separatorSegments(width: width, frames: frames)
+                let vertical = segments.filter { $0.start.x == $0.end.x }
+                let horizontal = segments.filter { $0.start.y == $0.end.y }
+                XCTAssertEqual(vertical.count, columns == 2 ? count / 2 : 0)
+                XCTAssertEqual(horizontal.count, (count + columns - 1) / columns - 1)
+                for (index, line) in vertical.enumerated() {
+                    let first = frames[index * 2]
+                    let second = frames[index * 2 + 1]
+                    XCTAssertEqual(line.start.x, (first.maxX + second.minX) / 2)
+                    XCTAssertEqual(line.start.y, first.minY + 6)
+                    XCTAssertEqual(line.end.y, first.maxY - 6)
+                    XCTAssertGreaterThan(line.end.y, line.start.y)
+                }
+                for (index, line) in horizontal.enumerated() {
+                    let prior = frames[index * columns]
+                    let next = frames[(index + 1) * columns]
+                    XCTAssertEqual(line.start.x, 8)
+                    XCTAssertEqual(line.end.x, width - 8)
+                    XCTAssertEqual(line.start.y, (prior.maxY + next.minY) / 2)
+                    XCTAssertLessThan(line.start.y, frames.last!.maxY)
+                    XCTAssertTrue(vertical.allSatisfy { line.start.y < $0.start.y || line.start.y > $0.end.y })
+                }
+            }
+        }
+    }
+
+    func testSidebarSeparatorsOmitEmptySingleAndTooShortSegments() {
+        XCTAssertTrue(SidebarBoardGridMetrics.separatorSegments(width: 204, frames: []).isEmpty)
+        for width: CGFloat in [180, 204] {
+            let frames = SidebarBoardGridMetrics.frames(width: width, heights: [44])
+            XCTAssertTrue(SidebarBoardGridMetrics.separatorSegments(width: width, frames: frames).isEmpty)
+        }
+        let shortPair = SidebarBoardGridMetrics.frames(width: 204, heights: [8, 12])
+        XCTAssertTrue(SidebarBoardGridMetrics.separatorSegments(width: 204, frames: shortPair).isEmpty)
+        let narrowRows = SidebarBoardGridMetrics.frames(width: 16, heights: [28, 44])
+        XCTAssertTrue(SidebarBoardGridMetrics.separatorSegments(width: 16, frames: narrowRows).isEmpty)
+    }
+
+    func testSidebarGridWrapsAtMinimumColumnWidthAndHandlesUnboundedProposals() {
+        XCTAssertEqual(SidebarBoardGridMetrics.columnCount(for: 197), 1)
+        XCTAssertEqual(SidebarBoardGridMetrics.columnCount(for: 198), 2)
+        XCTAssertEqual(SidebarBoardGridMetrics.columnWidth(for: 198), 96)
+        XCTAssertEqual(SidebarBoardGridMetrics.resolvedWidth(nil), 198)
+        XCTAssertEqual(SidebarBoardGridMetrics.resolvedWidth(.infinity), 198)
+        XCTAssertEqual(SidebarBoardGridMetrics.resolvedWidth(-10), 0)
+        XCTAssertTrue(SidebarBoardGridMetrics.frames(width: 198, heights: []).isEmpty)
+    }
+
+    func testSidebarGridFitsSidebarWidthsAndPreservesRowMajorOrder() {
+        for sidebarWidth: CGFloat in [220, 240, 300] {
+            let width = sidebarWidth - 16
+            for count in [2, 3, 5] {
+                let heights = (0..<count).map { CGFloat($0.isMultiple(of: 2) ? 28 : 44) }
+                let frames = SidebarBoardGridMetrics.frames(width: width, heights: heights)
+                XCTAssertEqual(frames.count, count)
+                for (index, frame) in frames.enumerated() {
+                    XCTAssertGreaterThanOrEqual(frame.width, 96)
+                    XCTAssertGreaterThanOrEqual(frame.minX, 0)
+                    XCTAssertLessThanOrEqual(frame.maxX, width)
+                    XCTAssertGreaterThanOrEqual(frame.height, heights[index])
+                    if index.isMultiple(of: 2) {
+                        XCTAssertEqual(frame.minX, 0)
+                        if index > 0 { XCTAssertEqual(frame.minY, frames[index - 1].maxY + 6) }
+                    } else {
+                        XCTAssertEqual(frame.width, frames[index - 1].width)
+                        XCTAssertEqual(frame.minX, frames[index - 1].maxX + 6)
+                        XCTAssertEqual(frame.minY, frames[index - 1].minY)
+                        XCTAssertEqual(frame.height, frames[index - 1].height)
+                    }
+                }
+            }
+        }
+        let singleColumn = SidebarBoardGridMetrics.frames(width: 180, heights: [28, 44, 28])
+        XCTAssertEqual(singleColumn.map(\.minX), [0, 0, 0])
+        XCTAssertEqual(singleColumn.map(\.minY), [0, 34, 84])
+        XCTAssertEqual(singleColumn.last?.maxY, 112)
+    }
+
     func testBoardAndWindowDragPayloadsRetainTheirKinds() {
         let id = UUID()
 
@@ -39,6 +123,13 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(decoded?.boardID, boardID)
         XCTAssertNil(decoded?.sourcePrimaryBoardID)
         XCTAssertFalse(decoded?.canRemoveFromCurrentBoard == true)
+    }
+
+    func testMalformedBoardDragPayloadIsRejected() {
+        let id = UUID()
+        XCTAssertNil(DragPayload.boardPayload(from: "windowboard-board:invalid"))
+        XCTAssertNil(DragPayload.boardPayload(from: "windowboard-board:\(id);source-primary:invalid"))
+        XCTAssertNil(DragPayload.boardPayload(from: "windowboard-board:\(id);source-primary:\(UUID());source-primary:\(UUID())"))
     }
 
     func testLegacyDefaultBoardNameMigratesToPermanentBoard() {
@@ -215,6 +306,58 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(restoredStore.rootBoardIDs(for: primaryID), [boardID])
     }
 
+    func testPermanentBoardTargetedRelationshipsSurviveRestartWithoutBecomingGlobal() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primary = makeWorkspace(name: "Primary", windows: [])
+        let other = makeWorkspace(name: "Other", windows: [])
+        let permanent = makeWorkspace(name: "Permanent Board", windows: [], isDefault: true)
+        let workspaces = [primary, other, permanent]
+        let available = Set(workspaces.map(\.id))
+        let store = BoardCompositionStore(defaults: defaults, availableBoardIDs: available, permanentBoardID: permanent.id)
+
+        XCTAssertEqual(store.includeRoot(permanent.id, for: primary.id, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeChild(permanent.id, in: other.id, availableBoardIDs: available), .inserted)
+        let restored = BoardCompositionStore(defaults: defaults, availableBoardIDs: available, permanentBoardID: permanent.id)
+
+        XCTAssertFalse(restored.isGloballyIncluded(permanent.id))
+        XCTAssertEqual(restored.rootBoardIDs(for: primary.id), [permanent.id])
+        XCTAssertEqual(restored.childBoardIDs(for: other.id), [permanent.id])
+        XCTAssertEqual(restored.sidebarProjection(workspaces: workspaces).groups.first?.boards.map(\.id), [primary.id, permanent.id])
+        XCTAssertEqual(restored.includeRoot(other.id, for: permanent.id, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(
+            restored.sidebarProjection(workspaces: workspaces).groups.first(where: { $0.primaryBoardID == permanent.id })?.boards.map(\.id),
+            [permanent.id, other.id]
+        )
+    }
+
+    func testParallelAppendTargetsExplicitGroupAndRejectsGlobalDuplicates() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primaryA = UUID()
+        let primaryB = UUID()
+        let shared = UUID()
+        let added = UUID()
+        let global = UUID()
+        let available: Set<UUID> = [primaryA, primaryB, shared, added, global]
+        let store = BoardCompositionStore(defaults: defaults)
+        XCTAssertEqual(store.includeRoot(shared, for: primaryA, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeRoot(shared, for: primaryB, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeRoot(added, for: primaryB, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.rootBoardIDs(for: primaryA), [shared])
+        XCTAssertEqual(store.rootBoardIDs(for: primaryB), [shared, added])
+        XCTAssertEqual(store.includeGlobalRoot(global, availableBoardIDs: available), .inserted)
+        let before = store.data
+        XCTAssertEqual(store.includeRoot(global, for: primaryB, availableBoardIDs: available), .duplicate)
+        XCTAssertEqual(store.includeRoot(primaryB, for: primaryB, availableBoardIDs: available), .selfReference)
+        XCTAssertEqual(store.includeRoot(UUID(), for: primaryB, availableBoardIDs: available), .missingBoard)
+        XCTAssertEqual(store.data, before)
+        let restored = BoardCompositionStore(defaults: defaults)
+        XCTAssertEqual(restored.data, before)
+    }
+
     func testExcludingAdditionalRootKeepsTheBoardAndItsWindows() {
         let suiteName = "WindowBoardTests.\(UUID().uuidString)"
         let defaults = UserDefaults(suiteName: suiteName)!
@@ -229,6 +372,59 @@ final class WindowMatchingTests: XCTestCase {
         XCTAssertEqual(store.excludeRoot(included.id, for: primary.id), .removed)
         XCTAssertTrue(store.rootBoardIDs(for: primary.id).isEmpty)
         XCTAssertEqual(included.windows.count, 1)
+    }
+
+    func testRemovingSharedParallelMemberOnlyChangesTheExplicitGroup() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let active = makeWorkspace(name: "Active", windows: [])
+        let nonactive = makeWorkspace(name: "Nonactive", windows: [])
+        let member = makeWorkspace(name: "Shared", windows: [savedReference(title: "Shared window")])
+        let workspaces = [active, nonactive, member]
+        let available = Set(workspaces.map(\.id))
+        let store = BoardCompositionStore(defaults: defaults)
+        XCTAssertEqual(store.includeRoot(member.id, for: active.id, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeRoot(member.id, for: nonactive.id, availableBoardIDs: available), .inserted)
+        let activeBefore = store.resolveCurrentBoard(primaryID: active.id, workspaces: workspaces)
+        let windowsBefore = member.windows
+
+        XCTAssertEqual(store.excludeRoot(member.id, for: nonactive.id), .removed)
+
+        XCTAssertEqual(store.resolveCurrentBoard(primaryID: active.id, workspaces: workspaces), activeBefore)
+        XCTAssertEqual(store.rootBoardIDs(for: active.id), [member.id])
+        XCTAssertTrue(store.rootBoardIDs(for: nonactive.id).isEmpty)
+        XCTAssertEqual(member.windows, windowsBefore)
+        let after = store.data
+        XCTAssertEqual(store.excludeRoot(member.id, for: nonactive.id), .missingBoard)
+        XCTAssertEqual(store.data, after)
+        let restored = BoardCompositionStore(defaults: defaults)
+        XCTAssertEqual(restored.data, after)
+        XCTAssertEqual(restored.resolveCurrentBoard(primaryID: active.id, workspaces: workspaces), activeBefore)
+    }
+
+    func testRemovingTargetedPermanentBoardPreservesOtherRelationshipsAcrossRestart() {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let primary = makeWorkspace(name: "Primary", windows: [])
+        let other = makeWorkspace(name: "Other", windows: [])
+        let permanent = makeWorkspace(name: "Permanent Board", windows: [savedReference(title: "Permanent window")], isDefault: true)
+        let workspaces = [primary, other, permanent]
+        let available = Set(workspaces.map(\.id))
+        let store = BoardCompositionStore(defaults: defaults, availableBoardIDs: available, permanentBoardID: permanent.id)
+        XCTAssertEqual(store.includeRoot(permanent.id, for: primary.id, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeRoot(permanent.id, for: other.id, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.includeChild(permanent.id, in: other.id, availableBoardIDs: available), .inserted)
+        XCTAssertEqual(store.excludeRoot(permanent.id, for: primary.id), .removed)
+
+        let restored = BoardCompositionStore(defaults: defaults, availableBoardIDs: available, permanentBoardID: permanent.id)
+        XCTAssertTrue(restored.rootBoardIDs(for: primary.id).isEmpty)
+        XCTAssertEqual(restored.rootBoardIDs(for: other.id), [permanent.id])
+        XCTAssertEqual(restored.childBoardIDs(for: other.id), [permanent.id])
+        XCTAssertFalse(restored.isGloballyIncluded(permanent.id))
+        XCTAssertEqual(restored.resolveCurrentBoard(primaryID: other.id, workspaces: workspaces).uniqueWindowReferences.count, 1)
+        XCTAssertEqual(permanent.windows.count, 1)
     }
 
     func testBoardCompositionInsertsAdditionalRootsBesideTheDropTarget() {
@@ -774,6 +970,8 @@ final class WindowMatchingTests: XCTestCase {
             windowCache: [targetWindow]
         )
         await waitForWorkspaceSwitch(session)
+        // Cached switches publish loaded state before deferred position application starts.
+        await wait { service.positions[targetWindow.id] != nil }
 
         XCTAssertEqual(session.activeWorkspaceID, targetBoard.id)
         XCTAssertEqual(service.positions[targetWindow.id], CGPoint(x: 220, y: 260))
@@ -932,6 +1130,55 @@ final class WindowMatchingTests: XCTestCase {
 
         XCTAssertEqual(session.attachedWindows.first?.window.id, cachedWindow.id)
         XCTAssertEqual(service.positions[cachedWindow.id], savedOrigin)
+    }
+
+    @MainActor
+    func testSamePrimaryReloadIgnoresStaleDeferredApplicationFailure() async {
+        let suiteName = "WindowBoardTests.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let reference = savedReference(title: "Deferred", origin: CGPoint(x: 260, y: 300))
+        let liveWindow = window(id: "stale-deferred-window", title: "Deferred", position: CGPoint(x: 820, y: 640))
+        let workspaceStore = WorkspaceStore(defaults: defaults)
+        let board = workspaceStore.saveWorkspace(name: "Board", windows: [reference])
+        let oldService = FakeWorkspaceWindowService(windows: [liveWindow])
+        let newService = FakeWorkspaceWindowService(windows: [liveWindow])
+        let oldStarted = expectation(description: "Old application started")
+        let oldRelease = DispatchSemaphore(value: 0)
+        let newStarted = expectation(description: "New application started")
+        let newRelease = DispatchSemaphore(value: 0)
+        oldService.beforePositionWrite = {
+            oldStarted.fulfill()
+            _ = oldRelease.wait(timeout: .now() + 5)
+            throw WindowBoardAXError.missingPosition
+        }
+        newService.beforePositionWrite = {
+            newStarted.fulfill()
+            _ = newRelease.wait(timeout: .now() + 5)
+        }
+        var factoryCount = 0
+        let session = WorkspaceSessionController(workspaceStore: workspaceStore, defaults: defaults, windowServiceFactory: {
+            factoryCount += 1
+            return factoryCount == 1 ? oldService : newService
+        })
+        defer { oldRelease.signal(); newRelease.signal() }
+        session.switchWorkspace(id: board.id, boardOrigin: .zero, source: .mainWindow, followMode: .none,
+                                windowCache: [liveWindow], mergeWindows: { _ in }, completion: { _ in },
+                                persistCurrentWorkspaceBeforeSwitch: false)
+        await fulfillment(of: [oldStarted], timeout: 2)
+        XCTAssertTrue(session.isApplyingWorkspaceWindows)
+        session.switchWorkspace(id: board.id, boardOrigin: .zero, source: .mainWindow, followMode: .none,
+                                windowCache: [liveWindow], mergeWindows: { _ in }, completion: { _ in },
+                                persistCurrentWorkspaceBeforeSwitch: false)
+        await fulfillment(of: [newStarted], timeout: 2)
+        oldRelease.signal()
+        try? await Task.sleep(for: .milliseconds(100))
+        XCTAssertTrue(session.isApplyingWorkspaceWindows)
+        XCTAssertFalse(session.unavailableAttachedWindowIDs.contains(reference.id))
+        newRelease.signal()
+        await waitForWorkspaceSwitch(session)
+        XCTAssertFalse(session.unavailableAttachedWindowIDs.contains(reference.id))
+        XCTAssertEqual(session.activeWorkspaceID, board.id)
     }
 
     @MainActor
@@ -1912,6 +2159,7 @@ private final class FakeWorkspaceWindowService: ContentWindowOperating, @uncheck
     var minimizedWindowIDs: Set<WindowInfo.ID> = []
     var positionReadFailureIDs: Set<WindowInfo.ID> = []
     var positionWriteFailureIDs: Set<WindowInfo.ID> = []
+    var beforePositionWrite: (() throws -> Void)?
     var sizeReadFailureIDs: Set<WindowInfo.ID> = []
     var sizeWriteFailureIDs: Set<WindowInfo.ID> = []
     var minimizeWriteFailureIDs: Set<WindowInfo.ID> = []
@@ -1971,6 +2219,7 @@ private final class FakeWorkspaceWindowService: ContentWindowOperating, @uncheck
     }
 
     func setPosition(_ position: CGPoint, for window: WindowInfo) throws {
+        try beforePositionWrite?()
         guard !positionWriteFailureIDs.contains(window.id) else {
             throw WindowBoardAXError.missingPosition
         }

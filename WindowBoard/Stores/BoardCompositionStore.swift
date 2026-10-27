@@ -204,16 +204,18 @@ final class BoardCompositionStore: ObservableObject {
         permanentBoardID: SavedWorkspace.ID? = nil
     ) {
         self.defaults = defaults
+        var needsPermanentMigration = true
         if let stored = defaults.data(forKey: storageKey),
            let decoded = try? JSONDecoder().decode(BoardCompositionData.self, from: stored),
            (2...BoardCompositionData.currentVersion).contains(decoded.version) {
             data = decoded
+            needsPermanentMigration = decoded.version < 3
             data.version = BoardCompositionData.currentVersion
         } else {
             data = BoardCompositionData()
             migrateLegacyRoots(primaryID: migrationPrimaryID, availableBoardIDs: availableBoardIDs)
         }
-        if let permanentBoardID, availableBoardIDs.contains(permanentBoardID) {
+        if needsPermanentMigration, let permanentBoardID, availableBoardIDs.contains(permanentBoardID) {
             migratePermanentBoardToGlobalRoot(permanentBoardID)
         }
         persist()
@@ -266,6 +268,7 @@ final class BoardCompositionStore: ObservableObject {
     ) -> BoardCompositionMutationResult {
         guard availableBoardIDs.contains(primaryID), availableBoardIDs.contains(boardID) else { return .missingBoard }
         guard boardID != primaryID else { return .selfReference }
+        guard !isGloballyIncluded(boardID) else { return .duplicate }
         var roots = rootBoardIDs(for: primaryID)
         guard !roots.contains(boardID) else { return .duplicate }
         if let relativeBoardID {
@@ -327,21 +330,18 @@ final class BoardCompositionStore: ObservableObject {
     }
 
     func sidebarProjection(workspaces: [SavedWorkspace]) -> SidebarBoardProjection {
-        let permanentBoardIDs = Set(workspaces.filter(\.isDefault).map(\.id))
         let groups = workspaces.compactMap { workspace -> SidebarBoardGroup? in
-            guard !workspace.isDefault else { return nil }
             let resolved = resolveCurrentBoard(primaryID: workspace.id, workspaces: workspaces)
             let boards = resolved.roots
                 .map(\.board)
-                .filter { !permanentBoardIDs.contains($0.id) }
+                .filter { $0.id == workspace.id || !isGloballyIncluded($0.id) }
             guard boards.count > 1 else { return nil }
             return SidebarBoardGroup(primaryBoardID: workspace.id, boards: boards)
         }
         let groupedBoardIDs = Set(groups.flatMap { $0.boards.map(\.id) })
         let groupPrimaryIDs = Set(groups.map(\.primaryBoardID))
         let standaloneBoards = workspaces.filter { workspace in
-            workspace.isDefault
-                || (!groupedBoardIDs.contains(workspace.id) && !groupPrimaryIDs.contains(workspace.id))
+            !groupedBoardIDs.contains(workspace.id) && !groupPrimaryIDs.contains(workspace.id)
         }
         return SidebarBoardProjection(groups: groups, standaloneBoards: standaloneBoards)
     }
